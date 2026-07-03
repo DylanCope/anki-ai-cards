@@ -11,6 +11,7 @@ import os
 
 import anthropic
 
+from app.agent import workflow_specs
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import TOOL_SCHEMAS, dispatch_tool
 
@@ -24,6 +25,26 @@ MAX_ITERATIONS = 10
 
 def _get_client() -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+
+def _build_system_prompt(history: list[dict]) -> str:
+    """Append known workflow-spec names to the system prompt at the start of
+    a conversation (empty `history`), so the agent can offer to reuse one
+    without having to call list_workflow_specs itself on every fresh chat."""
+
+    if history:
+        return SYSTEM_PROMPT
+
+    names = [spec.name for spec in workflow_specs.list_workflow_specs()]
+    if not names:
+        return SYSTEM_PROMPT
+
+    known_specs = ", ".join(names)
+    return (
+        f"{SYSTEM_PROMPT}\n\nKnown workflow specs from past sessions: "
+        f"{known_specs}. Consider offering to reuse one of these (via "
+        f"load_workflow_spec) before starting from scratch."
+    )
 
 
 async def run_turn(
@@ -41,13 +62,14 @@ async def run_turn(
     """
 
     client = _get_client()
+    system_prompt = _build_system_prompt(history)
     messages: list[dict] = [*history, {"role": "user", "content": message}]
 
     for _ in range(MAX_ITERATIONS):
         response = await client.messages.create(
             model=MODEL_ID,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=TOOL_SCHEMAS,
             messages=messages,
         )

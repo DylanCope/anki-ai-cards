@@ -14,6 +14,73 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 8: Workflow spec persistence + tools
+- Did: Added `backend/app/agent/workflow_specs.py` — plain sync SQLModel
+  functions over the task 2 `WorkflowSpec` table: `save_workflow_spec(name,
+  spec)` (upsert by `name` — updates `spec` in place if the name already
+  exists, otherwise inserts), `load_workflow_spec(name) -> WorkflowSpec |
+  None`, `list_workflow_specs() -> list[WorkflowSpec]`. Added 3 new tool
+  schemas to `backend/app/agent/tools.py` (`save_workflow_spec`,
+  `load_workflow_spec`, `list_workflow_specs`) and wired them into
+  `dispatch_tool` — `load_workflow_spec` returns `None` (not an error) when
+  the name doesn't exist, letting the agent recover gracefully rather than
+  crashing the tool-use loop. Updated `run_turn` in `backend/app/agent/core.py`:
+  new `_build_system_prompt(history)` helper appends a "Known workflow specs
+  from past sessions: ..." line (with the saved names) to `SYSTEM_PROMPT`
+  only when `history` is empty (i.e. start of a new conversation) and at
+  least one spec exists — non-empty history or zero saved specs both fall
+  through to the plain `SYSTEM_PROMPT` unchanged, so this doesn't add a
+  DB round-trip to every turn, only the first one. Updated
+  `backend/app/agent/prompts.py`'s `SYSTEM_PROMPT` with a new closing
+  paragraph telling the agent to `save_workflow_spec` once it and Dylan
+  settle on how to handle a source, and to consider `load_workflow_spec`
+  when specs are listed at conversation start. Added
+  `backend/tests/test_workflow_specs.py` (save/load round-trip, upsert
+  overwrites rather than duplicating, load of a missing name returns `None`,
+  listing) and extended `backend/tests/test_agent.py`: a `db` fixture
+  (tmp-file SQLite via `DATABASE_PATH`, same pattern as
+  `test_models.py::engine`) used by the 3 existing `run_turn` tests (which
+  now touch the DB indirectly via `_build_system_prompt` on their empty-history
+  calls) plus new `dispatch_tool` tests for the 3 new tools and 3 new
+  `run_turn` tests asserting: known specs appear in the `system` kwarg on an
+  empty-history call, the plain prompt is used when no specs are saved, and
+  the plain prompt is used when history is non-empty even if specs exist.
+- Verified: `cd backend && uv run pytest` → 50 passed (39 pre-existing + 11
+  new: 4 in `test_workflow_specs.py`, 4 new `dispatch_tool` tests, 3 new
+  `run_turn` spec-surfacing tests). Ran full suite twice, both green.
+- Learned:
+  - **Adding a DB-backed enrichment to `run_turn` broke all 3 pre-existing
+    `run_turn` tests** until they were given a real `DATABASE_PATH` (via the
+    new `db` fixture) — `_build_system_prompt` calls
+    `workflow_specs.list_workflow_specs()` unconditionally whenever `history`
+    is empty, and `get_engine()` reads `os.environ["DATABASE_PATH"]` with no
+    fallback, so any test calling `run_turn([], ...)` without first setting
+    that env var now raises `KeyError` before ever reaching the mocked
+    Anthropic client. In production `DATABASE_PATH` is a required env var
+    (already true per the PRD) so this isn't a real robustness gap — but it's
+    a trap for future tests: **any test calling `run_turn` with empty history
+    needs the `db` fixture (or equivalent `DATABASE_PATH` setup) even if the
+    test has nothing to do with workflow specs.** Tests that pass non-empty
+    `history` don't need it, since `_build_system_prompt` short-circuits
+    before touching the DB.
+  - Chose upsert-by-name for `save_workflow_spec` (not append-only /
+    versioned) since the PRD frames this as "the agent and Dylan settle on
+    how to handle a source" — a single evolving spec per named source, not a
+    history of attempts. If task 9/10 usage shows Dylan wants to see prior
+    versions or diff changes, that's a schema change to `WorkflowSpec`
+    (task 2), not a change to these functions' upsert semantics.
+  - `load_workflow_spec`'s tool wrapper returns `None` (JSON `null`) rather
+    than raising when the name isn't found, unlike `dispatch_tool`'s handling
+    of e.g. missing `access_token` (which does raise). Reasoning: a missing
+    workflow spec is an expected, recoverable outcome the agent should reason
+    about ("no spec saved yet, let's build one"), not a caller bug — keep
+    this asymmetry in mind if a future task audits `dispatch_tool` for
+    consistent error-vs-null conventions.
+  - Didn't add a `delete_workflow_spec` tool — not in the PRD's task 8 tool
+    list (`save`/`load`/`list` only) and no obvious use case yet (upsert
+    already covers "this spec is wrong, fix it"). Add later only if Dylan
+    asks for it.
+
 ## 2026-07-03 — Task 7: Claude agent core
 - Did: Added `backend/app/agent/prompts.py` (`SYSTEM_PROMPT` describing the
   inner agent's job per the PRD Overview: read the lesson doc, find red-marked

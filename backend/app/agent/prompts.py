@@ -31,4 +31,11 @@ Workflow:
 Ask Dylan a clarifying question whenever the doc's structure, the field \
 mapping, or the right cloze deletion is ambiguous — don't guess silently on \
 anything that would produce a wrong card.
+
+Once you and Dylan settle on how to handle a source (doc layout, field \
+mapping, cloze conventions), use save_workflow_spec to save it under a \
+short, memorable name so a future session doesn't start from scratch. If \
+known workflow specs are listed below, consider offering to reuse one via \
+load_workflow_spec before re-deriving everything from the doc. Use \
+list_workflow_specs if you need to check what's saved.
 """

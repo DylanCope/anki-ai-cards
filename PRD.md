@@ -124,7 +124,7 @@ runs manually.
   the dispatcher invokes the right underlying client function with the right
   arguments. Verify: tests pass.
 
-- [ ] **8. Workflow spec persistence + tools.** `save_workflow_spec`,
+- [x] **8. Workflow spec persistence + tools.** `save_workflow_spec`,
   `load_workflow_spec`, `list_workflow_specs` tools backed by the
   `WorkflowSpec` table from task 2; `run_turn` surfaces known specs at the
   start of a conversation so the agent can offer to reuse one. Tests cover

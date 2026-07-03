@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agent import core, tools
+from app.agent import core, tools, workflow_specs
+from app.models import init_db
 
 
 def _text_block(text: str) -> SimpleNamespace:
@@ -35,6 +36,15 @@ def _mock_create(responses: list):
         return remaining.pop(0)
 
     return create, call_snapshots
+
+
+@pytest.fixture()
+def db(tmp_path, monkeypatch):
+    """A real (temp-file) SQLite DB for tests touching workflow_specs, which
+    hits `app.models` directly rather than through a mocked client."""
+
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
+    return init_db()
 
 
 # --- dispatch_tool: each tool routes to the right client function ---
@@ -144,6 +154,42 @@ async def test_dispatch_sync_anki(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_save_workflow_spec(db):
+    result = await tools.dispatch_tool(
+        "save_workflow_spec", {"name": "lesson-doc", "spec": "spec content"}
+    )
+
+    assert result == {"name": "lesson-doc", "spec": "spec content"}
+    assert workflow_specs.load_workflow_spec("lesson-doc").spec == "spec content"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_load_workflow_spec(db):
+    workflow_specs.save_workflow_spec("lesson-doc", "spec content")
+
+    result = await tools.dispatch_tool("load_workflow_spec", {"name": "lesson-doc"})
+
+    assert result == {"name": "lesson-doc", "spec": "spec content"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_load_workflow_spec_missing(db):
+    result = await tools.dispatch_tool("load_workflow_spec", {"name": "nope"})
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_list_workflow_specs(db):
+    workflow_specs.save_workflow_spec("lesson-doc", "a")
+    workflow_specs.save_workflow_spec("other-source", "b")
+
+    result = await tools.dispatch_tool("list_workflow_specs", {})
+
+    assert sorted(result) == ["lesson-doc", "other-source"]
+
+
+@pytest.mark.asyncio
 async def test_dispatch_unknown_tool():
     with pytest.raises(ValueError):
         await tools.dispatch_tool("not_a_real_tool", {})
@@ -153,7 +199,7 @@ async def test_dispatch_unknown_tool():
 
 
 @pytest.mark.asyncio
-async def test_run_turn_no_tool_use(monkeypatch):
+async def test_run_turn_no_tool_use(db, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     create, call_snapshots = _mock_create(
         [_response("end_turn", [_text_block("Hello Dylan!")])]
@@ -173,7 +219,7 @@ async def test_run_turn_no_tool_use(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_turn_one_tool_call_then_end_turn(monkeypatch):
+async def test_run_turn_one_tool_call_then_end_turn(db, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
     list_mock = AsyncMock(return_value=["Basic", "Cloze"])
@@ -213,7 +259,7 @@ async def test_run_turn_one_tool_call_then_end_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_turn_passes_access_token_to_tools(monkeypatch):
+async def test_run_turn_passes_access_token_to_tools(db, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
     fetch_mock = AsyncMock(return_value={"body": {"content": []}})
@@ -235,3 +281,62 @@ async def test_run_turn_passes_access_token_to_tools(monkeypatch):
         await core.run_turn([], "read the doc", access_token="tok-xyz")
 
     fetch_mock.assert_awaited_once_with("abc", "tok-xyz")
+
+
+# --- known workflow specs are surfaced at the start of a conversation ---
+
+
+@pytest.mark.asyncio
+async def test_run_turn_surfaces_known_specs_on_empty_history(db, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    workflow_specs.save_workflow_spec("lesson-doc", "spec content")
+
+    create, call_snapshots = _mock_create(
+        [_response("end_turn", [_text_block("hi")])]
+    )
+    client = AsyncMock()
+    client.messages.create = create
+
+    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn([], "hi")
+
+    system_prompt = call_snapshots[0]["system"]
+    assert "lesson-doc" in system_prompt
+    assert system_prompt.startswith(core.SYSTEM_PROMPT)
+
+
+@pytest.mark.asyncio
+async def test_run_turn_no_specs_uses_plain_system_prompt(db, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    create, call_snapshots = _mock_create(
+        [_response("end_turn", [_text_block("hi")])]
+    )
+    client = AsyncMock()
+    client.messages.create = create
+
+    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn([], "hi")
+
+    assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_run_turn_does_not_surface_specs_on_nonempty_history(db, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    workflow_specs.save_workflow_spec("lesson-doc", "spec content")
+
+    create, call_snapshots = _mock_create(
+        [_response("end_turn", [_text_block("hi")])]
+    )
+    client = AsyncMock()
+    client.messages.create = create
+
+    history = [
+        {"role": "user", "content": "earlier message"},
+        {"role": "assistant", "content": "earlier reply"},
+    ]
+    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn(history, "hi")
+
+    assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT

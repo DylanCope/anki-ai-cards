@@ -12,6 +12,7 @@ the model's tool input.
 
 import base64
 
+from app.agent import workflow_specs
 from app.clients import ankiconnect, elevenlabs, google_docs
 
 TOOL_SCHEMAS: list[dict] = [
@@ -101,6 +102,49 @@ TOOL_SCHEMAS: list[dict] = [
         "description": "Trigger an AnkiConnect sync so newly created notes reach AnkiWeb, and from there Dylan's phone/desktop.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "save_workflow_spec",
+        "description": (
+            "Save (or update) a named, reusable workflow spec describing how "
+            "to handle a source — e.g. how the lesson doc is laid out, how "
+            "corrections are found, and how fields map onto the note type — "
+            "so a future session can offer to reuse it instead of starting "
+            "from scratch."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "A short, memorable name for this workflow spec.",
+                },
+                "spec": {
+                    "type": "string",
+                    "description": "The workflow spec content, describing how to handle this source.",
+                },
+            },
+            "required": ["name", "spec"],
+        },
+    },
+    {
+        "name": "load_workflow_spec",
+        "description": "Load a previously saved workflow spec by name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The workflow spec's name, from list_workflow_specs.",
+                }
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_workflow_specs",
+        "description": "List the names of all saved workflow specs, so the agent can offer to reuse one.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -141,5 +185,20 @@ async def dispatch_tool(
     if name == "sync_anki":
         await ankiconnect.sync()
         return {"synced": True}
+
+    if name == "save_workflow_spec":
+        saved = workflow_specs.save_workflow_spec(
+            tool_input["name"], tool_input["spec"]
+        )
+        return {"name": saved.name, "spec": saved.spec}
+
+    if name == "load_workflow_spec":
+        loaded = workflow_specs.load_workflow_spec(tool_input["name"])
+        if loaded is None:
+            return None
+        return {"name": loaded.name, "spec": loaded.spec}
+
+    if name == "list_workflow_specs":
+        return [spec.name for spec in workflow_specs.list_workflow_specs()]
 
     raise ValueError(f"Unknown tool: {name!r}")
