@@ -42,22 +42,35 @@ claude --version   # confirm CLI available; `npm install -g @anthropic-ai/claude
 
 ## Run
 
+Requires the `gh` CLI installed and authenticated (`gh auth login`), and an
+`origin` remote pointing at a GitHub repo you can push to.
+
 ```bash
 ./ralph/loop.sh 10        # at most 10 iterations
 ```
 
+- The loop runs on branch `ralph/loop` (override with `RALPH_BRANCH`),
+  targeting `main` (override with `RALPH_BASE_BRANCH`). It creates the branch
+  from current HEAD if it doesn't exist yet, or resumes it if it does.
+- After every iteration it pushes the branch and opens a PR against the base
+  branch if one doesn't already exist — so you can watch progress and review
+  commit-by-commit on GitHub as it works, not just after the fact.
 - Watch the first few runs live — build intuition before going AFK.
 - Halt: `touch ralph/STOP` (takes effect next iteration) or Ctrl+C.
 - The loop exits 0 when an iteration prints `<promise>RALPH_DONE</promise>`
-  (all PRD tasks checked), 1 otherwise.
+  (all PRD tasks checked), 1 otherwise. Either way the branch is pushed and
+  the PR is up to date when it stops.
 
 ## After a run
 
-- `git log --oneline` — one commit per completed task; revert any bad one.
+- Check the PR on GitHub, or `git log --oneline` — one commit per completed
+  task; revert any bad one.
 - Read `PROGRESS.md` and the newest files in `ralph/logs/`.
 - Bad output usually means a bad prompt or vague PRD task. Fix the files, not
   the agent: tighten the task, add a verification command, note the gotcha in
   AGENTS.md, re-run.
+- When you're happy with the PR, merge it yourself on GitHub — the loop never
+  merges its own work.
 
 ## Safety notes
 

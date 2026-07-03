@@ -2,11 +2,17 @@
 # Ralph loop harness.
 # Usage: ./ralph/loop.sh [max_iterations]
 # Stop early: touch ralph/STOP (checked before each iteration), or Ctrl+C.
+#
+# Runs on a dedicated branch (RALPH_BRANCH, default "ralph/loop"), pushing
+# and keeping a PR against RALPH_BASE_BRANCH (default "main") up to date
+# after every iteration, so progress is reviewable on GitHub as it happens.
 
 set -uo pipefail
 
 MAX_ITERATIONS="${1:-10}"
 PROMISE="<promise>RALPH_DONE</promise>"
+BRANCH="${RALPH_BRANCH:-ralph/loop}"
+BASE_BRANCH="${RALPH_BASE_BRANCH:-main}"
 
 # Repo root = parent of this script's directory
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,9 +32,30 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
   echo "(Git history is the harness's memory and your rollback mechanism — don't skip it.)"
   exit 1
 }
+command -v gh >/dev/null 2>&1 || { echo "ERROR: 'gh' CLI not found in PATH."; exit 1; }
+gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated. Run: gh auth login"; exit 1; }
+git remote get-url origin >/dev/null 2>&1 || { echo "ERROR: no 'origin' remote configured."; exit 1; }
+
+# --- Branch setup ------------------------------------------------------------
+if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+  git checkout "$BRANCH"
+else
+  git checkout -b "$BRANCH"
+fi
+
+# Push the current commit and make sure a PR exists against BASE_BRANCH.
+sync_and_pr() {
+  git push -u origin "$BRANCH" || { echo "WARNING: push failed."; return 1; }
+  if ! gh pr view "$BRANCH" >/dev/null 2>&1; then
+    gh pr create --base "$BASE_BRANCH" --head "$BRANCH" \
+      --title "Ralph loop: $BRANCH" \
+      --body "Automated PR from the Ralph loop. Each commit is one PRD.md task — see PROGRESS.md for the running log of what was done, verified, and learned." \
+      || echo "WARNING: PR creation failed (may already exist under a different state)."
+  fi
+}
 
 echo "Ralph loop starting: max $MAX_ITERATIONS iterations."
-echo "Logs: $LOG_DIR | Stop: touch $STOP_FILE"
+echo "Branch: $BRANCH -> $BASE_BRANCH | Logs: $LOG_DIR | Stop: touch $STOP_FILE"
 echo
 
 for i in $(seq 1 "$MAX_ITERATIONS"); do
@@ -48,6 +75,8 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
 
   EXIT_CODE=${PIPESTATUS[1]}
   echo "--- iteration $i exit code: $EXIT_CODE ---"
+
+  sync_and_pr
 
   if grep -qF "$PROMISE" "$LOG_FILE"; then
     echo
