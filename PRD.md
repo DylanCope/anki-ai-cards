@@ -75,32 +75,32 @@ runs manually.
 
 ## Tasks
 
-- [ ] **1. Scaffold the repo.** `backend/`: `uv` project with FastAPI app
+- [x] **1. Scaffold the repo.** `backend/`: `uv` project with FastAPI app
   exposing `GET /health`, `pytest` configured with one trivial passing test.
   `frontend/`: Next.js + TypeScript + Tailwind scaffold with a placeholder
   homepage. Add `.env.example` listing all env vars from Requirements. Update
   `AGENTS.md`'s verification commands to `cd backend && uv run pytest` and
   `cd frontend && npm run build && npm run lint`. Verify: both commands pass.
 
-- [ ] **2. Persistence layer.** `backend/app/models.py`: SQLModel tables
+- [x] **2. Persistence layer.** `backend/app/models.py`: SQLModel tables
   `ConversationMessage`, `WorkflowSpec`, `ProcessingCursor`, `PendingCard`,
   `OAuthToken`. An `init_db()` creates tables at `DATABASE_PATH`. Tests
   round-trip a row through each table. Verify: `uv run pytest backend/tests/test_models.py` passes.
 
-- [ ] **3. AnkiConnect client.** `backend/app/clients/ankiconnect.py`: async
+- [x] **3. AnkiConnect client.** `backend/app/clients/ankiconnect.py`: async
   `invoke(action, **params)` wrapper over the AnkiConnect HTTP protocol
   (version 6), plus `list_note_type_names()`, `get_note_type_fields(name)`,
   `create_note(...)`, `sync()`. Raise a clear exception when AnkiConnect's
   JSON response has a non-null `error`. Tests mock the HTTP layer with
   `respx`, covering both success and the error-surfacing case. Verify: tests pass.
 
-- [ ] **4. ElevenLabs client.** `backend/app/clients/elevenlabs.py`:
+- [x] **4. ElevenLabs client.** `backend/app/clients/elevenlabs.py`:
   `generate_audio_options(text: str, n: int = 3) -> list[bytes]`, varying
   voice settings slightly per option. API key from `ELEVENLABS_API_KEY`.
   Tests mock the HTTP call and assert 3 distinct requests are made and 3
   byte payloads returned. Verify: tests pass.
 
-- [ ] **5. Google Docs client.** `backend/app/clients/google_docs.py`: OAuth
+- [x] **5. Google Docs client.** `backend/app/clients/google_docs.py`: OAuth
   helpers (`build_authorize_url`, `exchange_code_for_tokens`,
   `refresh_access_token`), `fetch_document(document_id, access_token) -> dict`
   (raw Docs API JSON via REST), and `flatten_runs(doc_json) -> list[dict]`
@@ -109,14 +109,14 @@ runs manually.
   Tests use a hand-written fixture Docs API response and assert red-colored
   spans are correctly identified. Verify: tests pass.
 
-- [ ] **6. Google OAuth + session auth.** FastAPI routes
+- [x] **6. Google OAuth + session auth.** FastAPI routes
   `/auth/google/login` and `/auth/google/callback`. Callback rejects any
   email other than `ALLOWED_EMAIL`, otherwise stores tokens and sets a signed
   session cookie. A `require_auth` dependency protects all other routes.
   Tests mock the token exchange and cover both the rejected and accepted
   email paths. Verify: tests pass.
 
-- [ ] **7. Claude agent core.** `backend/app/agent/`: tool schemas +
+- [x] **7. Claude agent core.** `backend/app/agent/`: tool schemas +
   dispatcher wiring tasks 3–5's clients as callable tools, a system prompt
   describing the agent's job (per Overview), and `run_turn(history, message)`
   driving the `anthropic` SDK's tool-use loop to completion. Tests mock the
@@ -124,18 +124,18 @@ runs manually.
   the dispatcher invokes the right underlying client function with the right
   arguments. Verify: tests pass.
 
-- [ ] **8. Workflow spec persistence + tools.** `save_workflow_spec`,
+- [x] **8. Workflow spec persistence + tools.** `save_workflow_spec`,
   `load_workflow_spec`, `list_workflow_specs` tools backed by the
   `WorkflowSpec` table from task 2; `run_turn` surfaces known specs at the
   start of a conversation so the agent can offer to reuse one. Tests cover
   save/load round-trip and listing. Verify: tests pass.
 
-- [ ] **9. Chat API.** `POST /api/chat` (send a message, get the agent's
+- [x] **9. Chat API.** `POST /api/chat` (send a message, get the agent's
   response plus any structured payloads — proposed cards, audio options — for
   the frontend to render) and `GET /api/chat/history`. Non-streaming JSON for
   v1. Tests use FastAPI's `TestClient` with the agent core mocked. Verify: tests pass.
 
-- [ ] **10. Frontend chat UI.** Next.js page: "Sign in with Google" button
+- [x] **10. Frontend chat UI.** Next.js page: "Sign in with Google" button
   redirecting to the backend login route; a chat thread that posts to
   `/api/chat` and renders responses, with dedicated components for a
   candidate-card payload (JP cloze, furigana, English, note, approve/edit)
@@ -143,7 +143,7 @@ runs manually.
   inline in the chat. Verify: `npm run build` and `npm run lint` pass; note
   in PROGRESS.md that appearance/UX needs your manual check in a browser.
 
-- [ ] **11. Headless Anki deployment config.** `fly.toml` + any Dockerfile
+- [x] **11. Headless Anki deployment config.** `fly.toml` + any Dockerfile
   needed for the `ankimcp/headless-anki` image as its own Fly app with a
   persistent volume. Document the one-time manual VNC login step to AnkiWeb
   in AGENTS.md. Add a small smoke-test script that calls AnkiConnect's
@@ -152,13 +152,13 @@ runs manually.
   running it against the real deployed instance is a manual step for you
   once the VNC login is done.
 
-- [ ] **12. Backend/frontend deployment config.** `fly.toml` for the
+- [x] **12. Backend/frontend deployment config.** `fly.toml` for the
   backend (env vars from Requirements wired as Fly secrets placeholders,
   `ANKICONNECT_URL` pointed at the Anki app's `.internal` address, SQLite
   volume mounted) and for the frontend. Verify: `fly config validate` (or
   equivalent structural check) passes on both configs. Do not run `fly deploy`.
 
-- [ ] **13. Manual end-to-end verification checklist.** Write
+- [x] **13. Manual end-to-end verification checklist.** Write
   `docs/manual_verification.md`: log in with Google, start a chat, point the
   agent at the real lesson doc, confirm it discovers your note type and
   fields, propose a card, generate audio, pick one, create the note, confirm

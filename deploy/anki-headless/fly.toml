@@ -1,0 +1,25 @@
+# Fly.io app config for the headless Anki + AnkiConnect instance.
+#
+# This runs the prebuilt `ankimcp/headless-anki` image (no code from this
+# repo) as its own Fly app, logged into Dylan's real AnkiWeb account via a
+# one-time manual VNC step (documented in AGENTS.md — the loop must never
+# perform that step itself). The backend app reaches it over Fly's private
+# 6PN network at `<app>.internal:8765`; deliberately no public services are
+# declared here, so AnkiConnect is never reachable from the public internet.
+#
+# Deploying this is a manual step for Dylan (`fly deploy --config
+# deploy/anki-headless/fly.toml`) — the loop must never run `fly deploy`.
+
+app = "anki-ai-cards-anki"
+primary_region = "iad"
+
+[build]
+  image = "ghcr.io/ankimcp/headless-anki:x11-vnc-v1.0.0"
+
+[[mounts]]
+  source = "anki_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
