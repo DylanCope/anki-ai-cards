@@ -14,6 +14,104 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 12: Backend/frontend deployment config
+- Did: Added `backend/Dockerfile` (python:3.12-slim, `uv sync --frozen
+  --no-dev` for a runtime-only venv, copies `app/`+`scripts/`, runs
+  `uvicorn app.main:app`) and `backend/fly.toml` (app
+  `anki-ai-cards-backend`, `[http_service]` on internal port 8000 with a
+  `/health` check, `[[mounts]]` for a `backend_data` volume at `/data`,
+  `[env]` setting `DATABASE_PATH=/data/anki-ai-cards.db` and
+  `ANKICONNECT_URL=http://anki-ai-cards-anki.internal:8765` — i.e. task 11's
+  headless Anki app's private 6PN address, not a public URL). Added
+  `frontend/Dockerfile` (multi-stage `node:24-slim`: `npm ci` + `npm run
+  build` in a build stage, then copies only `.next/standalone` +
+  `.next/static` + `public` into a slim runtime stage, `CMD ["node",
+  "server.js"]`) and `frontend/fly.toml` (app `anki-ai-cards-frontend`,
+  `[http_service]` on internal port 3000, `[env]` setting
+  `BACKEND_URL=http://anki-ai-cards-backend.internal:8000` so the
+  server-side rewrite proxy in `next.config.ts`, task 10, talks to the
+  backend over the private network rather than a public URL). Added
+  `output: "standalone"` to `frontend/next.config.ts` — required for the
+  Dockerfile's `.next/standalone` copy step to exist at all; without it
+  `next build` only produces the full `.next/` tree meant for `next start`,
+  not a slim deployable bundle. Neither fly.toml declares any of the 6
+  secret env vars (`ANTHROPIC_API_KEY` etc.) — documented in AGENTS.md
+  (new "Backend/frontend deployment" section) that those go in via `fly
+  secrets set`, per the PRD's "wired as Fly secrets placeholders" wording,
+  which reads as "the config acknowledges secrets exist and are supplied
+  out-of-band," not "fly.toml contains a `SECRET_NAME=` literal."
+- Verified: Installed `flyctl` (not preinstalled in this sandbox — `curl -L
+  https://fly.io/install.sh | bash` to `~/.fly/bin/flyctl`, unlike `npm`'s
+  registry domain this install script's domain resolved fine, no DNS-proxy
+  workaround needed). Discovered `flyctl config validate` needs *some*
+  `FLY_API_TOKEN` to run at all, but doesn't need it to be a real/valid
+  token — `FLY_API_TOKEN=bogus flyctl config validate --strict --config
+  <path>` prints a harmless `Metrics send issue: ... 401` warning (that's
+  just telemetry) but still runs the actual config schema check and reports
+  "Configuration is valid" / exits 0. Ran this (with `--strict`, which also
+  checks for unrecognized keys) against both new configs and, as a
+  regression check, against task 11's existing
+  `deploy/anki-headless/fly.toml` — all three pass. Documented this
+  bogus-token trick in AGENTS.md's new "flyctl in this sandbox" section so
+  future tasks touching any fly.toml don't have to rediscover it.
+  Went further than config-syntax validation since a valid fly.toml
+  pointing at a broken Dockerfile would still "pass" that check: copied
+  `backend/` to a scratch dir and ran the Dockerfile's actual `uv sync
+  --frozen --no-dev` there, then imported `app.main` under that stripped-down
+  (no dev deps) venv to confirm it still works. For the frontend, ran the
+  real `npm run build` (already required by AGENTS.md) with the new
+  `output: "standalone"` config, confirmed `.next/standalone/server.js` +
+  `.next/static` + `public` exist exactly where the Dockerfile's `COPY
+  --from=build` lines expect them, then actually ran `node
+  .next/standalone/server.js` on a scratch port and `curl`ed it — got a
+  real 200 from the prerendered homepage through the standalone server, not
+  just "the file exists." Also reran `cd backend && uv run pytest` (64
+  passed) and `cd frontend && npm run build && npm run lint` (both clean)
+  to confirm the `next.config.ts` change didn't break anything.
+  **Not verified (real Docker build):** the Docker daemon isn't running in
+  this sandbox and there's no passwordless sudo to start it
+  (`Cannot connect to the Docker daemon at unix:///var/run/docker.sock`,
+  `sudo service docker start` prompts for a password this session doesn't
+  have) — couldn't run an actual `docker build`. The scratch-dir `uv
+  sync`/`node .next/standalone/server.js` checks above are a substitute that
+  exercises the same commands the Dockerfiles run, just outside a container;
+  flagging a real `docker build -f backend/Dockerfile backend` / `docker
+  build -f frontend/Dockerfile frontend` as a good manual sanity check for
+  Dylan before the first real `fly deploy`, alongside the deploy itself
+  (which the loop must never run).
+- Learned:
+  - **`flyctl config validate` only needs *a* `FLY_API_TOKEN` env var to be
+    set, not a real/authenticated one** — it fails with "no access token
+    available" if the var is completely unset, but any string works well
+    enough to run the actual validation logic (only the separate metrics
+    telemetry call gets a 401, which is just a printed warning, not a
+    failure). This resolves task 11's PROGRESS note that a future task would
+    "need `flyctl` installed to actually run that check" — it needed
+    installing (not preinstalled) but not real credentials.
+  - `next.config.ts`'s `output: "standalone"` didn't exist before this task
+    — task 10 only added the `rewrites()` block. Adding `standalone` changes
+    what `npm run build` produces (an extra `.next/standalone/` tree
+    alongside the normal `.next/`) but doesn't change build/lint pass/fail,
+    so it's safe for any deployment target, not just Docker/Fly.
+  - Followed the existing `deploy/anki-headless/fly.toml` convention of
+    putting the `[env]` var that crosses app boundaries
+    (`ANKICONNECT_URL`/`BACKEND_URL`) directly in `fly.toml` rather than as a
+    secret, since `.internal` addresses aren't sensitive (they're only
+    reachable from inside the same Fly org's private network anyway) —
+    consistent with why `deploy/anki-headless/fly.toml` has no secrets at
+    all.
+  - Chose `backend/fly.toml`/`backend/Dockerfile` and
+    `frontend/fly.toml`/`frontend/Dockerfile` living inside their own app
+    directories (not a new `deploy/backend/`, `deploy/frontend/` alongside
+    task 11's `deploy/anki-headless/`) since, unlike the headless Anki app
+    (an external prebuilt image with zero source in this repo), these two
+    apps' Dockerfiles build *this repo's own code* — the standard Fly
+    convention is `fly.toml` + `Dockerfile` next to the app they build, and
+    `deploy/anki-headless/` was a deliberate exception for exactly the
+    "no source, just a config for someone else's image" case.
+
+---
+
 ## 2026-07-03 — Task 11: Headless Anki deployment config
 - Did: Added `deploy/anki-headless/fly.toml` for the `ankimcp/headless-anki`
   image (`ghcr.io/ankimcp/headless-anki:x11-vnc-v1.0.0`, researched via

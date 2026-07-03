@@ -152,7 +152,7 @@ runs manually.
   running it against the real deployed instance is a manual step for you
   once the VNC login is done.
 
-- [ ] **12. Backend/frontend deployment config.** `fly.toml` for the
+- [x] **12. Backend/frontend deployment config.** `fly.toml` for the
   backend (env vars from Requirements wired as Fly secrets placeholders,
   `ANKICONNECT_URL` pointed at the Anki app's `.internal` address, SQLite
   volume mounted) and for the frontend. Verify: `fly config validate` (or

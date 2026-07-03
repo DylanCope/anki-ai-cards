@@ -1,0 +1,26 @@
+# Fly.io app config for the Next.js frontend (PRD task 12). Builds from the
+# Dockerfile in this directory. Deploying this (`fly deploy --config
+# frontend/fly.toml`) is a manual step for Dylan — the loop must never run it.
+
+app = "anki-ai-cards-frontend"
+primary_region = "iad"
+
+[build]
+
+[env]
+  # Points the server-side rewrite proxy (next.config.ts) at the backend
+  # app's private 6PN address, not a public URL — keeps the session cookie
+  # same-origin from the browser's point of view (see next.config.ts comment).
+  BACKEND_URL = "http://anki-ai-cards-backend.internal:8000"
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -8,6 +8,10 @@ import type { NextConfig } from "next";
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
 
 const nextConfig: NextConfig = {
+  // Standalone output produces a minimal `.next/standalone` server bundle
+  // (only the deps actually used at runtime) for the Docker image built by
+  // frontend/Dockerfile — see PRD task 12.
+  output: "standalone",
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${BACKEND_URL}/api/:path*` },

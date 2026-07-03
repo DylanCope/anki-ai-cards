@@ -47,6 +47,32 @@ deploy/anki-headless/fly.toml` has been run manually:
    in another terminal (or from another Fly app on the same private network,
    pointed at `anki-ai-cards-anki.internal:8765` directly, no proxy needed).
 
+## Backend/frontend deployment (manual steps for Dylan)
+
+`backend/fly.toml` + `backend/Dockerfile` and `frontend/fly.toml` +
+`frontend/Dockerfile` build/deploy the two main apps. Neither fly.toml
+declares secrets (`ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL`,
+`SESSION_SECRET_KEY`) — push those once via `fly secrets set -a
+anki-ai-cards-backend KEY=value` before the first `fly deploy --config
+backend/fly.toml`. `backend/fly.toml`'s `[env]` points `ANKICONNECT_URL` at
+the headless Anki app's private `.internal` address and mounts a volume for
+`DATABASE_PATH`. `frontend/fly.toml`'s `[env]` points `BACKEND_URL` at the
+backend app's private `.internal` address (same reasoning as
+`next.config.ts`'s rewrite proxy — see that file's comment). The loop must
+never run `fly deploy` for either app — only Dylan does, manually.
+
+## flyctl in this sandbox
+
+`flyctl` is installed at `~/.fly/bin/flyctl` (not on PATH by default — add
+`~/.fly/bin` to PATH or invoke it by full path). There's no real Fly account
+logged in here, but `flyctl config validate --config <path>` only needs *any*
+`FLY_API_TOKEN` value (even a bogus one) to run its local schema check — it
+prints a `Metrics send issue: ... 401` warning (harmless, ignore it) but
+still validates the config and prints "Configuration is valid" / exits 0.
+Use this to verify any new/changed `fly.toml`, e.g.:
+`FLY_API_TOKEN=bogus ~/.fly/bin/flyctl config validate --strict --config backend/fly.toml`.
+
 ## Known constraints
 
 - Two distinct agents exist in this project: the Ralph loop (builds this
