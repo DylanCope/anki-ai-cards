@@ -75,7 +75,7 @@ runs manually.
 
 ## Tasks
 
-- [ ] **1. Scaffold the repo.** `backend/`: `uv` project with FastAPI app
+- [x] **1. Scaffold the repo.** `backend/`: `uv` project with FastAPI app
   exposing `GET /health`, `pytest` configured with one trivial passing test.
   `frontend/`: Next.js + TypeScript + Tailwind scaffold with a placeholder
   homepage. Add `.env.example` listing all env vars from Requirements. Update

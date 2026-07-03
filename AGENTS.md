@@ -36,3 +36,12 @@ PROGRESS.md are the only "memory" between iterations.
   `ALLOWED_EMAIL`. Don't add multi-user/auth-provider abstractions.
 - UI appearance/UX correctness can't be verified by the loop — flag it in
   PROGRESS.md for Dylan's manual review instead of claiming it "works."
+- **Environment DNS bug:** this WSL2 sandbox's DNS proxy corrupts responses
+  for some domains (e.g. `registry.npmjs.org`), causing `npm`/`npx`/`curl` to
+  hang forever (glibc retries over TCP after a bad UDP answer; the proxy
+  doesn't answer TCP DNS). Workaround already applied: a local CONNECT proxy
+  at `~/.local/share/anki-ai-cards/connect_proxy.py` (does its own IPv4-only
+  resolution) is registered in `~/.npmrc` as `proxy`/`https-proxy`. If `npm`
+  commands hang again, run `~/.local/bin/ensure-npm-proxy.sh` to restart it —
+  it's a background process that doesn't survive a VM restart. This is a
+  sandbox quirk, not a project dependency; nothing to fix in the repo.
