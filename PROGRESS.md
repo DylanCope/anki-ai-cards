@@ -14,6 +14,69 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 6: Google OAuth + session auth
+- Did: Added `backend/app/auth.py` (`create_session_cookie`/`verify_session_cookie`
+  using `itsdangerous.URLSafeTimedSerializer`, keyed by a new `SESSION_SECRET_KEY`
+  env var, plus a `require_auth(request) -> str` FastAPI dependency that reads
+  the `session` cookie, verifies it, and raises `HTTPException(401)` if
+  missing/invalid/expired) and `backend/app/api/auth.py` (`APIRouter` at
+  `/auth/google`, routes `/login` and `/callback`). `/login` generates a random
+  `state` via `secrets.token_urlsafe`, redirects to
+  `google_docs.build_authorize_url`, and stores `state` in a short-lived
+  `oauth_state` cookie (10 min, httponly) rather than server-side storage —
+  simplest CSRF protection for a single-user app with no pre-login session.
+  `/callback` verifies `state` against that cookie, calls
+  `exchange_code_for_tokens` + a new `google_docs.fetch_userinfo(access_token)`
+  (hits `https://openidconnect.googleapis.com/v1/userinfo`, added to
+  `app/clients/google_docs.py` since it's another plain Google HTTP call) to
+  get the email, rejects with 403 if it isn't `ALLOWED_EMAIL`, otherwise
+  upserts an `OAuthToken` row (by `email`, which is unique/indexed) and
+  redirects to `/` with a signed `session` cookie (30-day max age). Wired
+  `auth_router` into `app/main.py`. Added `itsdangerous` as a backend
+  dependency (`uv add`, now in pyproject.toml) and `SESSION_SECRET_KEY` to
+  `.env.example`. Added `backend/tests/test_auth.py`: login sets the state
+  cookie and redirects to Google; callback with a mocked (respx) token
+  exchange + userinfo response covers both the allowed-email-accepted path
+  (session cookie set, `OAuthToken` row created) and the wrong-email-rejected
+  path (403, no session cookie, no DB row); a mismatched/missing `state`
+  returns 400; `require_auth` is tested directly against a small throwaway
+  `FastAPI()` test app (not `app/main.py`) with a `Depends(require_auth)`
+  route, covering missing cookie (401), valid cookie (200 + email), and a
+  tampered/garbage cookie (401).
+- Verified: `cd backend && uv run pytest` → 27 passed (20 pre-existing + 7 new
+  auth tests). Also ran `uv run pytest tests/test_auth.py -v` in isolation, all
+  green.
+- Learned:
+  - No `/api/*` protected routes exist yet (tasks 7–9 add them) — `require_auth`
+    exists and is tested but isn't attached to any route in `main.py` yet aside
+    from itself not being used anywhere. `/health` deliberately stays
+    unauthenticated (infra health checks shouldn't need a session). **Future
+    tasks adding real routes (chat API, task 9) must add
+    `Depends(require_auth)` explicitly** — nothing enforces this automatically,
+    there's no global middleware gating "all other routes."
+  - Used Google's `openidconnect.googleapis.com/v1/userinfo` endpoint (Bearer
+    access token) to get the email rather than decoding the `id_token` JWT
+    locally — avoids needing a JWT/JWKS-verification dependency for a single
+    call; token exchange already returns `id_token` in the response if a
+    future task wants to switch to that instead.
+  - State CSRF cookie is separate from the session cookie (`oauth_state` vs
+    `session`) and is deleted on successful callback via
+    `response.delete_cookie`. Both cookies are `httponly`+`samesite=lax`; not
+    marked `secure` (Fly.io terminates TLS at the edge, and marking `secure`
+    would break local `http://localhost` testing) — worth revisiting once
+    task 12 sets up the real Fly deployment if cookies aren't arriving.
+  - `request.url_for("google_callback")` (used to build the OAuth
+    `redirect_uri` consistently between `/login` and `/callback`) requires the
+    callback route to have an explicit `name="google_callback"` in its
+    decorator — FastAPI's default name-from-function-name works fine too, but
+    being explicit avoids breakage if the function is ever renamed.
+  - `respx.mock` tests here are plain `def` (not `async def`) because they go
+    through `TestClient` (sync interface) even though the routes themselves
+    are `async def` — matches how `test_health.py`/other route-level tests
+    are written; only the client-module-level tests in
+    `test_google_docs.py`/`test_ankiconnect.py` that call client functions
+    directly need `async def`.
+
 ## 2026-07-03 — Task 5: Google Docs client
 - Did: Added `backend/app/clients/google_docs.py` with OAuth helpers
   (`build_authorize_url(redirect_uri, state)`, `exchange_code_for_tokens(code,

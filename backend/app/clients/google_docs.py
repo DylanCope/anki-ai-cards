@@ -14,6 +14,7 @@ import httpx
 AUTH_BASE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 DOCS_API_BASE_URL = "https://docs.googleapis.com/v1"
+USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 SCOPES = "openid email https://www.googleapis.com/auth/documents.readonly"
 
@@ -68,6 +69,21 @@ async def refresh_access_token(refresh_token: str) -> dict:
                 "client_secret": _client_secret(),
                 "grant_type": "refresh_token",
             },
+        )
+    response.raise_for_status()
+    return response.json()
+
+
+async def fetch_userinfo(access_token: str) -> dict:
+    """Fetch the authenticated Google account's profile.
+
+    Used by the auth callback (`app/api/auth.py`) to read the account's email
+    and check it against `ALLOWED_EMAIL` before ever issuing a session.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     response.raise_for_status()
     return response.json()

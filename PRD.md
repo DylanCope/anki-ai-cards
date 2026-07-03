@@ -109,7 +109,7 @@ runs manually.
   Tests use a hand-written fixture Docs API response and assert red-colored
   spans are correctly identified. Verify: tests pass.
 
-- [ ] **6. Google OAuth + session auth.** FastAPI routes
+- [x] **6. Google OAuth + session auth.** FastAPI routes
   `/auth/google/login` and `/auth/google/callback`. Callback rejects any
   email other than `ALLOWED_EMAIL`, otherwise stores tokens and sets a signed
   session cookie. A `require_auth` dependency protects all other routes.
