@@ -14,6 +14,96 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 9: Chat API
+- Did: Added `backend/app/api/chat.py`, a router at `/api/chat` with
+  `POST /api/chat` (`{"message": str}` in, `{"reply": str, "payloads":
+  [...]}` out) and `GET /api/chat/history` (`[{"role", "text"}, ...]`), both
+  behind `Depends(require_auth)`. Wired into `app/main.py`.
+  `POST /api/chat` loads every persisted `ConversationMessage` row, decodes
+  each row's JSON `content` back into the shape `run_turn` expects, resolves
+  a fresh Google access token (see below), calls `agent.core.run_turn`, then
+  persists only the *new* tail of the returned history (`serialized[len(prior_rows):]`)
+  as new rows — so each turn appends rather than rewriting the whole
+  conversation. Content blocks in the returned history can be either real
+  `anthropic` SDK objects (fresh from `run_turn`, e.g. `TextBlock`/
+  `ToolUseBlock`) or plain dicts (reconstructed from a previous turn's stored
+  JSON) — `_content_block_to_dict`/`_serialize_message` normalize both to
+  plain JSON-able dicts before anything touches them, so persistence and
+  payload-extraction only ever deal with one shape.
+  Structured payloads for the frontend are extracted from this turn's new
+  messages only (not the whole history) by matching `tool_use` blocks to
+  their `tool_result` by `tool_use_id`: a `generate_audio` call becomes
+  `{"type": "audio_options", "text", "options": [...]}` and a
+  `create_anki_note` call becomes `{"type": "card", "deck_name",
+  "model_name", "fields", "tags", "note_id"}`. `GET /api/chat/history`
+  re-reads all rows and keeps only messages with actual text content
+  (skipping pure tool_use/tool_result plumbing turns), producing a plain
+  chat transcript.
+  Also added `_get_access_token(email)`: reads the `OAuthToken` row, and if
+  `expires_at` has passed, calls `google_docs.refresh_access_token` (task 5)
+  and updates the row before returning — needed because a chat session can
+  easily outlive a 1-hour Google access token, and `fetch_google_doc` would
+  otherwise start failing mid-conversation.
+  Added `backend/tests/test_chat.py` (8 tests): auth-required on both routes;
+  a full turn's reply is returned and both new messages persisted correctly;
+  a second call reuses the persisted history (asserted via a captured
+  `history` arg) and only persists the incremental new rows (4 total after 2
+  turns, not 8); `audio_options` and `card` payload extraction from
+  synthetic tool_use/tool_result histories; expired-token refresh updates
+  the DB and is actually invoked; the history endpoint returns only
+  human-readable turns.
+- Verified: `cd backend && uv run pytest` → 58 passed (50 pre-existing + 8
+  new). Ran full suite twice, both green.
+- Learned:
+  - **SQLite round-trips `datetime` columns as naive, even when you store a
+    tz-aware value.** `OAuthToken.expires_at` is written as
+    `datetime.now(timezone.utc) + timedelta(...)` (tz-aware) in task 6's
+    OAuth callback, but SQLModel/SQLAlchemy's default `DateTime` column type
+    over SQLite silently drops the tzinfo — reading the row back gives a
+    *naive* datetime. Comparing that naive value against a fresh
+    `datetime.now(timezone.utc)` raises `TypeError: can't compare
+    offset-naive and offset-aware datetimes`. Fixed by comparing against
+    `datetime.now(timezone.utc).replace(tzinfo=None)` instead (a naive UTC
+    value) in `_get_access_token`. **Any future code comparing against a
+    datetime column read back from the DB (not one just constructed
+    in-process) needs this same naive-vs-aware care** — this wasn't caught
+    by task 6's tests because that code only ever *writes* `expires_at`,
+    never reads it back for a comparison.
+  - The PRD's task 9 wording ("structured payloads — proposed cards, audio
+    options") reads as if there's a pre-creation "candidate card" the agent
+    proposes and Dylan approves/edits before it's created — but the current
+    tool set (tasks 7/8) has no `propose_card`-style tool, only
+    `create_anki_note`, which actually inserts into Anki immediately. Rather
+    than invent a new tool (out of scope for this task and not requested by
+    the PRD's tool list), the `"card"` payload here reports a note *after*
+    creation (fields, deck, model, note_id echoed back from the tool call
+    that already ran). The "propose, then approve/edit, then create" flow
+    Dylan wants is presumably meant to happen conversationally — the agent's
+    text reply describes the candidate card and asks Dylan to confirm in a
+    follow-up chat message before it calls `create_anki_note` — rather than
+    via a dedicated UI approval widget wired to an uncommitted tool call.
+    **If task 10's frontend work (or Dylan) wants true pre-creation
+    approve/edit, that needs a new tool (e.g. `propose_card`) added to task
+    7/8's tool schema first** — flagging here so that's a deliberate
+    decision, not a gap discovered late.
+  - `ConversationMessage.content` stores `json.dumps(content)` uniformly —
+    even the very first user turn, whose `content` is a plain `str` per
+    `run_turn`'s `{"role": "user", "content": message}` — so decoding is
+    always a single `json.loads(row.content)` regardless of whether the
+    original content was a string or a list of blocks, no type-sniffing
+    needed at read time.
+  - Kept persistence as "reload full history every request, append only the
+    new tail" rather than trying to cache `run_turn`'s state in memory
+    across requests — simplest correct thing for a single-user, non-streaming
+    v1 API per the PRD, and DB round-trip cost is irrelevant at this scale
+    (one conversation, one user).
+  - Didn't add pagination/limits to `GET /api/chat/history` or a way to
+    start a *new* conversation (the schema has no "conversation id" concept,
+    `ConversationMessage` is one global append-only log) — the PRD doesn't
+    mention multiple conversations and task 2's schema was already built
+    without one; flagging as a possible future task if Dylan wants to reset
+    or branch a conversation, not fixing now.
+
 ## 2026-07-03 — Task 8: Workflow spec persistence + tools
 - Did: Added `backend/app/agent/workflow_specs.py` — plain sync SQLModel
   functions over the task 2 `WorkflowSpec` table: `save_workflow_spec(name,

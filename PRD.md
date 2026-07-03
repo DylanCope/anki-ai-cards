@@ -130,7 +130,7 @@ runs manually.
   start of a conversation so the agent can offer to reuse one. Tests cover
   save/load round-trip and listing. Verify: tests pass.
 
-- [ ] **9. Chat API.** `POST /api/chat` (send a message, get the agent's
+- [x] **9. Chat API.** `POST /api/chat` (send a message, get the agent's
   response plus any structured payloads — proposed cards, audio options — for
   the frontend to render) and `GET /api/chat/history`. Non-streaming JSON for
   v1. Tests use FastAPI's `TestClient` with the agent core mocked. Verify: tests pass.
