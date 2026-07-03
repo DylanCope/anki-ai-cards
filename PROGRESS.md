@@ -14,6 +14,69 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 13: Manual end-to-end verification checklist
+- Did: Added `docs/manual_verification.md`, an 8-section manual checklist
+  (sign-in/allowlist rejection, starting a chat and pointing at the real
+  lesson doc, live note-type/field discovery, proposing a card, generating
+  and picking audio, creating the note + verifying in Anki via VNC, syncing
+  and checking the phone/desktop app, and reusing a saved workflow spec in a
+  second session) plus a closing "If something doesn't match" note
+  distinguishing "doc is stale, update it" from "real bug, file a new PRD
+  task." This is the last PRD task, so every checklist step was written by
+  actually reading the real task 1-12 code (not just re-paraphrasing the
+  PRD) to make sure it matches current behavior exactly: `backend/app/api/
+  auth.py` for the login/callback/`ALLOWED_EMAIL` flow, `backend/app/agent/
+  {prompts,tools,core}.py` for the actual tool names
+  (`fetch_google_doc`/`list_anki_note_types`/`get_anki_note_type_fields`/
+  `generate_audio`/`create_anki_note`/`sync_anki`/`save_workflow_spec`/
+  `load_workflow_spec`/`list_workflow_specs`) and the fact there's no
+  `propose_card` tool (task 9's PROGRESS entry — proposal/confirmation is
+  conversational, not a dedicated API), `backend/app/api/chat.py` for what
+  does/doesn't persist across a reload (payloads don't, per task 10's
+  PROGRESS entry — called this out explicitly in step 2 so Dylan doesn't
+  think it's a new bug), and the actual frontend components
+  (`SignIn.tsx`/`AudioOptionsCard.tsx`/`CardPayloadCard.tsx`) for exact
+  button labels ("Sign in with Google", "Pick", "Request a change") and
+  card copy ("Card added to Anki") so the checklist's UI descriptions won't
+  drift from what's actually rendered.
+- Verified: Per the task's own Verify clause, "the document exists and
+  accurately reflects the built system's actual flow" is a cross-check
+  against tasks 1-12's code, which is what the writing process above did
+  (reading `main.py`, `api/auth.py`, `api/chat.py`, `agent/{prompts,tools,
+  core}.py`, and every referenced frontend component directly rather than
+  trusting PROGRESS.md summaries alone). Also reran both objective
+  verification commands to confirm this docs-only change didn't regress
+  anything: `cd backend && uv run pytest` → 64 passed; `cd frontend && npm
+  run build && npm run lint` → build succeeds, lint clean.
+  **Not verified (explicitly Dylan's manual job per the task):** actually
+  running the checklist itself against a real deployed instance, a real
+  Google account, a real lesson doc, and a real Anki collection — the loop
+  has never had access to any of those (per AGENTS.md, no real network
+  calls to Google/Anthropic/ElevenLabs/AnkiConnect from the loop, and no
+  `fly deploy`/VNC login), so there was no way to execute the checklist,
+  only to verify it's an accurate description of what running it *should*
+  do.
+- Learned:
+  - This was the final unchecked PRD task — every task in PRD.md's Tasks
+    section is now `[x]`. Per the loop's own completion rule, this
+    iteration ends with the `RALPH_DONE` sentinel below rather than picking
+    a new task.
+  - Deliberately did **not** invent a mock/stub end-to-end test harness to
+    "verify" this checklist automatically — the task's Verify clause is
+    explicit that running it is manual, and the PRD's Out of scope section
+    already rules out the loop performing OAuth consent/VNC logins/
+    `fly deploy`, which is most of what the checklist exercises. Faking a
+    stand-in verification here would misrepresent what was actually
+    checked.
+  - If a future change adds real pre-creation card approval (the
+    `propose_card`-style tool flagged as a possible gap in task 9's
+    PROGRESS entry) or persists payloads across reload (flagged in task
+    10's), this checklist's steps 2, 4, and 6 will need a small rewrite —
+    they currently describe the current, conversational-only behavior as
+    correct, not as a placeholder.
+
+---
+
 ## 2026-07-03 — Task 12: Backend/frontend deployment config
 - Did: Added `backend/Dockerfile` (python:3.12-slim, `uv sync --frozen
   --no-dev` for a runtime-only venv, copies `app/`+`scripts/`, runs

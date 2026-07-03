@@ -158,7 +158,7 @@ runs manually.
   volume mounted) and for the frontend. Verify: `fly config validate` (or
   equivalent structural check) passes on both configs. Do not run `fly deploy`.
 
-- [ ] **13. Manual end-to-end verification checklist.** Write
+- [x] **13. Manual end-to-end verification checklist.** Write
   `docs/manual_verification.md`: log in with Google, start a chat, point the
   agent at the real lesson doc, confirm it discovers your note type and
   fields, propose a card, generate audio, pick one, create the note, confirm
