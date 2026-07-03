@@ -18,13 +18,13 @@ def _base_url() -> str:
     return os.environ["ANKICONNECT_URL"]
 
 
-async def invoke(action: str, **params: object) -> object:
+async def invoke(action: str, *, base_url: str | None = None, **params: object) -> object:
     payload: dict[str, object] = {"action": action, "version": 6}
     if params:
         payload["params"] = params
 
     async with httpx.AsyncClient() as client:
-        response = await client.post(_base_url(), json=payload)
+        response = await client.post(base_url or _base_url(), json=payload)
     response.raise_for_status()
     body = response.json()
 

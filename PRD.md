@@ -143,7 +143,7 @@ runs manually.
   inline in the chat. Verify: `npm run build` and `npm run lint` pass; note
   in PROGRESS.md that appearance/UX needs your manual check in a browser.
 
-- [ ] **11. Headless Anki deployment config.** `fly.toml` + any Dockerfile
+- [x] **11. Headless Anki deployment config.** `fly.toml` + any Dockerfile
   needed for the `ankimcp/headless-anki` image as its own Fly app with a
   persistent volume. Document the one-time manual VNC login step to AnkiWeb
   in AGENTS.md. Add a small smoke-test script that calls AnkiConnect's

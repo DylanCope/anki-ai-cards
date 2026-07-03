@@ -14,6 +14,108 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 11: Headless Anki deployment config
+- Did: Added `deploy/anki-headless/fly.toml` for the `ankimcp/headless-anki`
+  image (`ghcr.io/ankimcp/headless-anki:x11-vnc-v1.0.0`, researched via
+  WebSearch/WebFetch of the `ankimcp/headless-anki` GitHub repo since this
+  image isn't part of this codebase) — deliberately declares **no**
+  `[[services]]`/public ports: AnkiConnect (port 8765 inside the container)
+  is reached only via Fly's private 6PN network at
+  `anki-ai-cards-anki.internal:8765`, and VNC (port 5900, the image's
+  documented VNC port alongside 8765/AnkiConnect and 3141/MCP server) is
+  reached on-demand via `fly proxy 5900 -a anki-ai-cards-anki` rather than
+  ever being exposed publicly — `fly proxy` tunnels straight to a Fly app's
+  private-network port without needing a `[[services]]` block. `[[mounts]]`
+  persists the Anki profile at `/data` (the path used by the image's own
+  `x11-vnc/docker-compose.yaml` example, `./data:/data`).
+  Documented the one-time manual VNC→AnkiWeb login step in AGENTS.md (new
+  "Headless Anki deployment" section, before "Known constraints"): `fly
+  proxy 5900 -a anki-ai-cards-anki`, connect a VNC client to `localhost:5900`
+  (image has no VNC auth — the private tunnel is the only access control),
+  sign into AnkiWeb inside Anki's GUI, and verify with the new smoke-test
+  script over another `fly proxy 8765 -a anki-ai-cards-anki` tunnel. Made
+  clear the loop must never run `fly deploy` or perform the login itself —
+  only Dylan does, manually.
+  Added the smoke-test script: `backend/scripts/smoke_test_ankiconnect.py`
+  (new `backend/scripts/` package, `__init__.py` added) — `check_ankiconnect
+  (url)` calls AnkiConnect's `version` action against a caller-supplied URL
+  and returns the reported protocol version (or raises); `main(argv)` is a
+  CLI wrapper (`--url`, falling back to `$ANKICONNECT_URL` if unset) that
+  prints `ok: ...`/exits 0 on success or prints `error: ...` to stderr/exits
+  1 on any failure (unreachable host, AnkiConnect's own `error` field, or no
+  URL available at all). Run as `uv run python -m
+  scripts.smoke_test_ankiconnect --url <url>` from `backend/` (needs `-m`,
+  not a bare `python scripts/smoke_test_ankiconnect.py`, so `app` is
+  importable — see Learned).
+  To let the script pass a URL without touching `ANKICONNECT_URL` env state,
+  gave `ankiconnect.invoke()` (task 3) a new keyword-only `base_url: str |
+  None = None` param (`base_url or _base_url()`) — fully backward compatible,
+  every existing caller (task 3's `list_note_type_names`/etc., task 7's
+  agent tools) still omits it and falls through to the existing
+  `ANKICONNECT_URL`-env-var lookup unchanged.
+  Added `backend/tests/test_smoke_test_ankiconnect.py` (6 tests, all via
+  `respx.mock` against a stub URL, no real network): `check_ankiconnect`
+  returns the version on success; `main` prints `ok`/returns 0 on success;
+  `main` prints `error`/returns 1 on a connection failure (`httpx.ConnectError`
+  via respx `side_effect`) and on an AnkiConnect-reported `error` field;
+  `main` returns 1 with no `--url` and no env var set; `main` falls back to
+  `$ANKICONNECT_URL` when `--url` is omitted.
+- Verified: `cd backend && uv run pytest` → 64 passed (58 pre-existing + 6
+  new smoke-test-script tests). Ran full suite twice, both green. Also ran
+  the script directly by hand against a deliberately-unreachable address
+  (`uv run python -m scripts.smoke_test_ankiconnect --url http://127.0.0.1:1`)
+  and confirmed it prints the expected `error: ... not reachable` message and
+  exits 1 — this exercises the *real* httpx connection-failure path, not
+  just the respx-mocked one in the test suite.
+  **Not verified (per the task's own Verify clause — this is explicitly
+  Dylan's manual step):** running the script against the real deployed
+  headless Anki instance, `fly deploy`-ing `deploy/anki-headless/fly.toml`,
+  or the VNC AnkiWeb login. `fly config validate` was also not run here —
+  `flyctl` isn't installed in this sandbox and task 11's Verify clause
+  doesn't require it (task 12's does, for the backend/frontend configs);
+  flagging that whoever does task 12 will need `flyctl` installed to
+  actually run that check, or an equivalent structural check that doesn't
+  need the binary.
+- Learned:
+  - **`ankimcp/headless-anki` (the Docker image, not part of this repo) has
+    no docker-compose/env-var docs in its rendered README/CLAUDE.md** —
+    WebFetch on those pages came back mostly "not documented here." Had to
+    fall back to fetching the actual `x11-vnc/docker-compose.yaml` file from
+    the repo (via `raw.githubusercontent.com`) to get the real port list
+    (5900 VNC, 8765 AnkiConnect, 3141 MCP server) and volume path (`/data`).
+    **If a future task needs more detail about this image (e.g. task 12
+    touching this same deploy, or if the login step in AGENTS.md doesn't
+    work as described), go straight to that repo's actual Dockerfile/compose
+    files under `x11-vnc/`, `qt-vnc/`, `base/`, not the README** — the README
+    undersells what's actually configurable.
+  - `fly proxy <port> -a <app>` (tunnels to a Fly app's private-network port
+    without any `[[services]]` declaration) is why `deploy/anki-headless/fly.toml`
+    has **zero** `[[services]]`/`[http_service]` blocks — this was a
+    deliberate choice to keep AnkiConnect and VNC off the public internet
+    entirely, matching the PRD's "backend reaches it over Fly's private
+    networking" requirement literally (not just "AnkiConnect isn't
+    public-by-default", but "there is no public port at all"). If task 12 or
+    Dylan finds `fly proxy` insufficient in practice (e.g. wanting a
+    always-on VNC without running `fly proxy` each time), that's a deliberate
+    tradeoff to revisit, not an oversight.
+  - **Running a script under `backend/scripts/` that imports `app.*` requires
+    `uv run python -m scripts.<module>` (with `backend/scripts/__init__.py`
+    present), not `uv run python scripts/<module>.py`** — the bare-script
+    form puts `scripts/` (not `backend/`) at `sys.path[0]`, so `import app`
+    fails with `ModuleNotFoundError`; `-m` runs with the invoking cwd
+    (`backend/`) on the path instead, which is where `app/` actually lives.
+    Verified this by hand before writing the test suite. Documented the
+    correct invocation in the script's own module docstring and in AGENTS.md
+    so this doesn't get rediscovered the hard way later.
+  - Chose to extend `ankiconnect.invoke()` with `base_url` rather than
+    writing a second, duplicate HTTP-calling function in the smoke-test
+    script — keeps the AnkiConnect request/error-handling logic (task 3's
+    `AnkiConnectError` on a non-null `error` field) in one place, and the
+    smoke-test script's tests now also exercise that shared error path for
+    free.
+
+---
+
 ## 2026-07-03 — Task 10: Frontend chat UI
 - Did: Replaced the `create-next-app` placeholder homepage with the chat UI.
   Added `frontend/app/lib/types.ts` (TS mirrors of task 9's `ChatResponseBody`/
