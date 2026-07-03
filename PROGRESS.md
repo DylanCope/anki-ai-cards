@@ -14,6 +14,95 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 7: Claude agent core
+- Did: Added `backend/app/agent/prompts.py` (`SYSTEM_PROMPT` describing the
+  inner agent's job per the PRD Overview: read the lesson doc, find red-marked
+  corrections, propose cards, generate audio options, discover the Anki note
+  type/fields live, create the note, sync). Added `backend/app/agent/tools.py`:
+  `TOOL_SCHEMAS` (Anthropic tool-definition list) for the 6 tools task 7 wires
+  up — `fetch_google_doc`, `list_anki_note_types`, `get_anki_note_type_fields`,
+  `generate_audio`, `create_anki_note`, `sync_anki` (the workflow-spec tools
+  `save_workflow_spec`/`load_workflow_spec`/`list_workflow_specs` are task 8's
+  job, not built here) — plus `dispatch_tool(name, tool_input, *,
+  access_token=None)`, a single if/elif router that calls the matching
+  task 3-5 client function and returns a JSON-serializable result
+  (`fetch_google_doc` flattens the doc via `google_docs.flatten_runs`;
+  `generate_audio` base64-encodes the raw MP3 bytes from
+  `elevenlabs.generate_audio_options` since tool_result content must be
+  JSON-able — actually playing audio in the UI is task 9/10's problem, not
+  this task's). Added `backend/app/agent/core.py`: `MODEL_ID =
+  "claude-opus-4-8"`, `run_turn(history, message, *, access_token=None) ->
+  {"history": [...], "reply": str}` driving `anthropic.AsyncAnthropic`'s
+  manual tool-use loop (append `response.content` verbatim as the assistant
+  turn per the SDK's documented pattern, loop while `stop_reason ==
+  "tool_use"` executing every `tool_use` block via `dispatch_tool` and
+  sending back one `user` message with all `tool_result` blocks, stop and
+  return the joined text blocks once `stop_reason != "tool_use"`) with a
+  `MAX_ITERATIONS = 10` safety valve against a runaway loop. Added
+  `backend/tests/test_agent.py`: one `dispatch_tool` test per tool asserting
+  the right underlying client function is awaited with the right args (all
+  client functions mocked via `monkeypatch.setattr` + `AsyncMock`, per
+  AGENTS.md — no real network/SDK calls), plus 3 `run_turn` tests against a
+  mocked `anthropic.AsyncAnthropic` (patched via
+  `unittest.mock.patch("app.agent.core.anthropic.AsyncAnthropic", ...)`)
+  covering a no-tool-use reply, a tool_use → end_turn sequence (asserts the
+  `tool_result` block sent back carries the right `tool_use_id` and
+  JSON-decodes to the tool's return value), and that `access_token` reaches
+  `fetch_google_doc` without ever appearing in the model's tool input.
+- Verified: `cd backend && uv run pytest` → 39 passed (27 pre-existing + 12
+  new agent tests). Ran full suite twice, both green.
+- Learned:
+  - **Mocking a function whose caller mutates its own `messages` list
+    in-place is a trap for `Mock.call_args`/`await_args_list` assertions.**
+    `run_turn` builds one `messages` list and keeps appending to it across
+    loop iterations (as the SDK's documented manual-loop pattern requires —
+    each iteration appends the assistant turn, then a user turn with tool
+    results). Since Python passes that list by reference, `Mock` records
+    `call_args` as a reference to the *same* list object, not a snapshot —
+    so by the time a test inspects `client.messages.create.call_args` after
+    `run_turn` returns, `kwargs["messages"]` reflects the *final*,
+    fully-mutated state (extra assistant/tool_result turns included), not
+    the messages that were actually true at call time. Fixed by replacing
+    the mock's `create` with a plain async function that
+    `copy.deepcopy(kwargs)`s into a `call_snapshots` list *inside* the
+    function body (i.e. before `run_turn` gets to mutate anything further) —
+    see `_mock_create` in `test_agent.py`. Future tests of anything that
+    mutates a shared list/dict across awaited calls should use this pattern,
+    not `mock.call_args`/`assert_called_with`, if they need to inspect state
+    as of a *specific* call rather than the final state.
+  - `google_docs.flatten_runs` is a **sync** function (task 5), unlike every
+    other client call `dispatch_tool` makes — monkeypatching it with
+    `AsyncMock` instead of a plain `Mock`/lambda silently returns an
+    un-awaited coroutine object instead of the list, and `dispatch_tool`
+    (correctly, since the real function is sync) doesn't await it, so the
+    bug only shows up as a wrong-type assertion failure, not a "coroutine
+    was never awaited" warning at the call site. Worth double-checking
+    per-tool whether the underlying task 3-5 function is async before
+    choosing `AsyncMock` vs `Mock` in future tests.
+  - Response content blocks from the `anthropic` SDK are plain attribute-bearing
+    objects (`block.type`, `block.text` / `block.id`/`.name`/`.input`) — tests
+    use `types.SimpleNamespace` stand-ins instead of constructing real
+    `anthropic.types.TextBlock`/`ToolUseBlock` instances, since `core.py` only
+    ever does attribute access and duck-typing is enough; no need to depend on
+    exact SDK response-object construction in tests.
+  - `access_token` is deliberately a keyword-only parameter on `run_turn`/
+    `dispatch_tool`, not something read out of the model's tool input — the
+    Google OAuth access token is caller-supplied context (task 9's chat API
+    will source it from the `OAuthToken` table via task 6's auth), never a
+    string the agent itself constructs or sees. Only `fetch_google_doc`
+    currently needs it; `dispatch_tool` raises `ValueError` if it's missing
+    when that tool is called.
+  - Model pinned to `claude-opus-4-8` (no thinking/effort config) — this is a
+    tool-calling/data-entry agent, not a hard-reasoning task, so the default
+    request shape (no `thinking`, default effort) is enough; revisit if task
+    9/10 testing against the real lesson doc shows it needs more reasoning
+    depth on ambiguous docs.
+  - `run_turn`'s tests set `ANTHROPIC_API_KEY` via `monkeypatch.setenv` even
+    though the client itself is mocked — `_get_client()` in `core.py` still
+    reads `os.environ["ANTHROPIC_API_KEY"]` *before* constructing (the mocked)
+    `anthropic.AsyncAnthropic`, so the env var must exist or the test fails on
+    a `KeyError` before ever reaching the mock.
+
 ## 2026-07-03 — Task 6: Google OAuth + session auth
 - Did: Added `backend/app/auth.py` (`create_session_cookie`/`verify_session_cookie`
   using `itsdangerous.URLSafeTimedSerializer`, keyed by a new `SESSION_SECRET_KEY`

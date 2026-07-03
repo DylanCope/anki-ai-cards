@@ -116,7 +116,7 @@ runs manually.
   Tests mock the token exchange and cover both the rejected and accepted
   email paths. Verify: tests pass.
 
-- [ ] **7. Claude agent core.** `backend/app/agent/`: tool schemas +
+- [x] **7. Claude agent core.** `backend/app/agent/`: tool schemas +
   dispatcher wiring tasks 3–5's clients as callable tools, a system prompt
   describing the agent's job (per Overview), and `run_turn(history, message)`
   driving the `anthropic` SDK's tool-use loop to completion. Tests mock the
