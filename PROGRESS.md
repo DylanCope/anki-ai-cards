@@ -14,6 +14,45 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 5: Google Docs client
+- Did: Added `backend/app/clients/google_docs.py` with OAuth helpers
+  (`build_authorize_url(redirect_uri, state)`, `exchange_code_for_tokens(code,
+  redirect_uri)`, `refresh_access_token(refresh_token)`) hitting Google's
+  standard `accounts.google.com`/`oauth2.googleapis.com` endpoints,
+  `fetch_document(document_id, access_token) -> dict` (GET against the Docs
+  API v1 `documents/{id}` endpoint with a Bearer token), and
+  `flatten_runs(doc_json) -> list[dict]` which walks `body.content[].paragraph
+  .elements[].textRun` in document order and emits one `{text, color}` span
+  per run, where `color` is `"red"` (via `_classify_color` on
+  `textStyle.foregroundColor.color.rgbColor`) or `None`. `GOOGLE_CLIENT_ID`/
+  `GOOGLE_CLIENT_SECRET` read lazily from env, same pattern as other clients.
+  `build_authorize_url` requests `access_type=offline`+`prompt=consent` so a
+  refresh_token comes back on every login, not just the first consent.
+  Added `backend/tests/test_google_docs.py` with a hand-written two-paragraph
+  Docs-API-shaped fixture (plain English line + a Japanese attempt followed by
+  a red-colored correction run) and tests for each function plus explicit
+  assertions that only the red run is tagged `"red"` and other spans are
+  `None`.
+- Verified: `cd backend && uv run pytest` → 20 passed (14 pre-existing + 6 new
+  Google Docs tests).
+- Learned:
+  - Red-detection heuristic is `red > 0.5 and red - green > 0.2 and red -
+    blue > 0.2` on the Docs API's 0–1 float `rgbColor` — this is a guess at
+    "looks red to a human," not calibrated against Dylan's actual doc. If task
+    7/9 testing against the real lesson doc shows misses/false positives
+    (e.g. teacher uses a orange-ish or maroon red), loosen/tighten these
+    thresholds rather than assuming the logic is wrong.
+  - Runs with no `textStyle` at all (plain black text) have no
+    `foregroundColor` key — `_classify_color` treats missing/empty `rgbColor`
+    as `color: None`, not black; there's no explicit "black" tag, only
+    `"red"` vs `None`. Fine per PRD ("assert red-colored spans are correctly
+    identified") but worth knowing if a later task wants to distinguish
+    "explicitly black" from "default/unstyled."
+  - Didn't build a `require_valid_token`/token-refresh-orchestration helper
+    here — task 6 (OAuth + session auth) owns deciding when to call
+    `refresh_access_token` vs. use a cached access token; this module only
+    wraps the raw HTTP calls.
+
 ## 2026-07-03 — Task 4: ElevenLabs client
 - Did: Added `backend/app/clients/elevenlabs.py` with
   `generate_audio_options(text, n=3, voice_id=DEFAULT_VOICE_ID) -> list[bytes]`.

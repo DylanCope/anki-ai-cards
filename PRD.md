@@ -100,7 +100,7 @@ runs manually.
   Tests mock the HTTP call and assert 3 distinct requests are made and 3
   byte payloads returned. Verify: tests pass.
 
-- [ ] **5. Google Docs client.** `backend/app/clients/google_docs.py`: OAuth
+- [x] **5. Google Docs client.** `backend/app/clients/google_docs.py`: OAuth
   helpers (`build_authorize_url`, `exchange_code_for_tokens`,
   `refresh_access_token`), `fetch_document(document_id, access_token) -> dict`
   (raw Docs API JSON via REST), and `flatten_runs(doc_json) -> list[dict]`
