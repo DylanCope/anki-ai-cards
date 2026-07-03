@@ -87,7 +87,7 @@ runs manually.
   `OAuthToken`. An `init_db()` creates tables at `DATABASE_PATH`. Tests
   round-trip a row through each table. Verify: `uv run pytest backend/tests/test_models.py` passes.
 
-- [ ] **3. AnkiConnect client.** `backend/app/clients/ankiconnect.py`: async
+- [x] **3. AnkiConnect client.** `backend/app/clients/ankiconnect.py`: async
   `invoke(action, **params)` wrapper over the AnkiConnect HTTP protocol
   (version 6), plus `list_note_type_names()`, `get_note_type_fields(name)`,
   `create_note(...)`, `sync()`. Raise a clear exception when AnkiConnect's

@@ -14,6 +14,32 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 3: AnkiConnect client
+- Did: Added `backend/app/clients/ankiconnect.py` with a single `invoke(action,
+  **params)` async wrapper over the AnkiConnect HTTP protocol (v6): POSTs
+  `{"action", "version": 6, "params"}` (params key omitted when empty) to
+  `ANKICONNECT_URL`, raises `AnkiConnectError` when the response's `error` key
+  is non-null, otherwise returns `result`. Built `list_note_type_names()`
+  (`modelNames`), `get_note_type_fields(name)` (`modelFieldNames`),
+  `create_note(deck_name, model_name, fields, tags=None)` (`addNote`, wraps
+  args into the `note` dict AnkiConnect expects), and `sync()` (`sync`) on top
+  of it. `ANKICONNECT_URL` is read lazily from `os.environ` inside
+  `_base_url()`, same lazy-env pattern as task 2's `get_engine()`. Added
+  `backend/tests/test_ankiconnect.py` covering success, the error-surfacing
+  case, and each of the four higher-level functions, all via `respx.mock`.
+- Verified: `cd backend && uv run pytest` → 12 passed (6 pre-existing + 6 new
+  AnkiConnect tests).
+- Learned:
+  - Don't assert on raw `request.content` bytes against a hand-written JSON
+    literal — httpx's json encoder uses compact separators (`,`/`:` with no
+    spaces), so a byte-for-byte comparison against `{"action": "version", ...}`
+    (with spaces) fails even though the JSON is semantically identical.
+    Instead `json.loads(request.content)` and compare the parsed dict.
+  - AnkiConnect's real protocol omits the `params` key entirely for
+    param-less actions like `version`/`sync` rather than sending
+    `"params": {}` — `invoke()` only adds `params` to the payload when
+    `params` is non-empty, matching that behavior.
+
 ## 2026-07-03 — Task 2: Persistence layer
 - Did: Added `backend/app/models.py` with SQLModel tables `ConversationMessage`,
   `WorkflowSpec`, `ProcessingCursor`, `PendingCard`, `OAuthToken`, plus
