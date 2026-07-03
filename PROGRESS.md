@@ -14,6 +14,36 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 4: ElevenLabs client
+- Did: Added `backend/app/clients/elevenlabs.py` with
+  `generate_audio_options(text, n=3, voice_id=DEFAULT_VOICE_ID) -> list[bytes]`.
+  Issues `n` sequential POSTs to `{API_BASE_URL}/text-to-speech/{voice_id}`
+  (ElevenLabs TTS REST endpoint), each with the same `text` but a different
+  `voice_settings` (stability/similarity_boost) drawn from a small
+  `_VOICE_SETTINGS_VARIANTS` list cycled by index, so the n outputs are
+  audibly distinct takes rather than identical calls. `xi-api-key` header
+  read lazily from `ELEVENLABS_API_KEY` env var (same lazy-env pattern as
+  prior tasks). Returns raw response bytes (`response.content`) per option —
+  no assumption about audio format, ElevenLabs defaults to MP3. Added
+  `DEFAULT_VOICE_ID` module constant (ElevenLabs' public premade "Rachel"
+  voice) since the PRD's env var list doesn't include a voice ID setting;
+  callers (task 7's agent tool) can override `voice_id` per call instead.
+  Added `backend/tests/test_elevenlabs.py` covering: 3 requests are made with
+  3 distinct voice_settings payloads and the right byte payloads are
+  returned in order (via respx `side_effect`), the `xi-api-key` header is
+  sent, and `n` is respected for a non-default count.
+- Verified: `cd backend && uv run pytest` → 14 passed (12 pre-existing + 2 new
+  ElevenLabs test functions). Ran full suite, all green.
+- Learned:
+  - No `ELEVENLABS_VOICE_ID` env var exists in `.env.example`/PRD Requirements
+    — don't add one without checking with Dylan first; `DEFAULT_VOICE_ID` is a
+    reasonable stand-in but the agent (task 7) may want to expose voice choice
+    as a tool parameter instead of a fixed default.
+  - Used `respx`'s `side_effect=[...]` (list of Responses) rather than a
+    single `return_value` to get distinct bytes back per call in order —
+    `return_value` alone would make all 3 calls return identical content,
+    which wouldn't actually test that 3 *options* were generated.
+
 ## 2026-07-03 — Task 3: AnkiConnect client
 - Did: Added `backend/app/clients/ankiconnect.py` with a single `invoke(action,
   **params)` async wrapper over the AnkiConnect HTTP protocol (v6): POSTs

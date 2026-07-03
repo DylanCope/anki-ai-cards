@@ -94,7 +94,7 @@ runs manually.
   JSON response has a non-null `error`. Tests mock the HTTP layer with
   `respx`, covering both success and the error-surfacing case. Verify: tests pass.
 
-- [ ] **4. ElevenLabs client.** `backend/app/clients/elevenlabs.py`:
+- [x] **4. ElevenLabs client.** `backend/app/clients/elevenlabs.py`:
   `generate_audio_options(text: str, n: int = 3) -> list[bytes]`, varying
   voice settings slightly per option. API key from `ELEVENLABS_API_KEY`.
   Tests mock the HTTP call and assert 3 distinct requests are made and 3
