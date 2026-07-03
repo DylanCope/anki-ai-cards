@@ -14,6 +14,39 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 2: Persistence layer
+- Did: Added `backend/app/models.py` with SQLModel tables `ConversationMessage`,
+  `WorkflowSpec`, `ProcessingCursor`, `PendingCard`, `OAuthToken`, plus
+  `get_engine()`/`init_db()`. `get_engine()` reads `DATABASE_PATH` from the
+  environment lazily (at call time, not import time) via
+  `create_engine(f"sqlite:///{DATABASE_PATH}")`, so tests can
+  `monkeypatch.setenv("DATABASE_PATH", ...)` to a temp file before calling
+  `init_db()`. Added `backend/tests/test_models.py` with a `tmp_path`-backed
+  `engine` fixture and one round-trip test per table (insert in one session,
+  re-query in a fresh session to prove persistence rather than just object
+  identity).
+- Verified: `cd backend && uv run pytest` → 6 passed (1 pre-existing health
+  test + 5 new model tests). Ran both `uv run pytest tests/test_models.py` and
+  the full suite; both green.
+- Learned:
+  - Kept the engine sync (`sqlmodel.create_engine`, not an async engine) even
+    though the rest of the stack is async (FastAPI, httpx) — SQLModel/SQLAlchemy
+    sync sessions over SQLite are the standard, low-friction choice here and
+    the PRD doesn't require async DB access. Future tasks doing DB I/O from
+    async route handlers should just call the sync session functions directly
+    (FastAPI runs sync path functions in a threadpool) rather than introducing
+    `aiosqlite`/async SQLAlchemy — not worth the complexity for a single-user
+    SQLite app.
+  - Field shapes for `PendingCard`/`WorkflowSpec`/`ProcessingCursor` aren't
+    specified in detail by the PRD beyond table names — I picked reasonable
+    minimal fields (e.g. `PendingCard.status` defaults to `"pending"`,
+    `WorkflowSpec.spec` is a plain string so task 8 can decide whether it's
+    raw text or JSON-encoded). If task 7/8/9 need different fields, adjust
+    `app/models.py` then — don't treat this schema as frozen.
+  - `uv run pytest` must be run with cwd inside `backend/` (pyproject.toml
+    lives there and defines `[tool.pytest.ini_options]`); running it from the
+    repo root with a `backend/tests/...` path arg fails to collect.
+
 ## 2026-07-03 — Task 1: Scaffold the repo
 - Did: Created `backend/` as a `uv` project (Python 3.12) with FastAPI +
   uvicorn + sqlmodel + httpx + anthropic as deps, pytest/pytest-asyncio/respx

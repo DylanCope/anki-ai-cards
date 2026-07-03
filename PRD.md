@@ -82,7 +82,7 @@ runs manually.
   `AGENTS.md`'s verification commands to `cd backend && uv run pytest` and
   `cd frontend && npm run build && npm run lint`. Verify: both commands pass.
 
-- [ ] **2. Persistence layer.** `backend/app/models.py`: SQLModel tables
+- [x] **2. Persistence layer.** `backend/app/models.py`: SQLModel tables
   `ConversationMessage`, `WorkflowSpec`, `ProcessingCursor`, `PendingCard`,
   `OAuthToken`. An `init_db()` creates tables at `DATABASE_PATH`. Tests
   round-trip a row through each table. Verify: `uv run pytest backend/tests/test_models.py` passes.
