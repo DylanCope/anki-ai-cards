@@ -14,6 +14,83 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-03 — Task 10: Frontend chat UI
+- Did: Replaced the `create-next-app` placeholder homepage with the chat UI.
+  Added `frontend/app/lib/types.ts` (TS mirrors of task 9's `ChatResponseBody`/
+  history-entry/payload shapes). Added client components:
+  `app/components/ChatApp.tsx` (all state — auth check, message list, send
+  form), `MessageBubble.tsx`, `AudioOptionsCard.tsx` (renders the 3
+  `<audio>` players from an `audio_options` payload's base64 `options` list
+  as `data:audio/mpeg;base64,...` src, each with a "Pick" button),
+  `CardPayloadCard.tsx` (renders a `card` payload's `deck_name`/`model_name`/
+  `fields`/`tags`/`note_id` generically via `Object.entries(fields)` — no
+  hardcoded field names like "JP cloze"/"furigana", since the PRD Overview
+  requires field mapping to be agent-discovered live via AnkiConnect, not
+  fixed by the UI), `SignIn.tsx` (Google sign-in link). `app/page.tsx` now
+  just renders `<ChatApp />`.
+  `ChatApp` fetches `GET /api/chat/history` on mount; a 401 shows `SignIn`,
+  success populates the thread with empty `payloads: []` per historical
+  message (see Learned below — payloads can't be reconstructed for old
+  turns). Sending a message optimistically appends the user bubble, POSTs
+  `/api/chat`, and appends an assistant bubble with that turn's `reply` +
+  `payloads` on success; a 401 mid-session flips back to `SignIn`; other
+  failures show an inline error banner without losing the typed message from
+  the thread.
+  Added `frontend/next.config.ts` `rewrites()`: proxies `/api/:path*` and
+  `/auth/:path*` server-side to a new `BACKEND_URL` env var (default
+  `http://localhost:8000`, added to root `.env.example`). This was necessary,
+  not just convenient — task 6's session cookie is `samesite=lax`, which
+  Chrome/Firefox will NOT attach to a cross-origin `fetch()` (only to
+  top-level navigations), so if the frontend called the backend's origin
+  directly from client JS, every `/api/chat` call would arrive without the
+  session cookie and 401 regardless of login state. Proxying through Next's
+  own server keeps the browser on one origin the whole time; `Set-Cookie`
+  from the backend passes through the proxy untouched.
+  The audio "Pick" button and the card's "Request a change" button don't
+  call a dedicated selection/edit API (none exists — see task 9's PROGRESS
+  entry on why there's no `propose_card`/select tool). Instead "Pick" directly
+  sends a chat message ("Use audio option 2.") and "Request a change" just
+  prefills the input box with a templated message referencing the note_id,
+  leaving Dylan to finish and send it — both route the choice back through
+  the same conversational path the agent already understands, rather than
+  inventing new API surface for this frontend-only task.
+- Verified: `cd frontend && npm run build && npm run lint` — build succeeds
+  (static prerender of `/`), lint clean. Ran twice. Also reran
+  `cd backend && uv run pytest` (58 passed) to confirm the unrelated backend
+  suite wasn't affected.
+  **Not verified: appearance/UX.** Per AGENTS.md this needs Dylan's manual
+  browser check — in particular: does the rewrite proxy actually preserve the
+  session cookie end-to-end against a real running backend (only reasoned
+  about, not run, since there's no backend server up in this environment);
+  does the chat thread look right; do the audio players actually play the
+  base64 MP3 data URIs in a real browser; is scrolling/layout reasonable on
+  mobile widths (phone is the real target device per the PRD Overview).
+- Learned:
+  - **`GET /api/chat/history` (task 9) only returns `{role, text}` — it has
+    no way to return the `audio_options`/`card` payloads that were part of
+    past turns**, because `_extract_payloads` in `backend/app/api/chat.py`
+    only ever looks at *new* messages from the current `run_turn` call, and
+    that extraction never gets persisted anywhere. Practical effect: reload
+    the page mid-conversation and you keep the full text transcript but lose
+    the audio players / card confirmations from earlier turns — only the
+    live turns in the current browser session show payloads. Didn't fix this
+    here since it requires a backend schema/API change (e.g. persisting
+    extracted payloads alongside messages, or recomputing them from stored
+    tool_use/tool_result rows on history read) which is out of scope for a
+    frontend-only task — flagging as a candidate follow-up task if Dylan
+    finds this annoying in practice.
+  - Next.js 16 + Turbopack here: JSX fragments used as `.map()` list items
+    need an explicit `<Fragment key={...}>` import from `react`, not the
+    `<>...</>` shorthand — the shorthand doesn't accept a `key` prop and
+    silently doesn't error at the JSX level, but produces a
+    React-console-only "missing key" warning at runtime and would fail a
+    stricter lint rule. Used in `CardPayloadCard.tsx` for the fields `<dt>`/
+    `<dd>` pairs.
+  - Confirmed `npm run build`/`npm run lint` both still work fine standalone
+    (no proxy/env needed at build time since `rewrites()` only reads
+    `BACKEND_URL` at request time, and defaults if unset) — no new frontend
+    build-time env requirement introduced.
+
 ## 2026-07-03 — Task 9: Chat API
 - Did: Added `backend/app/api/chat.py`, a router at `/api/chat` with
   `POST /api/chat` (`{"message": str}` in, `{"reply": str, "payloads":

@@ -135,7 +135,7 @@ runs manually.
   the frontend to render) and `GET /api/chat/history`. Non-streaming JSON for
   v1. Tests use FastAPI's `TestClient` with the agent core mocked. Verify: tests pass.
 
-- [ ] **10. Frontend chat UI.** Next.js page: "Sign in with Google" button
+- [x] **10. Frontend chat UI.** Next.js page: "Sign in with Google" button
   redirecting to the backend login route; a chat thread that posts to
   `/api/chat` and renders responses, with dedicated components for a
   candidate-card payload (JP cloze, furigana, English, note, approve/edit)
