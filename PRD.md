@@ -237,6 +237,90 @@ consent, VNC login) remain Dylan's manual steps.
   mark this done — record what you tried and ruled out in PROGRESS.md under
   "Blocked" instead.
 
+- [x] **16. Bug report backend: capture unhandled errors from a chat turn.**
+  Dylan tried creating a card and it failed generating audio — right now any
+  unhandled exception during `POST /api/chat` (e.g. `elevenlabs.py`'s
+  `response.raise_for_status()` raising on a bad ElevenLabs response) just
+  propagates to a bare FastAPI 500 with no detail captured anywhere except
+  `fly logs`. Add a `BugReport` table (`backend/app/models.py`): `id`,
+  `created_at`, `message` (short, e.g. `str(exception)`), `detail` (full
+  `traceback.format_exc()` output, plus the user's message text for
+  context). In `backend/app/api/chat.py`'s `post_chat`, wrap the
+  `agent_core.run_turn(...)` call in a `try/except Exception`: on failure,
+  save a `BugReport` row, then raise `HTTPException(500, detail={"error":
+  "...", "bug_report_id": <id>})` — a short message only, never the full
+  traceback, since this response can reach a browser. Add two new routes
+  (reuse `require_auth` so `DEV_API_KEY` works): `GET /api/bug-reports`
+  (most recent ~20, id/created_at/message only, newest first) and `GET
+  /api/bug-reports/{id}` (full record including `detail`). Verify:
+  `cd backend && uv run pytest` — mock a tool raising (e.g. monkeypatch
+  `elevenlabs.generate_audio_options` to raise), assert a `BugReport` row is
+  created, the chat endpoint returns 500 with a `bug_report_id` in the body
+  (not a raw traceback), and both GET routes return the expected shape and
+  require auth.
+
+- [ ] **17. Bug report frontend: surface the report inline in the chat UI.**
+  No separate bug-reports page (deliberately out of scope — single-user app,
+  the API is enough for browsing history by hand) — just make the existing
+  generic "Something went wrong..." error in `frontend/app/components/
+  ChatApp.tsx` actually useful. When `POST /api/chat` returns non-ok, parse
+  the JSON body for `bug_report_id`/`error` (task 16's shape) and show
+  something like "Something went wrong — bug report #7 filed." instead of
+  the current fixed string. Update `frontend/app/lib/types.ts` if a type is
+  needed for the error body shape. Verify: `cd frontend && npm run build &&
+  npm run lint`; note in PROGRESS.md that the actual rendered appearance
+  needs Dylan's manual check in a browser.
+
+- [ ] **18. Scope furigana correctly: a per-workflow display choice, but
+  mandatory for accurate audio.** Dylan clarified that furigana appearing on
+  the visible Anki card is his call per source/workflow (something a saved
+  `save_workflow_spec` can already capture) — the system prompt currently
+  states it as a blanket rule ("turn each one into an Anki Cloze card with
+  furigana", `backend/app/agent/prompts.py`), which overclaims. The one
+  place furigana is *always* needed regardless of card preference: deriving
+  an accurate reading before calling `generate_audio`, since ElevenLabs
+  sometimes misreads bare kanji. Update `SYSTEM_PROMPT` to (a) stop
+  presenting furigana-on-card as mandatory — frame it as a per-source
+  preference to settle with Dylan and record via `save_workflow_spec`, same
+  as field mapping/cloze conventions already are, and (b) explicitly
+  instruct the agent to always work out the correct reading for any
+  Japanese text and pass reading-informed text into `generate_audio`
+  (not bare kanji) specifically to avoid mispronunciation, independent of
+  whatever the card itself displays. This is a prompt-wording change, not
+  new code — there's no `generate_audio` schema change implied unless task
+  19's actual fix needs one. Verify: `cd backend && uv run pytest` still
+  passes (no regressions); this task's real verification is the prompt text
+  itself matching the above — note in PROGRESS.md that the prompt's
+  effectiveness in a live conversation is a judgment call, not something
+  pytest checks.
+
+- [ ] **19. Fix the actual audio-generation bug, using the new bug-report
+  system to diagnose it.** Blocked on task 16 (need the bug-report capture
+  in place) and informed by task 18 (the fix should produce reading-accurate
+  text for ElevenLabs, not just patch whatever the immediate error is).
+  Reproduce for real: use `DEV_API_KEY` (`fly ssh console -a
+  anki-ai-cards-backend -C "printenv DEV_API_KEY"` if you need the value,
+  per task 15's PROGRESS entry) and either `backend/scripts/
+  smoke_test_chat.py` or a direct call to ask the deployed agent to generate
+  audio for a piece of Japanese text containing a commonly-misread kanji —
+  no need to go through the full doc-parsing flow, `generate_audio` is a
+  standalone tool the agent can call directly from a simple request. Check
+  `GET /api/bug-reports` (task 16) and `fly logs -a anki-ai-cards-backend`
+  for the actual captured error/traceback — don't guess at the cause;
+  `backend/app/clients/elevenlabs.py`'s request body has no `model_id`
+  (ElevenLabs defaults this server-side, and the default model's language
+  support is worth checking directly against ElevenLabs' actual current API
+  docs/response rather than assumed) and no error handling around the HTTP
+  call — but confirm what ElevenLabs' response actually says before
+  assuming that's the fix. Verify: unit tests in `backend/tests/` covering
+  the real failure mode found (mocked via `respx`) plus the success path;
+  **and** the authoritative real-infra check — the same reproduction call
+  now returns real audio (an `audio_options` payload with non-empty base64
+  data, not an error/bug report), and the bug report captured during
+  reproduction is still visible via `GET /api/bug-reports` as a historical
+  record. If you exhaust reasonable attempts, do not mark this done — record
+  what you tried and ruled out in PROGRESS.md under "Blocked" instead.
+
 ## Out of scope
 
 - Any source type other than the one Google Doc (no generic connector
@@ -248,6 +332,13 @@ consent, VNC login) remain Dylan's manual steps.
   one-time actions Dylan runs himself. (`fly deploy` and other fly commands
   are now in scope for the loop — see AGENTS.md's "Autonomous deploy/debug
   access".)
+- A dedicated bug-reports page/UI (task 17) — inline surfacing in the chat
+  error message plus the `GET /api/bug-reports` API (task 16) is enough for
+  a single-user app; Dylan can hit the API directly to browse history.
+- A fixed, system-wide rule for whether furigana appears on the visible
+  card (task 18) — that's a per-source preference Dylan settles via
+  `save_workflow_spec`, not something to hardcode. Only the
+  `generate_audio` input is unconditionally required to be reading-accurate.
 - Real (non-mocked) calls to Google, Anthropic, ElevenLabs, or AnkiConnect
   from the automated `pytest` suite (the manual/loop-invoked smoke-test
   scripts are a deliberate exception — see AGENTS.md).

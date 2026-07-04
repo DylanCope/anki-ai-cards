@@ -14,6 +14,58 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 16: Bug report backend
+- Did: Added a `BugReport` table (`backend/app/models.py`): `id`,
+  `message` (short, `str(exception)`), `detail` (full
+  `traceback.format_exc()` plus the user's message text appended for
+  context), `created_at`. In `backend/app/api/chat.py`'s `post_chat`,
+  wrapped the `agent_core.run_turn(...)` call in `try/except Exception`: on
+  failure it saves a `BugReport` row, then raises `HTTPException(500,
+  detail={"error": "Something went wrong.", "bug_report_id": <id>})` — never
+  the traceback itself, since this response body reaches the browser. Added
+  two new routes on a new `bug_reports_router` (`prefix="/api/bug-reports"`,
+  wired into `backend/app/main.py` alongside the existing `auth_router`/
+  `chat_router`): `GET /api/bug-reports` (most recent 20, ordered by
+  `created_at.desc()`, `id`/`created_at`/`message` only — no `detail`) and
+  `GET /api/bug-reports/{id}` (full record including `detail`, 404 if the id
+  doesn't exist). Both reuse `Depends(require_auth)` so the existing
+  `DEV_API_KEY` bearer-token bypass (`backend/app/auth.py`) works on them for
+  free, same as the chat routes.
+- Verified: `cd backend && uv run pytest` → 83 passed (72 pre-existing + 11
+  new in `tests/test_chat.py`). New tests: a monkeypatched `run_turn` that
+  raises `httpx.HTTPStatusError` asserts the chat endpoint returns 500 with
+  `{"error": ..., "bug_report_id": ...}` in the body and no `"Traceback"`
+  substring anywhere in the JSON-serialized response, while the persisted
+  `BugReport` row *does* contain `"Traceback"` in `detail` and the original
+  user message text; separate tests confirm both new GET routes require auth
+  (401 with no session/dev key), `GET /api/bug-reports` excludes `detail` and
+  returns newest-first, and `GET /api/bug-reports/{id}` returns the full
+  record. Ran the full suite twice, both green.
+- Learned:
+  - Chose to catch the exception around the whole `run_turn(...)` call
+    rather than inside each individual tool (e.g. wrapping just
+    `elevenlabs.generate_audio_options`) since `run_turn` is the one place in
+    `post_chat` where *any* tool's exception (audio generation today, but
+    also AnkiConnect/Docs/Anthropic-SDK errors from other tools) already
+    funnels through a single call site — catching there covers every future
+    tool-raised exception for free, not just the one Dylan hit.
+  - Deliberately did not touch `elevenlabs.py`'s missing `model_id`/lack of
+    HTTP error handling here — PRD task 19 is explicitly the follow-up task
+    for the actual audio-generation bug fix, informed by whatever a real bug
+    report captures once this is deployed. This task only builds the
+    capture/inspection plumbing.
+  - `HTTPException(..., detail={...})` (a dict, not a string) round-trips
+    through FastAPI's default exception handler as `{"detail": {"error":
+    ..., "bug_report_id": ...}}` — asserted this exact shape in the new
+    tests since task 17 (frontend) will need to parse
+    `response_body["detail"]["bug_report_id"]`, not a flat top-level key.
+  - Left `PendingCard`/`ProcessingCursor` (task 2 tables) untouched — this
+    task only adds `BugReport`, no relation to those unused-so-far tables.
+  - Not yet deployed (`fly deploy`) — this task's Verify clause only
+    requires the pytest suite to pass; task 17/19 or a future iteration will
+    exercise this against production once the frontend also surfaces it
+    (task 17) or task 19 needs to inspect a real captured report.
+
 ## 2026-07-04 — Task 15: Fix AnkiConnect connectivity in production — FIXED
 - Did: Found and fixed the real root cause of the "list Anki note types"
   failure, which turned out to have nothing to do with AnkiConnect's

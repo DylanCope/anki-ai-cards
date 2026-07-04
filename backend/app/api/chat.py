@@ -14,6 +14,7 @@ both to dicts before anything here inspects or persists them.
 """
 
 import json
+import traceback
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,7 +24,7 @@ from sqlmodel import Session, select
 from app.agent import core as agent_core
 from app.auth import require_auth
 from app.clients import google_docs
-from app.models import ConversationMessage, OAuthToken, get_engine
+from app.models import BugReport, ConversationMessage, OAuthToken, get_engine
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -148,7 +149,19 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
     history = [{"role": row.role, "content": json.loads(row.content)} for row in prior_rows]
 
     access_token = await _get_access_token(email)
-    result = await agent_core.run_turn(history, body.message, access_token=access_token)
+    try:
+        result = await agent_core.run_turn(history, body.message, access_token=access_token)
+    except Exception as exc:
+        detail = f"{traceback.format_exc()}\n\nUser message: {body.message}"
+        with Session(engine) as session:
+            bug_report = BugReport(message=str(exc), detail=detail)
+            session.add(bug_report)
+            session.commit()
+            session.refresh(bug_report)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Something went wrong.", "bug_report_id": bug_report.id},
+        ) from exc
 
     serialized_history = [_serialize_message(message) for message in result["history"]]
     new_messages = serialized_history[len(prior_rows) :]
@@ -175,3 +188,33 @@ async def get_chat_history(email: str = Depends(require_auth)) -> list[dict]:
         if text is not None:
             transcript.append({"role": row.role, "text": text})
     return transcript
+
+
+bug_reports_router = APIRouter(prefix="/api/bug-reports", tags=["bug-reports"])
+
+
+@bug_reports_router.get("")
+async def list_bug_reports(email: str = Depends(require_auth)) -> list[dict]:
+    engine = get_engine()
+    with Session(engine) as session:
+        rows = session.exec(
+            select(BugReport).order_by(BugReport.created_at.desc()).limit(20)
+        ).all()
+    return [
+        {"id": row.id, "created_at": row.created_at, "message": row.message} for row in rows
+    ]
+
+
+@bug_reports_router.get("/{bug_report_id}")
+async def get_bug_report(bug_report_id: int, email: str = Depends(require_auth)) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        bug_report = session.get(BugReport, bug_report_id)
+    if bug_report is None:
+        raise HTTPException(status_code=404, detail="Bug report not found")
+    return {
+        "id": bug_report.id,
+        "created_at": bug_report.created_at,
+        "message": bug_report.message,
+        "detail": bug_report.detail,
+    }

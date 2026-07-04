@@ -56,6 +56,13 @@ class OAuthToken(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class BugReport(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    message: str
+    detail: str
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 def get_engine():
     database_path = os.environ["DATABASE_PATH"]
     return create_engine(f"sqlite:///{database_path}")

@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -9,7 +10,7 @@ from sqlmodel import Session, select
 from app.api import chat as chat_module
 from app.auth import create_session_cookie
 from app.main import app
-from app.models import ConversationMessage, OAuthToken, get_engine, init_db
+from app.models import BugReport, ConversationMessage, OAuthToken, get_engine, init_db
 
 ALLOWED_EMAIL = "dylanr.cope@gmail.com"
 
@@ -236,6 +237,70 @@ def test_post_chat_refreshes_expired_access_token(monkeypatch):
     with Session(get_engine()) as session:
         token = session.exec(select(OAuthToken)).one()
         assert token.access_token == "at-refreshed"
+
+
+def test_post_chat_saves_bug_report_and_returns_500_without_traceback(monkeypatch):
+    _seed_token()
+
+    async def failing_run_turn(history, message, *, access_token=None):
+        raise httpx.HTTPStatusError(
+            "Bad response", request=httpx.Request("POST", "http://x"), response=httpx.Response(500)
+        )
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
+
+    response = _authed_client().post("/api/chat", json={"message": "make audio for 食べる"})
+
+    assert response.status_code == 500
+    body = response.json()["detail"]
+    assert body["error"] == "Something went wrong."
+    assert "bug_report_id" in body
+    assert "Traceback" not in json.dumps(body)
+
+    with Session(get_engine()) as session:
+        reports = session.exec(select(BugReport)).all()
+    assert len(reports) == 1
+    assert reports[0].id == body["bug_report_id"]
+    assert "Bad response" in reports[0].message
+    assert "Traceback" in reports[0].detail
+    assert "食べる" in reports[0].detail
+
+
+def test_list_bug_reports_requires_auth(client):
+    response = client.get("/api/bug-reports")
+    assert response.status_code == 401
+
+
+def test_get_bug_report_requires_auth(client):
+    response = client.get("/api/bug-reports/1")
+    assert response.status_code == 401
+
+
+def test_list_and_get_bug_reports(monkeypatch):
+    _seed_token()
+
+    async def failing_run_turn(history, message, *, access_token=None):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
+    authed = _authed_client()
+    create_response = authed.post("/api/chat", json={"message": "hi"})
+    bug_report_id = create_response.json()["detail"]["bug_report_id"]
+
+    list_response = authed.get("/api/bug-reports")
+    assert list_response.status_code == 200
+    listed = list_response.json()
+    assert len(listed) == 1
+    assert listed[0]["id"] == bug_report_id
+    assert listed[0]["message"] == "boom"
+    assert "detail" not in listed[0]
+
+    get_response = authed.get(f"/api/bug-reports/{bug_report_id}")
+    assert get_response.status_code == 200
+    full = get_response.json()
+    assert full["id"] == bug_report_id
+    assert full["message"] == "boom"
+    assert "Traceback" in full["detail"]
 
 
 def test_get_chat_history_requires_auth(client):
