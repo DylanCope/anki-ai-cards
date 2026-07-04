@@ -14,6 +14,95 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 14: Backend external reachability — FIXED
+- Did: Found and fixed the actual root cause left as an open thread by the
+  prior investigation entry below. Confirmed via `fly ssh console` that
+  `/proc/net/tcp` had **zero** IPv4 listeners and `/proc/net/tcp6` had exactly
+  one (`::` port 8000) — i.e. there was truly only one socket, and it was
+  silently rejecting IPv4. Traced this to `uvicorn`'s own source
+  (`/app/.venv/lib/python3.12/site-packages/uvicorn/server.py`, v0.49.0):
+  when uvicorn is run via its CLI/`--host`/`--port` (no pre-bound socket
+  passed in), `Server.startup()`'s "standard case" calls stdlib
+  `loop.create_server(create_protocol, host=config.host, port=config.port,
+  ...)` — and CPython's `asyncio/base_events.py::create_server` **unconditionally
+  sets `IPV6_V6ONLY=1`** on any `AF_INET6` socket it creates for you (comment
+  in that file literally reads "Disable IPv4/IPv6 dual stack support...").
+  This happens regardless of `--loop asyncio` vs the uvloop default — both
+  loop backends go through uvicorn's identical host/port code path, so the
+  previous entry's `--loop asyncio` experiment was structurally guaranteed to
+  show "no difference" no matter what the real cause was. This is exactly why
+  the hand-replicated `bind_socket()`-style socket (built by hand via `fly
+  ssh console`, mimicking uvicorn's *other* code path used only for
+  `--fd`/multi-worker) came out dual-stack while the real running process
+  didn't — they were never the same code path to begin with.
+  Fix: added `backend/app/run_server.py`, a tiny entrypoint that calls
+  `uvicorn.Config(...).bind_socket()` itself (plain `socket.socket()` +
+  `bind()`, confirmed via a local test to produce `IPV6_V6ONLY=0`) and passes
+  that socket to `uvicorn.Server(config).run(sockets=[sock])` — `create_server(sock=...)`
+  never touches an already-open socket's options, so this skips the
+  V6ONLY-forcing branch entirely. Changed `backend/Dockerfile`'s `CMD` from
+  `uvicorn app.main:app --host :: --port 8000 --loop asyncio` to
+  `python -m app.run_server`.
+- Verified: Locally, spun up `run_server.py`'s exact `bind_socket()` +
+  `Server.run(sockets=[sock])` pair in a background thread against a scratch
+  port and connected with both a real `AF_INET` socket to `127.0.0.1` and a
+  real `AF_INET6` socket to `::1` — both connected successfully (previously,
+  on the deployed backend, the `127.0.0.1` case reproducibly got
+  `ConnectionRefusedError`). Added `backend/tests/test_run_server.py`
+  (mocks `uvicorn.Config`/`uvicorn.Server` to assert `main()` wires
+  `bind_socket()`'s return value into `Server.run(sockets=[...])` rather than
+  letting `Server.run()` bind its own socket) — `cd backend && uv run pytest`
+  → 79 passed (78 pre-existing + 1 new).
+  **Then deployed for real** (`fly deploy` from `backend/`, per this task's
+  standing authorization) and verified against production, not mocks:
+  `fly status -a anki-ai-cards-backend` now shows `1 total, 1 passing`
+  (previously `1 total, 1 critical` continuously for hours). `curl https://
+  anki-ai-cards-backend.fly.dev/health` returned `200` on 3 separate attempts
+  after deploy. `fly logs` shows the health checker's actual request arriving
+  as `::ffff:172.19.2.97:38798 - "GET /health HTTP/1.1" 200 OK` — an
+  IPv4-mapped address, confirming Fly's checker really does connect over
+  IPv4, exactly as this fix targets — followed immediately by `Health check
+  'servicecheck-00-http-8000' ... is now passing.` Also re-confirmed the 6PN
+  path this whole `::`-binding requirement exists for still works post-fix:
+  `fly ssh console -a anki-ai-cards-anki` (a sibling app, since the frontend
+  machine happened to be scaled to zero at check time — unrelated, expected
+  per `auto_stop_machines`) ran `urllib.request.urlopen("http://anki-ai-
+  cards-backend.internal:8000/health")` and got `200 {"status":"ok"}`. So
+  both paths — the one task 14 needed fixed and the one task 14 must not
+  break — are confirmed working against real infra.
+- Learned:
+  - **The single most important fact for anyone touching this again:**
+    uvicorn's CLI (`--host`/`--port` args, no `--fd`) always goes through
+    `asyncio.loop.create_server(host=, port=)`, and *that specific stdlib
+    method* — not uvloop, not uvicorn itself — is what forces
+    `IPV6_V6ONLY=1` on any IPv6 socket it creates. This is true for both
+    `--loop asyncio` and the uvloop default, since uvicorn's code path is
+    identical either way (confirmed by reading
+    `uvicorn/server.py::Server.startup()`'s "standard case" branch directly
+    on the deployed container). Any future "dual-stack `::` bind isn't really
+    dual-stack" bug in a `uvicorn`-based service should check this exact
+    thing first, not the loop backend.
+  - `uvicorn.Config.bind_socket()` (used internally by uvicorn only for the
+    `--fd`/pre-forked-worker path, confirmed by grepping `server.py` for
+    every caller) is a fully public, stable-enough method to call directly —
+    it's the same method the prior investigation's hand-written socket
+    replica was modeled on, it just needed to actually be *used* by the
+    running process instead of separately replicated for a one-off test.
+  - Fixing this took reading `uvicorn`'s and CPython's actual installed
+    source on the deployed machine (`fly ssh console` + `grep`/`sed` against
+    `/app/.venv/lib/python3.12/site-packages/uvicorn/{server,config}.py` and
+    `/usr/local/lib/python3.12/asyncio/base_events.py`) rather than guessing
+    from behavior alone — the previous entry's "discrepancy was never
+    explained" was exactly this gap. If a future infra bug looks similarly
+    inexplicable from black-box testing, reading the actual dependency source
+    inside the container is worth doing before adding more workaround layers.
+  - Didn't touch `backend/fly.toml`'s health check config or Fly-side
+    settings at all — the bug was entirely in which process code path the
+    Dockerfile's `CMD` invoked, nothing about Fly's proxy/health-checker
+    setup was ever wrong.
+
+---
+
 ## 2026-07-04 — Task 14 (new): Backend external reachability
 - Blocked: Dylan asked the deployed chat agent to list Anki note types and
   got an error; investigating by hand (not a loop iteration) before handing

@@ -19,14 +19,14 @@ ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
 
 # Fly's private 6PN network (used by the frontend to reach this app at
-# anki-ai-cards-backend.internal) is IPv6-only. Binding to 0.0.0.0 (IPv4
-# wildcard) leaves nothing listening on the IPv6 side, so 6PN connections get
-# ECONNREFUSED. "::" is meant to be dual-stack (bindv6only=0 at the OS
-# level), but the deployed backend currently refuses IPv4 loopback
-# (127.0.0.1) while accepting IPv6 loopback (::1) -- root cause NOT yet
-# found; see PROGRESS.md's "Backend external reachability" entry for the
-# full investigation (what's confirmed, what's ruled out, what to try next)
-# before changing this again. --loop asyncio (added during that
-# investigation, to rule out uvloop forcing IPV6_V6ONLY) made no observable
-# difference -- kept because it's harmless, not because it's a fix.
-CMD ["uvicorn", "app.main:app", "--host", "::", "--port", "8000", "--loop", "asyncio"]
+# anki-ai-cards-backend.internal) is IPv6-only, so the backend must accept
+# IPv6. Fly's public proxy/health-checker reaches the app over IPv4, so it
+# must accept IPv4 too. Plain `uvicorn app.main:app --host ::` looks
+# dual-stack but isn't: uvicorn's CLI path with no pre-bound socket calls
+# asyncio's `loop.create_server(host=, port=)`, which unconditionally forces
+# IPV6_V6ONLY=1 on the socket it creates (see `app/run_server.py`'s
+# docstring for the full root-cause trace) -- that's what made the public
+# health check fail while 6PN worked fine. `run_server.py` pre-binds the
+# socket via `Config.bind_socket()` (no V6ONLY override, genuine dual-stack)
+# and hands it to `Server.run(sockets=...)` instead.
+CMD ["python", "-m", "app.run_server"]

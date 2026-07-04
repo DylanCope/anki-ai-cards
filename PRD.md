@@ -171,7 +171,7 @@ consent, VNC login) remain Dylan's manual steps.
   accurately reflects the built system's actual flow (cross-check against
   tasks 1–12) — running the checklist itself is your manual job, not the loop's.
 
-- [ ] **14. Fix the backend's broken external reachability — this blocks
+- [x] **14. Fix the backend's broken external reachability — this blocks
   everything below, do it first.** `anki-ai-cards-backend`'s own health
   check (`GET /health`) has been continuously `critical` for hours (`fly
   status -a anki-ai-cards-backend` shows `1 total, 1 critical`; `fly checks
