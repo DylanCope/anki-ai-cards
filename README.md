@@ -272,13 +272,19 @@ you shouldn't need to run this by hand in normal use.
 
 ### 2. Backend
 
+**Run these from inside `backend/`, not the repo root** — `fly` uses your
+current directory as the build context, and `backend/Dockerfile` won't be
+found if you invoke `fly deploy --config backend/fly.toml` from elsewhere
+(you'll get "app does not have a Dockerfile or buildpacks configured").
+
 ```bash
-fly launch --config backend/fly.toml --no-deploy   # first time only
+cd backend
+fly launch --no-deploy   # first time only
 fly secrets set -a anki-ai-cards-backend \
   ANTHROPIC_API_KEY=... ELEVENLABS_API_KEY=... \
   GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
   ALLOWED_EMAIL=... SESSION_SECRET_KEY=...
-fly deploy --config backend/fly.toml
+fly deploy
 ```
 
 `backend/fly.toml` already points `ANKICONNECT_URL` at the headless Anki
@@ -288,9 +294,12 @@ URI to the real backend URL's `/auth/google/callback` once you know it.
 
 ### 3. Frontend
 
+Same rule — run from inside `frontend/`:
+
 ```bash
-fly launch --config frontend/fly.toml --no-deploy   # first time only
-fly deploy --config frontend/fly.toml
+cd frontend
+fly launch --no-deploy   # first time only
+fly deploy
 ```
 
 `frontend/fly.toml` already points `BACKEND_URL` at the backend app's private

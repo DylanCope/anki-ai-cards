@@ -76,13 +76,23 @@ One-time AnkiWeb login via VNC, after that first deploy:
 declares secrets (`ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`,
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL`,
 `SESSION_SECRET_KEY`) — push those once via `fly secrets set -a
-anki-ai-cards-backend KEY=value` before the first `fly deploy --config
-backend/fly.toml`. `backend/fly.toml`'s `[env]` points `ANKICONNECT_URL` at
-the headless Anki app's private `.internal` address and mounts a volume for
-`DATABASE_PATH`. `frontend/fly.toml`'s `[env]` points `BACKEND_URL` at the
-backend app's private `.internal` address (same reasoning as
-`next.config.ts`'s rewrite proxy — see that file's comment). The loop must
-never run `fly deploy` for either app — only Dylan does, manually.
+anki-ai-cards-backend KEY=value` before the first deploy. `backend/fly.toml`'s
+`[env]` points `ANKICONNECT_URL` at the headless Anki app's private
+`.internal` address and mounts a volume for `DATABASE_PATH`.
+`frontend/fly.toml`'s `[env]` points `BACKEND_URL` at the backend app's
+private `.internal` address (same reasoning as `next.config.ts`'s rewrite
+proxy — see that file's comment). The loop must never run `fly deploy` for
+either app — only Dylan does, manually.
+
+**Run `fly launch`/`fly deploy` from inside `backend/` or `frontend/`
+respectively, not the repo root with `--config <dir>/fly.toml`.** Fly uses
+the current working directory as the build context, and each Dockerfile's
+`COPY` paths are relative to its own directory — invoking from the repo root
+fails with "app does not have a Dockerfile or buildpacks configured" because
+it looks for the Dockerfile in the wrong place. (This is also why
+`backend/fly.toml` briefly lost its `[build]` stanza after a `fly launch` run
+from the repo root — restored as an explicit empty `[build]` block, matching
+`frontend/fly.toml`.)
 
 ## flyctl in this sandbox
 
