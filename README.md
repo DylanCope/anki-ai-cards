@@ -119,27 +119,71 @@ PRD.md, PROGRESS.md, AGENTS.md   spec, build log, and conventions
 
 - Python 3.12+ and [`uv`](https://docs.astral.sh/uv/)
 - Node 20+ (the build used Node 24) and npm
-- A Google Cloud OAuth client (Web application type) with:
-  - Authorized redirect URI: `http://localhost:8000/auth/google/callback`
-  - Docs API enabled on the project, scope
-    `https://www.googleapis.com/auth/documents.readonly` requested
-  - This is needed even for local dev — there's no way to exercise the chat
-    flow without a real Google login, since `fetch_google_doc` hits the real
-    Docs API.
-- An ElevenLabs API key
-- An Anthropic API key
 - A running AnkiConnect instance reachable at whatever `ANKICONNECT_URL`
   points to (your own desktop Anki + AnkiConnect addon works fine for local
   dev — you don't need the headless Fly deployment just to develop locally)
+- Every secret in `.env.example` — see the next section for how to get each one.
 
-### Configure
+### Getting the secrets
 
 ```bash
-cp .env.example .env      # then fill in every value
+cp .env.example .env      # then fill in every value below
 ```
 
-`SESSION_SECRET_KEY` can be generated with `openssl rand -hex 32`.
-`ALLOWED_EMAIL` is the one Google account allowed to use the app.
+**`ANTHROPIC_API_KEY`** — the inner agent's Claude access.
+1. Sign in (or sign up) at [console.anthropic.com](https://console.anthropic.com).
+2. Add a payment method under **Billing** — the API is pay-as-you-go with no
+   subscription, but a key won't successfully make requests until billing is set up.
+3. Go to **Settings → API Keys**, click **Create Key**, name it (e.g.
+   "anki-ai-cards"), optionally set a spending limit.
+4. Copy it immediately — it's shown once, starts with `sk-ant-...`.
+
+**`ELEVENLABS_API_KEY`** — TTS for the 3 audio options per card.
+1. Sign in (or sign up) at [elevenlabs.io](https://elevenlabs.io).
+2. Click your profile icon → **Profile + API key** (or, for a more
+   production-appropriate key, **Workspace settings → Service Accounts →**
+   create a service account and its own API key instead of your personal one).
+3. Copy the key shown there.
+
+**`GOOGLE_CLIENT_ID`** / **`GOOGLE_CLIENT_SECRET`** — Google sign-in +
+read-only Docs access, in one OAuth client. This one has the most steps:
+1. In [Google Cloud Console](https://console.cloud.google.com), create a new
+   project (e.g. "anki-ai-cards") or pick an existing one.
+2. **APIs & Services → Library**: search "Google Docs API", click **Enable**.
+3. **APIs & Services → Google Auth Platform** (this is where OAuth consent
+   configuration now lives — it used to be called just "OAuth consent screen"):
+   - **Branding** tab: set an app name and support email.
+   - **Audience** tab: choose **External** (this is a personal Gmail account,
+     not a Workspace org), then under **Test users** add the one Google
+     account you'll actually use — same address as `ALLOWED_EMAIL` below.
+     This is required: an unverified app rejects anyone not on this list.
+   - **Data Access** tab: add the scope
+     `https://www.googleapis.com/auth/documents.readonly` (`openid`/`email`
+     are included by default).
+4. **APIs & Services → Credentials** (or the **Clients** tab of Google Auth
+   Platform): **Create Credentials → OAuth client ID**, application type
+   **Web application**. Add both redirect URIs you'll need under **Authorized
+   redirect URIs** (one client can hold both):
+   - `http://localhost:8000/auth/google/callback` (local dev)
+   - `https://anki-ai-cards-backend.fly.dev/auth/google/callback` (production
+     — adjust if you use a custom domain)
+5. Copy the **Client ID** and **Client Secret** shown after creation.
+
+   **Heads up:** keeping the app in "Testing" status (recommended here —
+   going to "Production" requires Google's app verification process: a
+   privacy policy URL, possibly a review) means test-user authorizations
+   expire after **7 days**. In practice that just means you'll need to click
+   "Sign in with Google" again about once a week — the frontend already
+   handles this gracefully (any expired/401'd request drops you back to the
+   sign-in screen, per `frontend/app/components/ChatApp.tsx`). Not worth
+   verifying the app for a single personal user.
+
+**`ALLOWED_EMAIL`** — the one Google account allowed to use the app. No
+signup needed: just the Gmail address you added as a test user above. It
+must match exactly what Google's userinfo endpoint returns for that account.
+
+**`SESSION_SECRET_KEY`** — signs the session cookie, no external account
+needed: `openssl rand -hex 32`.
 
 ### Run the backend
 
