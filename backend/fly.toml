@@ -19,9 +19,14 @@ primary_region = 'iad'
 [build]
 
 [env]
-  # Reaches the headless Anki app (deploy/anki-headless/fly.toml) over Fly's
-  # private 6PN network — no public URL, no VNC/AnkiConnect port exposed.
-  ANKICONNECT_URL = 'http://anki-ai-cards-anki.internal:8765'
+  # Reaches the headless Anki app (deploy/anki-headless/fly.toml) via Flycast
+  # (.flycast), not raw 6PN (.internal) — AnkiConnect's web server is IPv4-only
+  # and 6PN direct machine-to-machine connections are IPv6-only. Flycast
+  # routes through Fly's proxy instead, which reaches the app over IPv4
+  # internally, same as the public proxy does for health checks. Still fully
+  # private — no public IP is allocated for the anki app. See
+  # deploy/anki-headless/fly.toml's header comment for the full story.
+  ANKICONNECT_URL = 'http://anki-ai-cards-anki.flycast:8765'
   # SQLite file lives on the persistent volume mounted below.
   DATABASE_PATH = '/data/anki-ai-cards.db'
   # The frontend's public URL — used to build the OAuth redirect_uri (see

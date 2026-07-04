@@ -3,9 +3,21 @@
 # This runs the prebuilt `ankimcp/headless-anki` image (no code from this
 # repo) as its own Fly app, logged into Dylan's real AnkiWeb account via a
 # one-time manual VNC step (documented in AGENTS.md — the loop must never
-# perform that step itself). The backend app reaches it over Fly's private
-# 6PN network at `<app>.internal:8765`; deliberately no public services are
-# declared here, so AnkiConnect is never reachable from the public internet.
+# perform that step itself).
+#
+# The backend reaches AnkiConnect via Flycast (`anki-ai-cards-anki.flycast`),
+# NOT raw 6PN (`.internal`) — AnkiConnect's underlying web server is IPv4-only
+# (its `webBindAddress` config must stay `0.0.0.0`; it fails to even start
+# listening if given an IPv6 address like `::`), but 6PN direct machine-to-
+# machine connections are IPv6-only. Flycast routes through Fly's own proxy
+# instead, which — like the public proxy — reaches the app over IPv4
+# internally, so it works with an IPv4-only listener. The `[http_service]`
+# below is required for Flycast to work at all, but does NOT make AnkiConnect
+# publicly reachable by itself — that only happens if the app also has a
+# public IP allocated (`fly ips list -a anki-ai-cards-anki` should show none;
+# `fly ips release <addr>` if one ever appears). See AGENTS.md's "Headless
+# Anki deployment" section for the full one-time setup (Flycast IP
+# allocation, etc).
 #
 # The `anki_data` volume must exist before the first deploy — it is NOT
 # created automatically from this file. See README.md's deploy section for
@@ -25,6 +37,13 @@ primary_region = 'iad'
 [[mounts]]
   source = 'anki_data'
   destination = '/data'
+
+[http_service]
+  internal_port = 8765
+  force_https = false
+  auto_stop_machines = 'off'
+  auto_start_machines = false
+  min_machines_running = 1
 
 [[vm]]
   size = 'shared-cpu-1x'

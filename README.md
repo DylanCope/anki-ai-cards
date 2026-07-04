@@ -239,8 +239,24 @@ Ralph loop never runs `fly deploy` itself):
 ```bash
 fly launch --config deploy/anki-headless/fly.toml --no-deploy   # first time only, creates the app
 fly volumes create anki_data --region iad --size 10 -a anki-ai-cards-anki   # GB — must exist before first deploy
+fly ips allocate-v6 --private -a anki-ai-cards-anki   # Flycast address — see below for why this is needed
 fly deploy --config deploy/anki-headless/fly.toml
+fly ips list -a anki-ai-cards-anki   # confirm: only the private Flycast address, no public IPs
 ```
+
+**Why Flycast, not raw `.internal`:** AnkiConnect's web server is IPv4-only —
+its `webBindAddress` config must stay `0.0.0.0`; it fails to even start
+listening if changed to an IPv6 address like `::`. But Fly's private 6PN
+network (`anki-ai-cards-anki.internal`) is direct machine-to-machine and
+IPv6-only, so the backend can never reach an IPv4-only listener over it.
+Flycast (`anki-ai-cards-anki.flycast`) routes through Fly's own proxy
+instead — same as the public proxy already does for health checks — which
+reaches the app over IPv4 internally regardless of the caller's protocol.
+`fly ips allocate-v6 --private` is what makes the Flycast address exist;
+`deploy/anki-headless/fly.toml`'s `[http_service]` block is required for
+Flycast to work at all, but does **not** by itself make AnkiConnect publicly
+reachable — only a public IP would do that, hence checking `fly ips list`
+shows none.
 
 Size the volume for your collection: 10GB is comfortable for up to ~10,000
 notes with audio/images (roughly 1MB of media per note, well above what
@@ -270,10 +286,19 @@ Then, once deployed:
    container's entrypoint (Anki, Xvfb, x11vnc, AnkiConnect all start fresh —
    your AnkiWeb login and collection are untouched, they live on the volume):
    `fly apps restart anki-ai-cards-anki`, then reconnect the VNC proxy.
-5. This login persists on the `/data` volume — you shouldn't need to repeat
+5. **Leave AnkiConnect's `webBindAddress` config at `0.0.0.0`** (`Tools >
+   Add-ons > AnkiConnect > Config`) — its web server is IPv4-only and fails
+   to even start listening if set to `::` or another IPv6 form. Reachability
+   from the backend comes from Flycast (see above), not from changing this.
+6. This login persists on the `/data` volume — you shouldn't need to repeat
    it unless the volume is recreated.
-6. Verify: `fly proxy 8765 -a anki-ai-cards-anki` in another terminal, then
-   from `backend/`: `uv run python -m scripts.smoke_test_ankiconnect --url http://localhost:8765`
+7. **The real verification is the chat UI itself**, not a CLI smoke test —
+   `fly proxy`'s tunnel goes over the same direct 6PN path as raw
+   `.internal` addressing (bypassing Fly's proxy the same way app-to-app 6PN
+   does), so it can't validate the Flycast path the backend actually uses.
+   Once the backend is deployed with the updated `ANKICONNECT_URL`, ask the
+   chat agent to list your Anki note types — if it succeeds, Flycast is
+   working end to end.
 
 You can also trigger a manual AnkiWeb sync at any time without opening VNC,
 since AnkiConnect's `sync` action does exactly what clicking the sync button
@@ -281,7 +306,13 @@ in the GUI does:
 ```bash
 curl -s http://localhost:8765 -X POST -d '{"action": "sync", "version": 6}'
 ```
-(with `fly proxy 8765 -a anki-ai-cards-anki` running). Once the backend is
+(with `fly proxy 8765 -a anki-ai-cards-anki` running) — **if this stops
+working now that AnkiConnect only binds `0.0.0.0`**, it's the same
+IPv4-vs-IPv6 story as above: `fly proxy` may route the same direct-6PN way
+raw `.internal` calls do, which an IPv4-only listener can't answer over. If
+so, just ask the chat agent to sync instead (it calls the same action via
+Flycast, which does work), or open VNC and trigger the sync button in Anki's
+own UI directly. Once the backend is
 deployed, the inner agent calls this automatically after creating a note, so
 you shouldn't need to run this by hand in normal use.
 

@@ -24,9 +24,9 @@ PROGRESS.md are the only "memory" between iterations.
 ## Headless Anki deployment (manual steps for Dylan)
 
 Config lives at `deploy/anki-headless/fly.toml` (the `ankimcp/headless-anki`
-image, no code from this repo — see that file's header comment for why no
-public `[[services]]` are declared). The loop prepares/validates this config
-but must never run `fly deploy`, create/extend volumes, restart the app, or
+image, no code from this repo — see that file's header comment for the full
+Flycast story). The loop prepares/validates this config but must never run
+`fly deploy`, create/extend volumes, allocate IPs, restart the app, or
 perform the login below — all real infrastructure/side effects Dylan runs
 manually.
 
@@ -37,6 +37,27 @@ comfortable for up to ~10,000 notes with audio/images) before the first
 automatically from the fly.toml. Volumes can be extended later
 (`fly volumes extend <id> -a anki-ai-cards-anki --size <n>`, then
 `fly apps restart anki-ai-cards-anki` to pick it up) but never shrunk.
+
+**AnkiConnect must be reached via Flycast (`anki-ai-cards-anki.flycast`), not
+raw 6PN (`.internal`).** AnkiConnect's web server is IPv4-only —
+`webBindAddress` in its addon config must stay `0.0.0.0`; setting it to `::`
+makes it fail to even start listening ("Failed to listen on port 8765").
+Fly's private 6PN network is direct machine-to-machine and IPv6-only, so an
+IPv4-only listener is simply unreachable over it, no matter what it's bound
+to. Flycast routes through Fly's own proxy instead, which — like the public
+proxy reaching an app's health check — connects to the app over IPv4
+internally regardless of the caller's protocol. This needs: a private IPv6
+allocated for the app (`fly ips allocate-v6 --private -a anki-ai-cards-anki`),
+an `[http_service]` block in `deploy/anki-headless/fly.toml` (required for
+Flycast to function at all — but does not by itself expose anything
+publicly; confirm with `fly ips list -a anki-ai-cards-anki` that no public IP
+exists), and `backend/fly.toml`'s `ANKICONNECT_URL` pointed at the `.flycast`
+hostname. `fly proxy`'s tunnel likely goes over the same direct-6PN path as
+`.internal` (same as how VNC over `fly proxy` worked while AnkiConnect over
+`fly proxy` didn't, before this fix, since VNC's server binds more
+permissively than AnkiConnect's) — so it may not be a reliable way to test
+the Flycast path specifically. The real test is the chat agent successfully
+calling an AnkiConnect tool end to end.
 
 One-time AnkiWeb login via VNC, after that first deploy:
 
@@ -57,17 +78,17 @@ One-time AnkiWeb login via VNC, after that first deploy:
    container's entrypoint (Anki/Xvfb/x11vnc/AnkiConnect all start fresh; the
    AnkiWeb login and collection persist on the volume, untouched), then
    reconnect the VNC proxy.
-5. Once logged in, Anki's sync state persists in the `/data` volume mount, so
+5. Leave AnkiConnect's `webBindAddress` config (`Tools > Add-ons >
+   AnkiConnect > Config`) at `0.0.0.0` — see the Flycast note above for why.
+6. Once logged in, Anki's sync state persists in the `/data` volume mount, so
    this step should not need repeating across deploys/restarts of the same
    app — only if the volume is ever recreated.
-6. Verify AnkiConnect is up: run
-   `uv run python -m scripts.smoke_test_ankiconnect --url http://localhost:8765`
-   from `backend/` after also running `fly proxy 8765 -a anki-ai-cards-anki`
-   in another terminal (or from another Fly app on the same private network,
-   pointed at `anki-ai-cards-anki.internal:8765` directly, no proxy needed).
-   A manual AnkiWeb sync can also be triggered any time without VNC via
-   AnkiConnect's `sync` action directly: `curl -s http://localhost:8765 -X
-   POST -d '{"action": "sync", "version": 6}'` (with the 8765 proxy running).
+7. Verify AnkiConnect end to end via the chat agent (ask it to list Anki note
+   types), not via `fly proxy` + the smoke-test script from Dylan's own
+   machine — that CLI path likely can't validate Flycast reachability (see
+   above). The smoke-test script itself is still useful pointed at
+   `anki-ai-cards-anki.flycast:8765` from *within* another Fly app in the
+   same org (e.g. `fly ssh console -a anki-ai-cards-backend`).
 
 ## Backend/frontend deployment (manual steps for Dylan)
 
