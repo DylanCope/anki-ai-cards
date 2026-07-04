@@ -280,6 +280,7 @@ found if you invoke `fly deploy --config backend/fly.toml` from elsewhere
 ```bash
 cd backend
 fly launch --no-deploy   # first time only
+fly volumes create backend_data --region iad --size 1 -a anki-ai-cards-backend   # 1GB is ample, no media here
 fly secrets set -a anki-ai-cards-backend \
   ANTHROPIC_API_KEY=... ELEVENLABS_API_KEY=... \
   GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
@@ -291,6 +292,14 @@ fly deploy
 app's private address and mounts a volume for the SQLite database — no
 further config needed. Update your Google OAuth client's authorized redirect
 URI to the real backend URL's `/auth/google/callback` once you know it.
+
+**The backend must bind to `::` (IPv6), not `0.0.0.0`.** `backend/Dockerfile`
+already does this — Fly's private 6PN network (what the frontend uses to
+reach `anki-ai-cards-backend.internal`) is IPv6-only, so `0.0.0.0` (IPv4 only)
+leaves the backend unreachable from the frontend even though the public proxy
+(which reaches it over IPv4) and its health checks work fine. The tell-tale
+symptom is health checks green but the frontend logging `ECONNREFUSED`
+against the backend's `fdaa:...` address specifically.
 
 The backend is deliberately kept always-on (`min_machines_running = 1`,
 ~$2-3/month) rather than scaling to zero. The frontend reaches it over

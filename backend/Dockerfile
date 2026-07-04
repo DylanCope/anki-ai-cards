@@ -18,4 +18,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Fly's private 6PN network (used by the frontend to reach this app at
+# anki-ai-cards-backend.internal) is IPv6-only. Binding to 0.0.0.0 (IPv4
+# wildcard) leaves nothing listening on the IPv6 side, so 6PN connections get
+# ECONNREFUSED even though the public proxy's IPv4 health checks pass fine.
+# "::" is dual-stack by default on Linux, so it keeps accepting both.
+CMD ["uvicorn", "app.main:app", "--host", "::", "--port", "8000"]

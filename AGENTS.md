@@ -107,6 +107,24 @@ check `fly status -a anki-ai-cards-backend` and `fly logs` to confirm. Costs
 ~$2-3/month to keep it always-on; worth it for a chat app that needs to be
 reachable at unpredictable times.
 
+**The backend must bind to `::`, not `0.0.0.0`.** Fly's private 6PN network
+(what `anki-ai-cards-backend.internal` resolves over) is IPv6-only.
+`backend/Dockerfile`'s `CMD` binds Uvicorn to `::` for exactly this reason —
+`0.0.0.0` only listens on IPv4, so Fly's public proxy (which reaches the app
+over IPv4 — health checks pass fine) works either way, but 6PN connections
+from the frontend get `ECONNREFUSED` since nothing is listening on the IPv6
+side. `::` is dual-stack by default on Linux, so it satisfies both without
+needing two separate listeners. If this regresses (e.g. someone "simplifies"
+it back to `0.0.0.0`), the symptom is: health checks green, but the frontend
+logs `ECONNREFUSED` against the backend's `fdaa:...` 6PN address specifically
+— DNS resolves fine, the app is definitely running, it's just not listening
+on that address family.
+
+The `backend_data` volume, like `anki_data`, isn't created automatically —
+run `fly volumes create backend_data --region iad --size 1 -a
+anki-ai-cards-backend` before the first deploy (1GB is ample for a SQLite
+chat-history DB; no media lives here, unlike the Anki collection).
+
 ## flyctl in this sandbox
 
 `flyctl` is installed at `~/.fly/bin/flyctl` (not on PATH by default — add
