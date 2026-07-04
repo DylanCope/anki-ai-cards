@@ -31,3 +31,12 @@ export interface ChatResponseBody {
   reply: string;
   payloads: ChatPayload[];
 }
+
+export interface ChatErrorDetail {
+  error: string;
+  bug_report_id: number;
+}
+
+export interface ChatErrorBody {
+  detail: ChatErrorDetail;
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ChatResponseBody, ChatTurn } from "@/app/lib/types";
+import type { ChatErrorBody, ChatResponseBody, ChatTurn } from "@/app/lib/types";
 import MessageBubble from "@/app/components/MessageBubble";
 import AudioOptionsCard from "@/app/components/AudioOptionsCard";
 import CardPayloadCard from "@/app/components/CardPayloadCard";
@@ -64,7 +64,19 @@ export default function ChatApp() {
         setAuth("signed_out");
         return;
       }
-      if (!res.ok) throw new Error(`Chat request failed (${res.status})`);
+      if (!res.ok) {
+        let errorMessage = "Something went wrong sending that message. Please try again.";
+        try {
+          const errorBody = (await res.json()) as ChatErrorBody;
+          if (errorBody.detail?.bug_report_id) {
+            errorMessage = `Something went wrong — bug report #${errorBody.detail.bug_report_id} filed.`;
+          } else if (errorBody.detail?.error) {
+            errorMessage = errorBody.detail.error;
+          }
+        } catch {}
+        setError(errorMessage);
+        return;
+      }
       const body = (await res.json()) as ChatResponseBody;
       setTurns((prev) => [
         ...prev,

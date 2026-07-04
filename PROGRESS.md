@@ -14,6 +14,42 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 17: Bug report frontend
+- Did: `frontend/app/lib/types.ts` gained `ChatErrorDetail`
+  (`{error, bug_report_id}`) and `ChatErrorBody` (`{detail: ChatErrorDetail}`)
+  matching task 16's exact `HTTPException(500, detail={...})` response shape
+  (FastAPI nests the dict under a top-level `detail` key). In
+  `frontend/app/components/ChatApp.tsx`'s `sendMessage`, the `!res.ok` branch
+  no longer just throws a generic `Error` — it now attempts
+  `await res.json()` as a `ChatErrorBody` and, if `detail.bug_report_id` is
+  present, sets the error state to `` `Something went wrong — bug report
+  #${id} filed.` ``; falls back to `detail.error` if only that's present, and
+  to the original generic "Something went wrong sending that message..."
+  string if the body doesn't parse as JSON at all (e.g. a non-chat 500, or a
+  network-level failure that never reaches this branch and is instead caught
+  by the outer `catch`). No new component or page — per PRD's "out of scope"
+  list, task 17 deliberately doesn't add a bug-reports UI, just improves the
+  existing inline error message.
+- Verified: `cd frontend && npm run build && npm run lint` — both pass
+  (TypeScript compiles, ESLint clean, static prerender succeeds). Per
+  AGENTS.md, actual rendered appearance (does the "bug report #N filed"
+  message look right, does it show up in the right place in the thread) is a
+  manual browser check for Dylan — not something `npm run build`/`lint`
+  verifies. No backend changes, so `uv run pytest` wasn't re-run (unaffected).
+- Learned:
+  - Named the inner catch-scope variable `errorMessage`, not `message` —
+    the outer `sendMessage(text)` scope already has a `const message =
+    text.trim()` (the user's input text), and shadowing it with a `let
+    message` for the error string inside the `if (!res.ok)` block, while
+    legal JS, is exactly the kind of thing that reads fine now and causes a
+    real bug the next time someone edits this function and reaches for
+    `message` expecting the user's text.
+  - Didn't add a `bug_report_id` field to `ChatTurn`/render a persistent
+    "view bug report" link — PRD's Verify clause only asks for the inline
+    message text; a clickable deep link would need a bug-reports page, which
+    is explicitly out of scope (see PRD "Out of scope" list, "A dedicated
+    bug-reports page/UI").
+
 ## 2026-07-04 — Task 16: Bug report backend
 - Did: Added a `BugReport` table (`backend/app/models.py`): `id`,
   `message` (short, `str(exception)`), `detail` (full

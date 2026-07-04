@@ -259,7 +259,7 @@ consent, VNC login) remain Dylan's manual steps.
   (not a raw traceback), and both GET routes return the expected shape and
   require auth.
 
-- [ ] **17. Bug report frontend: surface the report inline in the chat UI.**
+- [x] **17. Bug report frontend: surface the report inline in the chat UI.**
   No separate bug-reports page (deliberately out of scope — single-user app,
   the API is enough for browsing history by hand) — just make the existing
   generic "Something went wrong..." error in `frontend/app/components/
