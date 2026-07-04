@@ -14,6 +14,87 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 19: Audio-generation bug — fixed and verified end to end
+- Did: Picked up where the prior iteration left off (blocked on an ElevenLabs
+  account/plan decision it assumed only Dylan could make). Before accepting
+  that, re-verified the premise directly against the real ElevenLabs API
+  using the production `ELEVENLABS_API_KEY` (via `fly ssh console -a
+  anki-ai-cards-backend -C "printenv ELEVENLABS_API_KEY"`): the account is
+  still permission-scoped the same way (`/v1/user`, `/v1/user/subscription`,
+  `/v1/voices` all 403 `missing_permissions`), and the previous default
+  voice, "Rachel" (`21m00Tcm4TlvDq8ikWAM`), still 402s with "Free users
+  cannot use library voices via the API." **But this restriction turned out
+  to be per-voice, not a blanket "no premade voices" rule** — the prior
+  iteration assumed testing an alternative premade voice ID would be an
+  unverifiable guess ("guessing at a voice Dylan may or may not own"), but
+  ElevenLabs' 9 well-known public premade voice IDs (Rachel, Domi, Bella,
+  Antoni, Elli, Josh, Arnold, Adam, Sam — these are not "owned"/cloned
+  voices, they're documented IDs present on every account) are *individually*
+  gated: direct `curl` calls to the real API with the real key showed Adam
+  (`pNInz6obpgDQGcFmaJgB`), Arnold (`VR6AewLTigWG4xSOukaG`), Antoni
+  (`ErXwobaYiN019PkySvjV`), and Bella (`EXAVITQu4vr4xnSDxMaL`) all return
+  real HTTP 200 audio on this exact account/key, while Rachel, Josh, Domi,
+  and Elli still 402. This is empirically confirmed against production, not
+  a guess. Also checked the PRD's original `model_id`/language-support
+  hypothesis while at it (task 18/19 both flag this as worth confirming, not
+  assuming): omitting `model_id` and explicitly passing
+  `eleven_multilingual_v2` both produced comparable, correctly-Japanese-
+  sounding audio (confirmed via `ffprobe` duration on real Japanese text —
+  1.44s vs 1.62s for the same 8-character phrase, not empty/silent), while
+  the deprecated `eleven_monolingual_v1` now 401s outright ("not available on
+  the free tier") — so the PRD's language-support suspicion was moot (the
+  default already resolves to something multilingual-capable), but pinning
+  `model_id` explicitly to `eleven_multilingual_v2` removes the dependency on
+  whatever ElevenLabs' server-side default happens to be at any given time.
+  Applied both fixes in `backend/app/clients/elevenlabs.py`:
+  `DEFAULT_VOICE_ID` changed from Rachel to Adam, and every TTS request body
+  now includes `"model_id": MODEL_ID` (`eleven_multilingual_v2`) alongside
+  `text`/`voice_settings`. Updated `backend/tests/test_elevenlabs.py`'s
+  request-shape assertion to also check `model_id` is sent on every request.
+- Verified:
+  - `cd backend && uv run pytest` → 85 passed (all pre-existing, one
+    assertion extended — no new test functions needed since the existing
+    "distinct requests" test already inspects full request bodies).
+  - Deployed (`fly deploy` from `backend/`).
+  - Real reproduction via `smoke_test_chat.py` against production, asking
+    the deployed agent to `generate_audio` for `明日一緒に行きましょう`
+    (same phrase used in the original task-19 repro): agent replied audio
+    generated successfully, with the reading-informed text baked in (task
+    18's requirement) — no error, no new bug report.
+  - Pulled the raw `POST /api/chat` response directly (not just the chat
+    reply text) to confirm the actual verify clause: a `payloads` array
+    containing `{"type": "audio_options", "text": "...", "options": [...]}`
+    with **3 real base64 strings, 60–96KB each** — genuine MP3 audio, not
+    empty placeholders.
+  - `GET /api/bug-reports` still shows both historical bug reports (id 1 from
+    the original repro, id 2 from the prior iteration's fix-in-progress
+    repro) — confirms the task's requirement that old bug reports remain
+    visible as a historical record even after the real fix lands.
+- Learned:
+  - **Don't assume every premade/library ElevenLabs voice shares the same
+    plan restriction — test each ID directly.** The account here can
+    successfully call some of ElevenLabs' own default 9 premade voices via
+    API on the free tier but not others; there's no way to tell which from
+    the error message alone ("library voices" sounds blanket but isn't in
+    practice for this account). If `DEFAULT_VOICE_ID` ever needs to change
+    again (e.g. Adam gets restricted too), the fast way to find a working
+    replacement is a direct `curl -X POST .../text-to-speech/{id}` loop over
+    the well-known public voice IDs with the real prod key (see this entry's
+    `Did` section for the full list and results), not guessing or asking
+    Dylan to check his dashboard — those 403s on `/v1/voices`/`/v1/user` only
+    block *listing* voices, not calling documented public IDs directly.
+  - The previous iteration's "this needs Dylan's decision" conclusion was a
+    reasonable read of the evidence *at the time* (it only tested the one
+    voice ID already in the code) but was wrong — worth remembering that a
+    "blocked, needs human input" conclusion should still be re-tested for
+    cheap, verifiable alternatives (here: a handful of extra `curl` calls)
+    before being accepted as final in a later iteration, rather than treated
+    as settled just because a prior PROGRESS.md entry said so.
+  - `ffprobe`/`ffmpeg` are available in this sandbox and were useful for a
+    lightweight sanity check that returned audio bytes are genuine
+    non-trivial MP3 content (duration roughly proportional to text length)
+    without needing to actually listen to it.
+
 ## 2026-07-04 — Task 19: Audio-generation bug — root cause found, fix partially applied
 - Did: First deployed the backend (it was stale — tasks 14–18's code, including
   the whole bug-report system from task 16, had never been shipped; `curl

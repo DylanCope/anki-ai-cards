@@ -33,6 +33,7 @@ async def test_generate_audio_options_makes_three_distinct_requests():
 
     bodies = [json.loads(call.request.content) for call in route.calls]
     assert all(body["text"] == "食べる" for body in bodies)
+    assert all(body["model_id"] == elevenlabs.MODEL_ID for body in bodies)
     # Each request should use different voice settings so the outputs vary.
     voice_settings = [body["voice_settings"] for body in bodies]
     assert len({json.dumps(v, sort_keys=True) for v in voice_settings}) == 3

@@ -294,7 +294,7 @@ consent, VNC login) remain Dylan's manual steps.
   effectiveness in a live conversation is a judgment call, not something
   pytest checks.
 
-- [ ] **19. Fix the actual audio-generation bug, using the new bug-report
+- [x] **19. Fix the actual audio-generation bug, using the new bug-report
   system to diagnose it.** Blocked on task 16 (need the bug-report capture
   in place) and informed by task 18 (the fix should produce reading-accurate
   text for ElevenLabs, not just patch whatever the immediate error is).

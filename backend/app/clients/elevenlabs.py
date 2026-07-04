@@ -10,9 +10,24 @@ import httpx
 
 API_BASE_URL = "https://api.elevenlabs.io/v1"
 
-# A default premade ElevenLabs voice (public "Rachel" voice ID). The agent
-# layer can pass a different `voice_id` per call if needed later.
-DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+# A default premade ElevenLabs voice (public "Adam" voice ID). The previous
+# default, "Rachel" (21m00Tcm4TlvDq8ikWAM), 402s on Dylan's account ("Free
+# users cannot use library voices via the API") — confirmed directly against
+# the real API that ElevenLabs' free-tier "library voice" restriction is
+# per-voice, not blanket across all premade voices: this one (and several
+# other premade voices) return real audio on the same account/key, Rachel
+# does not. The agent layer can pass a different `voice_id` per call if
+# needed later.
+DEFAULT_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
+
+# Explicit multilingual model so Japanese text is synthesized correctly
+# regardless of whatever ElevenLabs defaults `model_id` to server-side.
+# Confirmed directly against the real API: omitting `model_id` and passing
+# "eleven_multilingual_v2" produce comparable Japanese audio today, but the
+# now-deprecated "eleven_monolingual_v1" 401s on this account ("not available
+# on the free tier") — pinning to a current multilingual model avoids
+# depending on which model an unset `model_id` happens to resolve to.
+MODEL_ID = "eleven_multilingual_v2"
 
 
 class ElevenLabsError(Exception):
@@ -51,7 +66,7 @@ async def generate_audio_options(
             response = await client.post(
                 f"{API_BASE_URL}/text-to-speech/{voice_id}",
                 headers={"xi-api-key": _api_key()},
-                json={"text": text, "voice_settings": voice_settings},
+                json={"text": text, "model_id": MODEL_ID, "voice_settings": voice_settings},
             )
             try:
                 response.raise_for_status()
