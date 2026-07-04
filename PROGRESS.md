@@ -14,6 +14,103 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 19: Audio-generation bug — root cause found, fix partially applied
+- Did: First deployed the backend (it was stale — tasks 14–18's code, including
+  the whole bug-report system from task 16, had never been shipped; `curl
+  https://anki-ai-cards-backend.fly.dev/api/bug-reports` 404'd before this
+  deploy). Then reproduced for real via `DEV_API_KEY=... uv run python -m
+  scripts.smoke_test_chat --message "...generate_audio...明日一緒に行きましょう"`
+  against production, which 500'd with `bug_report_id: 1`. Pulled the full
+  record via `GET /api/bug-reports/1` and got the actual traceback: `httpx
+  .HTTPStatusError: Client error '402 Payment Required'` from
+  `elevenlabs.py`'s `response.raise_for_status()` — **not** a language/model
+  support problem as the PRD's own hypothesis speculated. Confirmed directly
+  (bypassing the app, `curl -X POST
+  https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM` with
+  Dylan's real `ELEVENLABS_API_KEY`, pulled via `fly ssh console -a
+  anki-ai-cards-backend -C "printenv ELEVENLABS_API_KEY"`) what ElevenLabs'
+  response body actually says: `{"detail": {"type": "payment_required",
+  "code": "paid_plan_required", "message": "Free users cannot use library
+  voices via the API. Please upgrade your subscription to use this
+  voice."}}`. So the real root cause is an **ElevenLabs account/plan
+  restriction**: `DEFAULT_VOICE_ID` (the public premade "Rachel" voice,
+  chosen in task 4) is a "library" voice, and Dylan's ElevenLabs account is
+  on a plan that disallows calling TTS with library voices via the API at
+  all — no `model_id`/language-support issue was involved, `n=3` requests
+  would all fail identically regardless of text content or language.
+  Since this can't be fixed in code (it's a billing/plan decision, not a bug),
+  applied the fix that *is* in scope: `elevenlabs.py`'s
+  `generate_audio_options` now catches `httpx.HTTPStatusError` around
+  `raise_for_status()` and re-raises a new `ElevenLabsError` whose message
+  includes ElevenLabs' own JSON `detail.message` (falling back to
+  `response.text` if the body isn't JSON-shaped) instead of just httpx's
+  generic "Client error '402 Payment Required'" text — this is exactly the
+  "no error handling around the HTTP call" gap the PRD flagged, and it makes
+  future bug reports self-explanatory (see the re-verification below) without
+  needing to reproduce the call by hand again.
+- Verified:
+  - `cd backend && uv run pytest` → 85 passed (83 pre-existing + 2 new in
+    `tests/test_elevenlabs.py`: one asserts a mocked 402 with ElevenLabs'
+    real JSON error shape raises `ElevenLabsError` containing the API's
+    `message` text; one asserts a non-JSON error body falls back to
+    `response.text` rather than crashing on `.json()`).
+  - Re-deployed (`fly deploy` from `backend/`) and re-ran the exact same
+    `smoke_test_chat.py` reproduction against production: still a 500 (`bug_
+    report_id: 2`, expected — the account restriction isn't fixed by this
+    change), but `GET /api/bug-reports/2`'s `message` field now reads
+    `"ElevenLabs API error (402): Free users cannot use library voices via
+    the API. Please upgrade your subscription to use this voice."` — i.e.
+    the *real*, actionable cause is now visible from the short `message`
+    field alone (task 16's `GET /api/bug-reports` list view), not just
+    buried in a full traceback. Confirmed both bug reports (id 1 from before
+    this fix, id 2 from after) remain visible via `GET /api/bug-reports` as
+    a historical record, per the task's verify clause.
+  - **Did not achieve** the task's authoritative verify clause ("the same
+    reproduction call now returns real audio") — see Blocked below.
+- Blocked: The actual fix for "no real audio comes back" requires a decision
+  only Dylan can make, not a code change:
+  - Either upgrade the ElevenLabs account to a paid plan (any tier — the
+    error is about "library voices via the API" being paid-only, not about
+    quota/credits), or
+  - Supply a `voice_id` for a voice that *isn't* a shared/library voice (e.g.
+    one Dylan has cloned into his own account) that the free tier permits via
+    API — **unverified whether this exists or would even work**, because the
+    `ELEVENLABS_API_KEY` currently in use is scoped without `voices_read`/
+    `user_read` permissions (`GET /v1/voices` and `GET /v1/user/subscription`
+    both 403 with `"missing_permissions"` when tried directly). Listing
+    Dylan's actual voices to find a candidate would need a broader-scoped key
+    from Dylan, or Dylan checking his ElevenLabs dashboard himself.
+  - Did not attempt to change `DEFAULT_VOICE_ID` to a guessed alternative
+    voice ID — guessing at a voice Dylan may or may not own, with no way to
+    confirm it exists or belongs to him, isn't a "reasonable attempt," it's
+    just a different guess that could easily 404 or, worse, silently use the
+    wrong voice.
+  - This task stays unchecked in PRD.md. The code-level part of the fix
+    (real error surfacing, tested) is committed; the account-level part is
+    Dylan's call.
+- Learned:
+  - **Deploy hygiene gap:** tasks 14–18 were all committed but never actually
+    `fly deploy`'d to `anki-ai-cards-backend` before this iteration — the
+    PRD's own verify clauses for those tasks were pytest-only (or, for 14/15,
+    verified against a deploy done *during* that same iteration), so this
+    silently drifted. **Future iterations touching production-verified tasks
+    should check `fly status`/hit a known new endpoint first to confirm
+    what's actually live before assuming the last deploy included recent
+    commits** — don't assume "committed" means "deployed."
+  - ElevenLabs' `xi-api-key` header auth is scoped per-key (visible via the
+    403 `missing_permissions` responses for `/v1/user`, `/v1/user/subscription`,
+    `/v1/voices` — all denied for the key currently in prod) — whoever
+    generated Dylan's key limited it to (at least) TTS generation only. Any
+    future task wanting to introspect the account (list voices, check quota)
+    needs Dylan to either widen this key's permissions or supply a
+    separate one.
+  - The PRD's own hypothesis for this task (`model_id`/language-support) was
+    a reasonable guess but wrong — worth remembering that "the response has
+    no `model_id`" was true but a red herring; ElevenLabs defaults `model_id`
+    server-side and that was never in the error path at all. Confirming the
+    actual response body before fixing (as the task itself warned) is what
+    caught this.
+
 ## 2026-07-04 — Task 18: Scope furigana correctly (prompt-only change)
 - Did: Rewrote `backend/app/agent/prompts.py`'s `SYSTEM_PROMPT`. Two changes,
   both wording-only, no schema/tool changes:

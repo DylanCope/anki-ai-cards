@@ -14,6 +14,18 @@ API_BASE_URL = "https://api.elevenlabs.io/v1"
 # layer can pass a different `voice_id` per call if needed later.
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
+
+class ElevenLabsError(Exception):
+    """Raised when the ElevenLabs API returns a non-2xx response.
+
+    Wraps `httpx.HTTPStatusError` to surface ElevenLabs' own JSON `detail`
+    message (e.g. "Free users cannot use library voices via the API") instead
+    of just httpx's generic "Client error '402 Payment Required'" text, so a
+    captured `BugReport` (see `app/api/chat.py`) is diagnosable without
+    reproducing the call by hand.
+    """
+
+
 # Stability/similarity_boost pairs used to nudge each of the n options to
 # sound slightly different from the others.
 _VOICE_SETTINGS_VARIANTS = [
@@ -41,7 +53,16 @@ async def generate_audio_options(
                 headers={"xi-api-key": _api_key()},
                 json={"text": text, "voice_settings": voice_settings},
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                try:
+                    api_detail = response.json()["detail"]["message"]
+                except (ValueError, KeyError, TypeError):
+                    api_detail = response.text
+                raise ElevenLabsError(
+                    f"ElevenLabs API error ({response.status_code}): {api_detail}"
+                ) from exc
             results.append(response.content)
 
     return results

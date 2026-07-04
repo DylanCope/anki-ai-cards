@@ -50,3 +50,38 @@ async def test_generate_audio_options_respects_n():
     results = await elevenlabs.generate_audio_options("hello", n=1)
 
     assert results == [b"audio"]
+
+
+@respx.mock
+async def test_generate_audio_options_raises_elevenlabs_error_with_api_detail():
+    respx.post(
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+    ).mock(
+        return_value=Response(
+            402,
+            json={
+                "detail": {
+                    "type": "payment_required",
+                    "code": "paid_plan_required",
+                    "message": (
+                        "Free users cannot use library voices via the API. "
+                        "Please upgrade your subscription to use this voice."
+                    ),
+                    "status": "payment_required",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(elevenlabs.ElevenLabsError, match="library voices"):
+        await elevenlabs.generate_audio_options("hello", n=1)
+
+
+@respx.mock
+async def test_generate_audio_options_raises_elevenlabs_error_for_non_json_body():
+    respx.post(
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+    ).mock(return_value=Response(500, text="internal server error"))
+
+    with pytest.raises(elevenlabs.ElevenLabsError, match="internal server error"):
+        await elevenlabs.generate_audio_options("hello", n=1)
