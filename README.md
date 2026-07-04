@@ -179,19 +179,52 @@ Ralph loop never runs `fly deploy` itself):
 
 ```bash
 fly launch --config deploy/anki-headless/fly.toml --no-deploy   # first time only, creates the app
+fly volumes create anki_data --region iad --size 10 -a anki-ai-cards-anki   # GB — must exist before first deploy
 fly deploy --config deploy/anki-headless/fly.toml
 ```
 
-Then, once:
+Size the volume for your collection: 10GB is comfortable for up to ~10,000
+notes with audio/images (roughly 1MB of media per note, well above what
+short TTS clips and typical images use). Check an existing device's
+`collection.media` folder size if you want to size more precisely. Fly
+volumes can only be extended later, never shrunk, so it's fine to start
+generous. If you run out of space after the fact:
+
+```bash
+fly volumes list -a anki-ai-cards-anki                          # get the volume ID + current size
+fly volumes extend <volume-id> -a anki-ai-cards-anki --size 20   # bump it up
+fly apps restart anki-ai-cards-anki                              # picks up the new size
+```
+
+Then, once deployed:
 
 1. `fly proxy 5900 -a anki-ai-cards-anki`
 2. Connect any VNC client to `localhost:5900` (no VNC auth — the private
-   tunnel is the only access control).
-3. Inside the desktop, open Anki, sign into AnkiWeb with your real account.
-4. This persists on the `/data` volume — you shouldn't need to repeat it
-   unless the volume is recreated.
-5. Verify: `fly proxy 8765 -a anki-ai-cards-anki` in another terminal, then
+   tunnel is the only access control). [TigerVNC](https://tigervnc.org/) is a
+   good no-account option on Windows.
+3. Inside the desktop, open Anki, sign into AnkiWeb with your real account,
+   and wait for the initial sync to finish before doing anything else.
+4. Install the AnkiConnect addon (code `2055492159`) via `Tools > Add-ons >
+   Get Add-ons`. It requires an Anki restart to load — don't try to trigger
+   this from inside the GUI (there's no window manager to relaunch Anki if
+   you close it). Instead restart the whole machine, which safely re-runs the
+   container's entrypoint (Anki, Xvfb, x11vnc, AnkiConnect all start fresh —
+   your AnkiWeb login and collection are untouched, they live on the volume):
+   `fly apps restart anki-ai-cards-anki`, then reconnect the VNC proxy.
+5. This login persists on the `/data` volume — you shouldn't need to repeat
+   it unless the volume is recreated.
+6. Verify: `fly proxy 8765 -a anki-ai-cards-anki` in another terminal, then
    from `backend/`: `uv run python -m scripts.smoke_test_ankiconnect --url http://localhost:8765`
+
+You can also trigger a manual AnkiWeb sync at any time without opening VNC,
+since AnkiConnect's `sync` action does exactly what clicking the sync button
+in the GUI does:
+```bash
+curl -s http://localhost:8765 -X POST -d '{"action": "sync", "version": 6}'
+```
+(with `fly proxy 8765 -a anki-ai-cards-anki` running). Once the backend is
+deployed, the inner agent calls this automatically after creating a note, so
+you shouldn't need to run this by hand in normal use.
 
 ### 2. Backend
 
