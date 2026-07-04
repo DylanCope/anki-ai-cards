@@ -34,7 +34,13 @@ primary_region = 'iad'
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  # Must stay at least 1: the frontend reaches this app over private 6PN
+  # networking (ANKICONNECT_URL-style .internal address), which bypasses
+  # Fly's public proxy entirely. Only the public proxy auto-wakes a stopped
+  # machine on request — a fully-stopped machine makes `.internal` DNS
+  # resolution fail outright (ENOTFOUND), not just slow. min = 0 here breaks
+  # the frontend's chat API calls whenever the backend idles out.
+  min_machines_running = 1
 
   [[http_service.checks]]
     interval = '30s'

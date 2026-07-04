@@ -292,6 +292,16 @@ app's private address and mounts a volume for the SQLite database — no
 further config needed. Update your Google OAuth client's authorized redirect
 URI to the real backend URL's `/auth/google/callback` once you know it.
 
+The backend is deliberately kept always-on (`min_machines_running = 1`,
+~$2-3/month) rather than scaling to zero. The frontend reaches it over
+private 6PN networking (`.internal`), which bypasses Fly's public proxy — and
+only the public proxy auto-wakes a stopped machine on request. With
+`min_machines_running = 0`, the backend idling out breaks every chat request
+with `getaddrinfo ENOTFOUND anki-ai-cards-backend.internal` until something
+happens to hit its public URL directly. If the frontend ever shows
+"Loading..." forever with that error in its logs, check
+`fly status -a anki-ai-cards-backend` — a stopped machine here is the cause.
+
 ### 3. Frontend
 
 Same rule — run from inside `frontend/`:

@@ -94,6 +94,19 @@ it looks for the Dockerfile in the wrong place. (This is also why
 from the repo root — restored as an explicit empty `[build]` block, matching
 `frontend/fly.toml`.)
 
+**The backend's `[http_service]` must keep `min_machines_running = 1`, not
+0.** The frontend reaches the backend over private 6PN networking
+(`.internal`), which bypasses Fly's public proxy entirely — and only the
+public proxy auto-wakes a stopped machine on an incoming request. If the
+backend is allowed to scale to zero, `.internal` DNS resolution fails outright
+(`getaddrinfo ENOTFOUND anki-ai-cards-backend.internal`) the moment it idles
+out, breaking every chat request until its public URL is hit directly to wake
+it. This isn't a crash or billing issue if `fly apps list` shows the backend
+as "suspended" — that label just means its one machine is currently stopped;
+check `fly status -a anki-ai-cards-backend` and `fly logs` to confirm. Costs
+~$2-3/month to keep it always-on; worth it for a chat app that needs to be
+reachable at unpredictable times.
+
 ## flyctl in this sandbox
 
 `flyctl` is installed at `~/.fly/bin/flyctl` (not on PATH by default — add
