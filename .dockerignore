@@ -1,0 +1,73 @@
+# flyctl launch added from .gitignore
+**/ralph/logs
+**/ralph/STOP
+
+**/.env
+**/.env.*
+!**/.env.example
+
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.pytest_cache
+**/.ruff_cache
+
+**/node_modules
+**/.next
+**/dist
+**/build
+
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+
+# flyctl launch added from backend/.pytest_cache/.gitignore
+# Created by pytest automatically.
+backend/.pytest_cache/**/*
+
+# flyctl launch added from backend/.venv/.gitignore
+backend/.venv/**/*
+
+# flyctl launch added from frontend/.gitignore
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+frontend/node_modules
+frontend/.pnp
+frontend/**/.pnp.*
+frontend/**/.yarn/*
+!frontend/**/.yarn/patches
+!frontend/**/.yarn/plugins
+!frontend/**/.yarn/releases
+!frontend/**/.yarn/versions
+
+# testing
+frontend/coverage
+
+# next.js
+frontend/.next
+frontend/out
+
+# production
+frontend/build
+
+# misc
+frontend/**/.DS_Store
+frontend/**/*.pem
+
+# debug
+frontend/**/npm-debug.log*
+frontend/**/yarn-debug.log*
+frontend/**/yarn-error.log*
+frontend/**/.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+frontend/**/.env*
+
+# vercel
+frontend/**/.vercel
+
+# typescript
+frontend/**/*.tsbuildinfo
+frontend/**/next-env.d.ts
+fly.toml
