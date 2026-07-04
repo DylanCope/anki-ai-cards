@@ -21,6 +21,12 @@ EXPOSE 8000
 # Fly's private 6PN network (used by the frontend to reach this app at
 # anki-ai-cards-backend.internal) is IPv6-only. Binding to 0.0.0.0 (IPv4
 # wildcard) leaves nothing listening on the IPv6 side, so 6PN connections get
-# ECONNREFUSED even though the public proxy's IPv4 health checks pass fine.
-# "::" is dual-stack by default on Linux, so it keeps accepting both.
-CMD ["uvicorn", "app.main:app", "--host", "::", "--port", "8000"]
+# ECONNREFUSED. "::" is meant to be dual-stack (bindv6only=0 at the OS
+# level), but the deployed backend currently refuses IPv4 loopback
+# (127.0.0.1) while accepting IPv6 loopback (::1) -- root cause NOT yet
+# found; see PROGRESS.md's "Backend external reachability" entry for the
+# full investigation (what's confirmed, what's ruled out, what to try next)
+# before changing this again. --loop asyncio (added during that
+# investigation, to rule out uvloop forcing IPV6_V6ONLY) made no observable
+# difference -- kept because it's harmless, not because it's a fix.
+CMD ["uvicorn", "app.main:app", "--host", "::", "--port", "8000", "--loop", "asyncio"]

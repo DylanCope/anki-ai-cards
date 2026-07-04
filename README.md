@@ -231,8 +231,12 @@ cd frontend && npm run build && npm run lint     # frontend has no automated tes
 
 ## Deployment
 
-Three Fly.io apps, deployed in this order (each is a **manual step** — the
-Ralph loop never runs `fly deploy` itself):
+Three Fly.io apps, deployed in this order. The Ralph loop has standing
+authorization to run `fly deploy`/`fly logs`/`fly status`/`fly apps
+restart`/`fly ssh console` against all three (see AGENTS.md's "Autonomous
+deploy/debug access") — volume creation, IP allocation, and anything needing
+interactive UI access (OAuth consent, VNC login) remain manual steps for
+Dylan:
 
 ### 1. Headless Anki + AnkiConnect
 

@@ -183,3 +183,52 @@ def test_require_auth_rejects_tampered_cookie():
     response = protected_client.get("/protected")
 
     assert response.status_code == 401
+
+
+def test_require_auth_accepts_dev_api_key(monkeypatch):
+    monkeypatch.setenv("DEV_API_KEY", "test-dev-key")
+
+    protected_app = FastAPI()
+
+    @protected_app.get("/protected")
+    def protected(email: str = Depends(require_auth)):
+        return {"email": email}
+
+    response = TestClient(protected_app).get(
+        "/protected", headers={"Authorization": "Bearer test-dev-key"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"email": ALLOWED_EMAIL}
+
+
+def test_require_auth_rejects_wrong_dev_api_key(monkeypatch):
+    monkeypatch.setenv("DEV_API_KEY", "test-dev-key")
+
+    protected_app = FastAPI()
+
+    @protected_app.get("/protected")
+    def protected(email: str = Depends(require_auth)):
+        return {"email": email}
+
+    response = TestClient(protected_app).get(
+        "/protected", headers={"Authorization": "Bearer wrong-key"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_require_auth_rejects_dev_api_key_header_when_unset():
+    # DEV_API_KEY is not set by the autouse _set_env fixture, so any bearer
+    # token must be rejected — the bypass must be off by default.
+    protected_app = FastAPI()
+
+    @protected_app.get("/protected")
+    def protected(email: str = Depends(require_auth)):
+        return {"email": email}
+
+    response = TestClient(protected_app).get(
+        "/protected", headers={"Authorization": "Bearer anything"}
+    )
+
+    assert response.status_code == 401

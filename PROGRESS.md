@@ -14,6 +14,93 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 14 (new): Backend external reachability
+- Blocked: Dylan asked the deployed chat agent to list Anki note types and
+  got an error; investigating by hand (not a loop iteration) before handing
+  this off turned up a bigger, separate problem than AnkiConnect: the
+  backend itself is unreachable from outside Fly's network right now, and
+  has been for hours (predates today's `backend` redeploy — `fly status`
+  showed `1 total, 1 critical` the very first time it was checked this
+  session, before any of the changes below).
+- What's confirmed:
+  - `fly status -a anki-ai-cards-backend` → health check `critical`.
+    `curl https://anki-ai-cards-backend.fly.dev/health` and `/api/chat`
+    both hang/timeout (`000`, connection never establishes) from outside
+    Fly's network.
+  - `fly logs -a anki-ai-cards-backend` shows the edge proxy logging
+    `error.message="could not find a good candidate within 40 attempts at
+    load balancing"` for requests to `/health` and `/api/chat` — Fly's
+    public proxy won't route to this machine at all because it considers it
+    unhealthy.
+  - The backend process itself is fine and serving correctly **over the
+    private 6PN network**: from inside `anki-ai-cards-anki`'s container,
+    `python3 -c "import urllib.request;
+    urllib.request.urlopen('http://anki-ai-cards-backend.internal:8000/health')"`
+    returns `200 {"status":"ok"}`. So this is specifically an
+    external/public-path problem, not a crashed or hung app.
+  - Ran `fly apps restart -a anki-ai-cards-backend` to see if it was a
+    stale/stuck health-check registration rather than a live failure (the
+    `fly checks list` output showed `"gone"` with a timestamp frozen hours
+    in the past, which looked like a stuck monitor). It was not stuck: the
+    restart's own output polled `Waiting for ... to become healthy (started,
+    0/1)` for its entire timeout window and ended in `Error: failed to wait
+    for health checks to pass: context deadline exceeded` — the check is
+    actively, continuously failing in real time, not frozen.
+- What was tried and ruled out:
+  - **Hypothesis 1 (wrong): uvloop forces an IPv6-only bind.** `backend/
+    Dockerfile`'s `CMD` binds `--host ::` (needed for the frontend to reach
+    this app over 6PN, which is IPv6-only — see the existing "backend must
+    bind to `::`" note elsewhere in AGENTS.md). Verified via `fly ssh
+    console -a anki-ai-cards-backend` that the live process refuses IPv4
+    loopback (`127.0.0.1:8000` → `ConnectionRefusedError`) while accepting
+    IPv6 loopback (`::1:8000` → `200`) — a real, reproducible asymmetry.
+    Theorized uvicorn's default event loop (uvloop, libuv-based) was
+    forcing `IPV6_V6ONLY` on the socket regardless of the OS's dual-stack
+    default (`/proc/sys/net/ipv6/bindv6only` reads `0` on this machine).
+    Deployed `--loop asyncio` to `backend/Dockerfile`'s `CMD` to force the
+    stdlib loop instead (this change is live — don't re-do it, it's already
+    in the Dockerfile). **Made no difference**: re-tested after redeploy,
+    IPv4 loopback still refused, IPv6 loopback still fine. This hypothesis
+    is ruled out — it isn't (purely) about which event loop uvicorn uses.
+  - **Hypothesis 2 (unresolved): something specific to uvicorn's actual
+    running socket, not its bind code.** Replicated uvicorn's exact
+    `Config.bind_socket()` logic by hand (`socket.socket(family=AF_INET6)`,
+    `SO_REUSEADDR`, `bind(('::', <port>))`, `listen()`) via a `python3 -c`
+    one-liner run through `fly ssh console` on the *same* machine/container
+    — this produced a socket with `IPV6_V6ONLY=0` that happily accepted a
+    `127.0.0.1` connection in the same script. So a byte-for-byte replica of
+    uvicorn's own bind code works fine, but the real uvicorn process
+    (verified via `/proc/<pid>/cmdline`, confirmed running with `--loop
+    asyncio --host :: --port 8000`) still refuses IPv4 on the same port.
+    **This discrepancy was never explained** — whatever's different between
+    the replica and the real process is the actual root cause and is the
+    open thread for whoever picks this up next.
+  - Also checked `flyctl config show -a anki-ai-cards-backend` — the
+    registered `http_service`/`checks` config matches `fly.toml` exactly,
+    nothing corrupted there.
+- Learned / suggestions for next attempt:
+  - Don't trust `fly checks list`'s displayed timestamp/`"gone"` output as
+    evidence of a stale/frozen monitor — `fly apps restart`'s live polling
+    output is the more reliable signal of whether checks are actually
+    passing right now.
+  - The next concrete experiment worth running: temporarily set `--host
+    0.0.0.0` (dropping IPv6 support entirely) and redeploy, to conclusively
+    prove/disprove that the bind address is really the deciding factor for
+    the *public* path — if the health check immediately goes green, the fix
+    needs to serve both address families at once (since `0.0.0.0` alone
+    breaks the frontend→backend 6PN path, which is IPv6-only and is why
+    `::` was chosen in the first place by commit `607bf74`), e.g. by running
+    two separate listening sockets/processes, or finding whatever's
+    different about uvicorn's actual socket vs. the working hand-replica
+    above and fixing that specifically. Don't leave the app on `0.0.0.0`
+    permanently without also solving 6PN — that's the exact regression
+    `607bf74` was fixing.
+  - `backend/Dockerfile` currently has `--loop asyncio` in its `CMD` from
+    this investigation. It didn't fix the bug but also didn't break
+    anything — leave it unless a future finding says otherwise.
+
+---
+
 ## 2026-07-03 — Task 13: Manual end-to-end verification checklist
 - Did: Added `docs/manual_verification.md`, an 8-section manual checklist
   (sign-in/allowlist rejection, starting a chat and pointing at the real

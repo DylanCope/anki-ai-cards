@@ -2,8 +2,8 @@
 # Dockerfile in this directory. Deploying this must be run from *inside*
 # `frontend/` (`cd frontend && fly deploy`) — Fly uses the current working
 # directory as the build context, and this Dockerfile's COPY paths are
-# relative to this directory. This is a manual step for Dylan — the loop
-# must never run it.
+# relative to this directory. See AGENTS.md's "Autonomous deploy/debug
+# access" for who/what may run `fly deploy` against this app.
 
 app = 'anki-ai-cards-frontend'
 primary_region = 'iad'

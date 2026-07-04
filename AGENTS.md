@@ -27,10 +27,14 @@ Config lives at `deploy/anki-headless/` — `fly.toml`, plus a `Dockerfile` +
 `entrypoint.sh` that extend the prebuilt `ankimcp/headless-anki` image with a
 socat relay in front of AnkiConnect (see that directory's header comments for
 the full Flycast + relay story). Like `backend/`/`frontend/`, deploy from
-*inside* this directory, not the repo root with `--config`. The loop prepares/
-validates this config but must never run `fly deploy`, create/extend
-volumes, allocate IPs, restart the app, or perform the login below — all
-real infrastructure/side effects Dylan runs manually.
+*inside* this directory, not the repo root with `--config`.
+
+**The loop may run `fly deploy`/`fly logs`/`fly status`/`fly apps restart`/
+`fly ssh console` against all three apps** (`anki-ai-cards-anki`,
+`anki-ai-cards-backend`, `anki-ai-cards-frontend`) to iterate and debug
+autonomously — see "Autonomous deploy/debug access" below for what's still
+off-limits (creating/extending volumes, allocating IPs, and anything
+requiring interactive UI access, which remain Dylan's manual steps).
 
 The `anki_data` volume must be created (`fly volumes create anki_data
 --region iad --size 10 -a anki-ai-cards-anki`, size in GB — 10GB is
@@ -102,7 +106,9 @@ VNC over `fly proxy` worked while AnkiConnect over `fly proxy` didn't, before
 the relay, since VNC's server binds more permissively than AnkiConnect's) —
 so it's not a reliable way to test the Flycast+relay path specifically. The
 real test is the chat agent successfully calling an AnkiConnect tool end to
-end.
+end — run `backend/scripts/smoke_test_chat.py` (see "Autonomous deploy/debug
+access" below) rather than `fly proxy` + the AnkiConnect-level smoke test for
+this.
 
 One-time AnkiWeb login via VNC, after that first deploy:
 
@@ -129,9 +135,11 @@ One-time AnkiWeb login via VNC, after that first deploy:
    this step should not need repeating across deploys/restarts of the same
    app — only if the volume is ever recreated.
 7. Verify AnkiConnect end to end via the chat agent (ask it to list Anki note
-   types), not via `fly proxy` + the smoke-test script from Dylan's own
-   machine — that CLI path likely can't validate Flycast reachability (see
-   above). The smoke-test script itself is still useful pointed at
+   types) — run `backend/scripts/smoke_test_chat.py` (see "Autonomous
+   deploy/debug access" below) rather than `fly proxy` + the AnkiConnect-level
+   smoke test from Dylan's own machine, which can't validate Flycast
+   reachability (see above). `backend/scripts/smoke_test_ankiconnect.py` is
+   still useful for narrower checks pointed at
    `anki-ai-cards-anki.flycast:8766` (the relay's port, not AnkiConnect's own
    8765) from *within* another Fly app in the same org (e.g.
    `fly ssh console -a anki-ai-cards-backend`).
@@ -142,14 +150,15 @@ One-time AnkiWeb login via VNC, after that first deploy:
 `frontend/Dockerfile` build/deploy the two main apps. Neither fly.toml
 declares secrets (`ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`,
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL`,
-`SESSION_SECRET_KEY`) — push those once via `fly secrets set -a
+`SESSION_SECRET_KEY`, `DEV_API_KEY`) — push those once via `fly secrets set -a
 anki-ai-cards-backend KEY=value` before the first deploy. `backend/fly.toml`'s
 `[env]` points `ANKICONNECT_URL` at the headless Anki app's private
 `.internal` address, `PUBLIC_APP_URL` at the frontend's public URL, and
 mounts a volume for `DATABASE_PATH`. `frontend/fly.toml`'s `[env]` points
 `BACKEND_URL` at the backend app's private `.internal` address (same
 reasoning as `next.config.ts`'s rewrite proxy — see that file's comment). The
-loop must never run `fly deploy` for either app — only Dylan does, manually.
+loop may run `fly deploy` for either app now (see "Autonomous deploy/debug
+access" below) — this was previously Dylan-only.
 
 **Run `fly launch`/`fly deploy` from inside `backend/` or `frontend/`
 respectively, not the repo root with `--config <dir>/fly.toml`.** Fly uses
@@ -210,25 +219,55 @@ browser's JS actually calls for `/api/*`.
 ## flyctl in this sandbox
 
 `flyctl` is installed at `~/.fly/bin/flyctl` (not on PATH by default — add
-`~/.fly/bin` to PATH or invoke it by full path). There's no real Fly account
-logged in here, but `flyctl config validate --config <path>` only needs *any*
-`FLY_API_TOKEN` value (even a bogus one) to run its local schema check — it
-prints a `Metrics send issue: ... 401` warning (harmless, ignore it) but
-still validates the config and prints "Configuration is valid" / exits 0.
-Use this to verify any new/changed `fly.toml`, e.g.:
-`FLY_API_TOKEN=bogus ~/.fly/bin/flyctl config validate --strict --config backend/fly.toml`.
+`~/.fly/bin` to PATH or invoke it by full path). A real Fly account is logged
+in here (`flyctl auth whoami` returns Dylan's account) — `fly deploy`,
+`fly logs`, `fly status`, `fly apps restart`, and `fly ssh console` all hit
+the real production apps, with real (if small) cost and availability impact.
+`flyctl config validate --config <path>` remains useful for a quick local
+schema check before deploying anything, and only needs *any* `FLY_API_TOKEN`
+value (even a bogus one): `FLY_API_TOKEN=bogus ~/.fly/bin/flyctl config
+validate --strict --config backend/fly.toml`.
+
+## Autonomous deploy/debug access
+
+The loop has standing authorization to run `fly deploy`/`fly logs`/
+`fly status`/`fly apps restart`/`fly ssh console` against all three apps
+(`anki-ai-cards-anki`, `anki-ai-cards-backend`, `anki-ai-cards-frontend`)
+without asking Dylan first, so it can iterate on infra/connectivity bugs
+(e.g. the AnkiConnect segfault/connectivity saga above) end to end in one
+session. Still off-limits — these remain Dylan's manual steps: creating or
+extending volumes, allocating IPs, and anything requiring interactive UI
+access (Google OAuth consent, VNC login to the headless Anki instance).
+
+To test end to end without a browser OAuth flow, the backend accepts
+`Authorization: Bearer $DEV_API_KEY` as an alternate credential everywhere a
+session cookie is normally required (see `backend/app/auth.py`'s
+`require_auth`) — only active when the `DEV_API_KEY` env var is set. It's
+pushed as a real secret on `anki-ai-cards-backend` (`fly secrets list -a
+anki-ai-cards-backend` to confirm it's set; Dylan manages the actual value).
+Use `backend/scripts/smoke_test_chat.py` to exercise the real, deployed chat
+agent end to end (`DEV_API_KEY=... uv run python -m scripts.smoke_test_chat`
+from `backend/`, or pass `--url` to target something other than the
+production backend) — this is the authoritative way to verify an
+AnkiConnect-connectivity fix, since it goes through the same path the real
+chat UI does (agent → Docs/AnkiConnect tools → Flycast → relay → Anki).
 
 ## Known constraints
 
 - Two distinct agents exist in this project: the Ralph loop (builds this
   code) and the inner agent (the runtime Claude tool-use agent this code
   implements, defined in `backend/app/agent/`). Don't conflate them.
-- The loop must never attempt interactive OAuth consent, VNC logins to the
-  headless Anki instance, or `fly deploy` — these are one-time or
-  infrastructure-affecting steps Dylan runs manually. Prepare configs/docs
-  for them, don't execute them.
-- No test may make a real network call to Google, Anthropic, ElevenLabs, or
-  AnkiConnect. Mock everything at the `httpx`/SDK-client boundary.
+- The loop must never attempt interactive OAuth consent or VNC logins to the
+  headless Anki instance — one-time steps requiring a GUI, which Dylan runs
+  manually. It *may* run `fly deploy`/`fly logs`/`fly status`/
+  `fly apps restart`/`fly ssh console` (see "Autonomous deploy/debug access"
+  above).
+- No automated test may make a real network call to Google, Anthropic,
+  ElevenLabs, or AnkiConnect — mock everything at the `httpx`/SDK-client
+  boundary. `backend/scripts/smoke_test_chat.py` and
+  `smoke_test_ankiconnect.py` are deliberate exceptions: manual/loop-invoked
+  scripts for verifying real deployed infra, not part of `uv run pytest`
+  (their own unit tests mock the HTTP calls, same as everything else).
 - The app is single-user: access is gated to one Google account via
   `ALLOWED_EMAIL`. Don't add multi-user/auth-provider abstractions.
 - UI appearance/UX correctness can't be verified by the loop — flag it in

@@ -37,8 +37,8 @@
 # ~10,000 notes with audio/images). Fly volumes can be extended
 # (`fly volumes extend`) later but never shrunk, so size generously.
 #
-# Deploying this is a manual step for Dylan — the loop must never run
-# `fly deploy`.
+# See AGENTS.md's "Autonomous deploy/debug access" for who/what may run
+# `fly deploy` against this app.
 
 app = 'anki-ai-cards-anki'
 primary_region = 'iad'

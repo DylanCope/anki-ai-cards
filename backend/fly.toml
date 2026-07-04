@@ -2,15 +2,14 @@
 # Dockerfile in this directory. Deploying this must be run from *inside*
 # `backend/` (`cd backend && fly deploy`) — Fly uses the current working
 # directory as the build context, and this Dockerfile's COPY paths are
-# relative to this directory. Running `fly deploy --config backend/fly.toml`
-# from elsewhere fails with "app does not have a Dockerfile or buildpacks
-# configured." This is a manual step for Dylan — the loop must never run it.
+# relative to this directory. See AGENTS.md's "Autonomous deploy/debug
+# access" for who/what may run `fly deploy` against this app.
 #
 # Secrets are NOT set here (fly.toml is not a secret store) — they must be
 # pushed once via `fly secrets set -a anki-ai-cards-backend KEY=value` before
 # the first deploy:
 #   ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, GOOGLE_CLIENT_ID,
-#   GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL, SESSION_SECRET_KEY
+#   GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL, SESSION_SECRET_KEY, DEV_API_KEY
 # The [env] block below only holds non-secret configuration.
 
 app = 'anki-ai-cards-backend'

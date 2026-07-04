@@ -52,6 +52,9 @@ anyone else at the callback. Store tokens in the `OAuthToken` table.
 - `ALLOWED_EMAIL` — the one Google account allowed to use the app.
 - `ANKICONNECT_URL` — base URL of the headless Anki instance.
 - `DATABASE_PATH` — SQLite file location.
+- `DEV_API_KEY` (optional) — bearer-token bypass for session-cookie auth, used
+  by `backend/scripts/smoke_test_chat.py` and the Ralph loop to call the API
+  without a browser OAuth flow. Unset disables the bypass entirely.
 
 **Anki hosting:** headless Anki + AnkiConnect via the `ankimcp/headless-anki`
 Docker image, deployed as its own Fly.io app with a persistent volume. Logged
@@ -69,9 +72,11 @@ The agent — not hardcoded logic — decides field mapping, cloze structure,
 and when to ask Dylan a clarifying question.
 
 **Deployment:** Fly.io for both the backend/frontend app and the headless
-Anki app. The loop may write and validate `fly.toml`/Dockerfiles but must
-never run `fly deploy` itself — that's a real infrastructure change Dylan
-runs manually.
+Anki app. The loop has standing authorization to run `fly deploy`/`fly
+logs`/`fly status`/`fly apps restart`/`fly ssh console` against all three
+apps (see AGENTS.md's "Autonomous deploy/debug access") — creating/extending
+volumes, allocating IPs, and anything requiring interactive UI access (OAuth
+consent, VNC login) remain Dylan's manual steps.
 
 ## Tasks
 
@@ -166,6 +171,72 @@ runs manually.
   accurately reflects the built system's actual flow (cross-check against
   tasks 1–12) — running the checklist itself is your manual job, not the loop's.
 
+- [ ] **14. Fix the backend's broken external reachability — this blocks
+  everything below, do it first.** `anki-ai-cards-backend`'s own health
+  check (`GET /health`) has been continuously `critical` for hours (`fly
+  status -a anki-ai-cards-backend` shows `1 total, 1 critical`; `fly checks
+  list -a anki-ai-cards-backend` shows it actively failing, not just a stale
+  registration — confirmed by watching `fly apps restart` poll it live and
+  time out with `context deadline exceeded`), and Fly's public proxy refuses
+  to route to it at all (`fly logs` shows `"could not find a good candidate
+  within 40 attempts at load balancing"` for both `/health` and `/api/chat`).
+  This means **no external request reaches the backend right now** — this
+  is very likely the actual reason Dylan's original "list Anki note types"
+  request errored, independent of anything AnkiConnect-related in task 15.
+  See the 2026-07-04 PROGRESS.md entry ("Blocked: backend external
+  reachability") for the full investigation already done and ruled out
+  before you start — read it before re-deriving any of this:
+  - Internal 6PN reachability is fine (`http://anki-ai-cards-backend.
+    internal:8000/health` returns 200 from a sibling Fly app), so the
+    process itself is up and serving — this is specifically an
+    external/public-path problem.
+  - Ruled out: uvicorn's default event loop (uvloop) forcing an IPv6-only
+    bind — `backend/Dockerfile`'s `CMD` already has `--loop asyncio` from
+    this investigation and it made no difference (still refuses IPv4
+    loopback, confirmed via `fly ssh console`).
+  - Ruled out (partially): a hand-replicated copy of uvicorn's exact
+    `bind_socket()` logic, run inside the same machine/namespace via `fly
+    ssh console`, produced a working dual-stack socket (`IPV6_V6ONLY=0`,
+    accepts both `127.0.0.1` and `::1`) — yet the real uvicorn process on
+    port 8000 refuses `127.0.0.1` while accepting `::1`. This discrepancy
+    was never explained — that's the open thread to pick up.
+  - Not yet tried: temporarily reverting `--host ::` to `--host 0.0.0.0` to
+    confirm/rule out the bind address as the deciding factor (would need to
+    also verify it doesn't just re-break the frontend→backend 6PN path this
+    app was built for in the first place — check both before deciding this
+    is the fix, not just the public health check).
+  You have standing authorization to run `fly deploy`/`fly logs`/`fly
+  status`/`fly apps restart`/`fly ssh console` against all three apps (see
+  AGENTS.md's "Autonomous deploy/debug access"). Verify: `curl https://anki-
+  ai-cards-backend.fly.dev/health` (or `fly status`) shows the check
+  passing, from outside any Fly app — this is verified against real infra,
+  not mocks. If you exhaust reasonable attempts, do not mark this done —
+  append to the "Blocked" entry in PROGRESS.md with what you additionally
+  tried and ruled out.
+
+- [ ] **15. Fix AnkiConnect connectivity in production, verified end to
+  end.** Blocked on task 14 — the backend must be externally reachable
+  before this can be tested at all. Dylan asked the deployed chat agent to
+  list Anki note types and got an error. AGENTS.md's "Headless Anki
+  deployment" section documents three layered fixes already attempted
+  (Flycast routing, a socat relay, and a D-Bus daemon + retry logic for
+  Anki's intermittent segfault) — none confirmed working end to end yet.
+  Use `backend/scripts/smoke_test_chat.py` (`DEV_API_KEY=... uv run python
+  -m scripts.smoke_test_chat`, from `backend/`) asking it to list note types
+  as your reproduction case, and `fly logs -a anki-ai-cards-anki` / `fly
+  logs -a anki-ai-cards-backend` to see what's actually failing. You have
+  standing authorization to run `fly deploy`/`fly logs`/`fly status`/`fly
+  apps restart`/`fly ssh console` against all three apps to iterate (see
+  AGENTS.md's "Autonomous deploy/debug access") — you do not need to ask
+  Dylan before deploying a fix attempt. Do not touch volumes, IPs, or
+  anything requiring VNC/OAuth UI access. Verify: `smoke_test_chat.py`
+  against the real production backend returns a reply that actually lists
+  Dylan's real Anki note types (not an error) — this is verified against
+  real infra rather than mocks; note the specific root cause and fix in
+  PROGRESS.md. If you exhaust reasonable attempts without success, do not
+  mark this done — record what you tried and ruled out in PROGRESS.md under
+  "Blocked" instead.
+
 ## Out of scope
 
 - Any source type other than the one Google Doc (no generic connector
@@ -173,8 +244,11 @@ runs manually.
 - Multi-user support or any auth beyond the single allowlisted email.
 - A no-code/UI workflow builder — flexibility comes from the agent's
   reasoning over tools, not a visual configuration surface.
-- The loop performing interactive OAuth consent, VNC logins, or `fly deploy`
-  — these are one-time or infrastructure-affecting actions Dylan runs himself.
+- The loop performing interactive OAuth consent or VNC logins — these remain
+  one-time actions Dylan runs himself. (`fly deploy` and other fly commands
+  are now in scope for the loop — see AGENTS.md's "Autonomous deploy/debug
+  access".)
 - Real (non-mocked) calls to Google, Anthropic, ElevenLabs, or AnkiConnect
-  from automated tests.
+  from the automated `pytest` suite (the manual/loop-invoked smoke-test
+  scripts are a deliberate exception — see AGENTS.md).
 - Streaming chat responses (SSE/WebSocket) — v1 is request/response.
