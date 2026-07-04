@@ -264,6 +264,18 @@ now builds a small custom image (see its `Dockerfile`/`entrypoint.sh`) that
 runs a `socat` relay in front of AnkiConnect: Flycast talks to the relay
 (port 8766), and the relay forwards to AnkiConnect over real
 `127.0.0.1:8765` loopback, which is the one thing proven to work reliably.
+
+**On top of that:** Anki itself segfaults intermittently and auto-restarts
+within a couple seconds (visible in `fly logs -a anki-ai-cards-anki` as
+`Segmentation fault` a few seconds after startup, preceded by a "Failed to
+connect to the bus" D-Bus error — happens on its own, not from anything you
+do in the VNC session). This plausibly explains why the Flycast path looked
+flaky in the first place: any request has a chance of landing in the dead
+window between a crash and restart. `entrypoint.sh` now also starts a real
+D-Bus daemon as an attempt to reduce this (not confirmed to fully fix it),
+and `backend/app/clients/ankiconnect.py` retries transient connection
+failures a few times regardless, so a request landing in that window should
+usually just succeed on retry rather than surfacing as an error.
 `fly ips allocate-v6 --private` is what makes the Flycast address exist;
 `deploy/anki-headless/fly.toml`'s `[http_service]` block (pointed at the
 relay's port 8766, not AnkiConnect's own 8765) is required for Flycast to

@@ -11,4 +11,11 @@
 # other side.
 socat TCP-LISTEN:8766,fork,reuseaddr TCP:127.0.0.1:8765 &
 
+# Anki's Qt/WebEngine UI expects a D-Bus system bus; none runs in this base
+# image, which correlates with an intermittent segfault a few seconds after
+# Anki starts (see Dockerfile comment and AGENTS.md). Starting one here is a
+# low-risk attempt to remove that as a variable.
+mkdir -p /run/dbus
+dbus-daemon --system --fork
+
 exec /startup.sh

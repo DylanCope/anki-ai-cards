@@ -62,14 +62,33 @@ trust this note — re-deriving this cost a long debugging session):
    anki app's own container) perfectly every time, but resets connections
    arriving via the Flycast-proxied path specifically (`ConnectionResetError`/
    `httpcore.ReadError` on the caller's side, nothing logged on AnkiConnect's
-   side since addon errors don't reach container stdout). Root cause inside
-   Fly's proxy behavior was never fully pinned down — rather than keep
+   side since addon errors don't reach container stdout). Rather than keep
    debugging third-party legacy code's exact timing/framing assumptions
    against infrastructure we can't directly observe, `deploy/anki-headless/`
-   now builds a custom image (`Dockerfile` + `entrypoint.sh`) running a
-   `socat` relay: Flycast talks to the relay (port 8766), which forwards to
+   builds a custom image (`Dockerfile` + `entrypoint.sh`) running a `socat`
+   relay: Flycast talks to the relay (port 8766), which forwards to
    AnkiConnect over genuine `127.0.0.1:8765` loopback — the one path proven
    to work reliably.
+3. **Anki itself segfaults intermittently and auto-restarts** (the base
+   image's `/startup.sh` loops `anki -b /data`, `sleep 2` forever) — seen in
+   `fly logs -a anki-ai-cards-anki` as `Segmentation fault` a few seconds
+   after `Starting Anki...`, unprompted by any user interaction (happens
+   during Anki's own startup, before anyone's even connected via VNC),
+   preceded by `Failed to connect to the bus: ... /run/dbus/system_bus_socket:
+   No such file or directory` (Anki's Qt/WebEngine UI expects a D-Bus system
+   bus; none ran in this environment). This plausibly explains *why* point 2
+   ever looked flaky/proxy-specific in the first place: any request has a
+   chance of landing in the few-second dead window between a crash and the
+   auto-restart, regardless of which network path it took. Two mitigations,
+   both in place now: `entrypoint.sh` starts a real `dbus-daemon --system`
+   before Anki launches (an attempt to remove the D-Bus absence as a
+   variable — not confirmed to fully eliminate the segfault), and
+   `backend/app/clients/ankiconnect.py`'s `invoke()` retries transient
+   connection errors (`ConnectError`/`ReadError`/`RemoteProtocolError`/
+   `ConnectTimeout`, never an AnkiConnect-reported `error` or HTTP status
+   error) up to `MAX_ATTEMPTS` times with `RETRY_DELAY_SECONDS` between
+   attempts — long enough to ride out the restart regardless of whether the
+   dbus fix helps.
 
 Setup needs: a private IPv6 allocated for the app (`fly ips allocate-v6
 --private -a anki-ai-cards-anki`), an `[http_service]` block in
