@@ -14,6 +14,45 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 18: Scope furigana correctly (prompt-only change)
+- Did: Rewrote `backend/app/agent/prompts.py`'s `SYSTEM_PROMPT`. Two changes,
+  both wording-only, no schema/tool changes:
+  (a) The opening job description no longer says the agent turns corrections
+  into "a Cloze card with furigana" — furigana is dropped from that blanket
+  claim entirely. New step 2 explicitly frames whether the visible card shows
+  furigana as Dylan's per-source call, to be settled the same way as field
+  mapping/cloze conventions, not a fixed rule to guess at.
+  (b) New step 3 (renumbering the rest of the workflow by one) instructs the
+  agent to always work out the correct reading for any Japanese text before
+  calling generate_audio and pass reading-informed text in, never bare kanji
+  — independent of whether the card itself displays furigana. Also added
+  "whether furigana should appear on the card" to the list of things worth a
+  clarifying question, and to the list of things `save_workflow_spec` should
+  capture once settled.
+- Verified: `cd backend && uv run pytest` → 83 passed (no regressions; this
+  was a prompt-string-only change, no test referenced the old wording —
+  confirmed via `grep -rn furigana --include=*.py .`, only hits are
+  `prompts.py` itself and an unrelated `models.py` field name/test fixture).
+  Per the task's own Verify clause, the prompt's actual effectiveness in a
+  live conversation (does the agent really ask about furigana display
+  preference, does it really derive readings before calling generate_audio)
+  is a judgment call for Dylan to observe in a real session, not something
+  pytest checks — flagging that explicitly rather than claiming it's been
+  behaviorally verified.
+- Learned:
+  - Deliberately did not touch `generate_audio`'s tool schema (still just
+    takes `text`) — the PRD is explicit this task is prompt-wording only,
+    and the schema already accepts arbitrary text, so "pass reading-informed
+    text" is achievable by the agent choosing what string to pass, no new
+    parameter needed. If task 19's actual audio-bug investigation finds a
+    reason the model needs a separate structured reading/furigana field
+    (e.g. because plain reading-substituted text still doesn't disambiguate
+    something ElevenLabs mishandles), that would be a schema change for task
+    19 to make, not this task.
+  - Left steps 4-7 (audio pick, note-type discovery, create_anki_note,
+    sync_anki) as pure renumbering — their content is unchanged from the
+    prior step 3-6.
+
 ## 2026-07-04 — Task 17: Bug report frontend
 - Did: `frontend/app/lib/types.ts` gained `ChatErrorDetail`
   (`{error, bug_report_id}`) and `ChatErrorBody` (`{detail: ChatErrorDetail}`)

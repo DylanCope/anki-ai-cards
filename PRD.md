@@ -271,7 +271,7 @@ consent, VNC login) remain Dylan's manual steps.
   npm run lint`; note in PROGRESS.md that the actual rendered appearance
   needs Dylan's manual check in a browser.
 
-- [ ] **18. Scope furigana correctly: a per-workflow display choice, but
+- [x] **18. Scope furigana correctly: a per-workflow display choice, but
   mandatory for accurate audio.** Dylan clarified that furigana appearing on
   the visible Anki card is his call per source/workflow (something a saved
   `save_workflow_spec` can already capture) — the system prompt currently
