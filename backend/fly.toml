@@ -24,6 +24,12 @@ primary_region = 'iad'
   ANKICONNECT_URL = 'http://anki-ai-cards-anki.internal:8765'
   # SQLite file lives on the persistent volume mounted below.
   DATABASE_PATH = '/data/anki-ai-cards.db'
+  # The frontend's public URL — used to build the OAuth redirect_uri (see
+  # backend/app/api/auth.py's _redirect_uri comment for why this can't be
+  # inferred from the incoming request). Must also be registered as an
+  # authorized redirect URI (+ "/auth/google/callback") on the Google Cloud
+  # OAuth client — NOT this backend app's own URL.
+  PUBLIC_APP_URL = 'https://anki-ai-cards-frontend.fly.dev'
 
 [[mounts]]
   source = 'backend_data'

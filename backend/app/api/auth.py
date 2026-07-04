@@ -25,14 +25,23 @@ STATE_COOKIE_NAME = "oauth_state"
 STATE_COOKIE_MAX_AGE_SECONDS = 600
 
 
-def _redirect_uri(request: Request) -> str:
-    return str(request.url_for("google_callback"))
+def _redirect_uri() -> str:
+    # Deliberately not derived from the incoming Request (e.g. request.url_for):
+    # every request arrives via the frontend's server-side rewrite proxy
+    # (next.config.ts), so the backend only ever sees that proxy's own address
+    # as its "incoming" host — in production that's the private
+    # anki-ai-cards-backend.internal 6PN address, which neither Google nor the
+    # user's browser can resolve. The redirect_uri must be the public origin
+    # the *browser* actually navigates on, which is the frontend's — that's
+    # also required for the session cookie set at the end of this flow to land
+    # on the right origin (same reasoning as the rewrite proxy itself).
+    return f"{os.environ['PUBLIC_APP_URL'].rstrip('/')}/auth/google/callback"
 
 
 @router.get("/login")
-async def google_login(request: Request) -> RedirectResponse:
+async def google_login() -> RedirectResponse:
     state = secrets.token_urlsafe(32)
-    auth_url = google_docs.build_authorize_url(_redirect_uri(request), state)
+    auth_url = google_docs.build_authorize_url(_redirect_uri(), state)
     response = RedirectResponse(auth_url)
     response.set_cookie(
         STATE_COOKIE_NAME,
@@ -50,7 +59,7 @@ async def google_callback(request: Request, code: str, state: str) -> RedirectRe
     if not expected_state or state != expected_state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    tokens = await google_docs.exchange_code_for_tokens(code, _redirect_uri(request))
+    tokens = await google_docs.exchange_code_for_tokens(code, _redirect_uri())
     userinfo = await google_docs.fetch_userinfo(tokens["access_token"])
     email = userinfo.get("email")
 

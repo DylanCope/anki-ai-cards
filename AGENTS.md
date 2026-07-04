@@ -78,11 +78,11 @@ declares secrets (`ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`,
 `SESSION_SECRET_KEY`) — push those once via `fly secrets set -a
 anki-ai-cards-backend KEY=value` before the first deploy. `backend/fly.toml`'s
 `[env]` points `ANKICONNECT_URL` at the headless Anki app's private
-`.internal` address and mounts a volume for `DATABASE_PATH`.
-`frontend/fly.toml`'s `[env]` points `BACKEND_URL` at the backend app's
-private `.internal` address (same reasoning as `next.config.ts`'s rewrite
-proxy — see that file's comment). The loop must never run `fly deploy` for
-either app — only Dylan does, manually.
+`.internal` address, `PUBLIC_APP_URL` at the frontend's public URL, and
+mounts a volume for `DATABASE_PATH`. `frontend/fly.toml`'s `[env]` points
+`BACKEND_URL` at the backend app's private `.internal` address (same
+reasoning as `next.config.ts`'s rewrite proxy — see that file's comment). The
+loop must never run `fly deploy` for either app — only Dylan does, manually.
 
 **Run `fly launch`/`fly deploy` from inside `backend/` or `frontend/`
 respectively, not the repo root with `--config <dir>/fly.toml`.** Fly uses
@@ -124,6 +124,21 @@ The `backend_data` volume, like `anki_data`, isn't created automatically —
 run `fly volumes create backend_data --region iad --size 1 -a
 anki-ai-cards-backend` before the first deploy (1GB is ample for a SQLite
 chat-history DB; no media lives here, unlike the Anki collection).
+
+**The OAuth `redirect_uri` must be built from `PUBLIC_APP_URL`, never
+inferred from the incoming request** (e.g. `request.url_for(...)`) — see
+`backend/app/api/auth.py`'s `_redirect_uri`. Every request, including the
+OAuth callback, arrives via the frontend's proxy, so the backend's own
+"incoming request" view of its host is always that proxy's address (the
+private `.internal` one in production) — inferring from it leaks that
+unreachable address to Google as the `redirect_uri`, and Google rejects it
+outright (`Error 400: invalid_request`) since it was never registered (and
+couldn't be reached by the browser even if it were). `PUBLIC_APP_URL` must
+match exactly what's registered as an authorized redirect URI on the Google
+Cloud OAuth client, and must be the **frontend's** URL, not the backend's —
+the whole point of routing `/auth/*` through the frontend's rewrite proxy is
+so the session cookie set at the end of the flow lands on the origin the
+browser's JS actually calls for `/api/*`.
 
 ## flyctl in this sandbox
 

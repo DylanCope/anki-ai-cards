@@ -163,10 +163,16 @@ read-only Docs access, in one OAuth client. This one has the most steps:
 4. **APIs & Services → Credentials** (or the **Clients** tab of Google Auth
    Platform): **Create Credentials → OAuth client ID**, application type
    **Web application**. Add both redirect URIs you'll need under **Authorized
-   redirect URIs** (one client can hold both):
-   - `http://localhost:8000/auth/google/callback` (local dev)
-   - `https://anki-ai-cards-backend.fly.dev/auth/google/callback` (production
-     — adjust if you use a custom domain)
+   redirect URIs** (one client can hold both). **These must be the
+   frontend's URLs, not the backend's** — every request (including the OAuth
+   callback) arrives at the backend via the frontend's proxy, and the
+   redirect must land on an origin your browser can actually reach and that
+   the session cookie can be scoped to (see `backend/app/api/auth.py`'s
+   `_redirect_uri` comment):
+   - `http://localhost:3000/auth/google/callback` (local dev — the
+     frontend's dev server port, not the backend's 8000)
+   - `https://anki-ai-cards-frontend.fly.dev/auth/google/callback`
+     (production — adjust if you use a custom domain)
 5. Copy the **Client ID** and **Client Secret** shown after creation.
 
    **Heads up:** keeping the app in "Testing" status (recommended here —
@@ -185,12 +191,21 @@ must match exactly what Google's userinfo endpoint returns for that account.
 **`SESSION_SECRET_KEY`** — signs the session cookie, no external account
 needed: `openssl rand -hex 32`.
 
+**`PUBLIC_APP_URL`** — the frontend's own public URL (no external account
+needed). Used to build the OAuth `redirect_uri` explicitly, since the backend
+can't safely infer it from the incoming request (every request arrives via
+the frontend's proxy, so the backend would otherwise see — and leak to
+Google — its own private address instead). Must match whatever you registered
+above: `http://localhost:3000` for local dev, the frontend's real
+`https://...fly.dev` URL in production.
+
 ### Run the backend
 
 ```bash
 cd backend
 uv sync
-DATABASE_PATH=./data/anki-ai-cards.db uv run uvicorn app.main:app --reload --port 8000
+DATABASE_PATH=./data/anki-ai-cards.db PUBLIC_APP_URL=http://localhost:3000 \
+  uv run uvicorn app.main:app --reload --port 8000
 ```
 
 (Load the rest of `.env` into the environment too — e.g. `export
@@ -289,9 +304,18 @@ fly deploy
 ```
 
 `backend/fly.toml` already points `ANKICONNECT_URL` at the headless Anki
-app's private address and mounts a volume for the SQLite database — no
-further config needed. Update your Google OAuth client's authorized redirect
-URI to the real backend URL's `/auth/google/callback` once you know it.
+app's private address, `PUBLIC_APP_URL` at the frontend's public URL (used to
+build the OAuth `redirect_uri` — see "Getting the secrets" above), and mounts
+a volume for the SQLite database — no further config needed, as long as the
+frontend app name matches what's already in `backend/fly.toml`'s
+`PUBLIC_APP_URL` and what you registered with Google.
+
+If signing in shows Google's **"Error 400: invalid_request"** page with a
+`redirect_uri` in the details that isn't the frontend's public URL (e.g. it
+shows the backend's private `.internal` address, or `localhost:8000` instead
+of `:3000`), that means `PUBLIC_APP_URL` and the Google Cloud OAuth client's
+authorized redirect URI have gotten out of sync — fix whichever one is wrong
+so both agree on the frontend's URL + `/auth/google/callback`.
 
 **The backend must bind to `::` (IPv6), not `0.0.0.0`.** `backend/Dockerfile`
 already does this — Fly's private 6PN network (what the frontend uses to
