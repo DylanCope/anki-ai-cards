@@ -23,12 +23,14 @@ PROGRESS.md are the only "memory" between iterations.
 
 ## Headless Anki deployment (manual steps for Dylan)
 
-Config lives at `deploy/anki-headless/fly.toml` (the `ankimcp/headless-anki`
-image, no code from this repo — see that file's header comment for the full
-Flycast story). The loop prepares/validates this config but must never run
-`fly deploy`, create/extend volumes, allocate IPs, restart the app, or
-perform the login below — all real infrastructure/side effects Dylan runs
-manually.
+Config lives at `deploy/anki-headless/` — `fly.toml`, plus a `Dockerfile` +
+`entrypoint.sh` that extend the prebuilt `ankimcp/headless-anki` image with a
+socat relay in front of AnkiConnect (see that directory's header comments for
+the full Flycast + relay story). Like `backend/`/`frontend/`, deploy from
+*inside* this directory, not the repo root with `--config`. The loop prepares/
+validates this config but must never run `fly deploy`, create/extend
+volumes, allocate IPs, restart the app, or perform the login below — all
+real infrastructure/side effects Dylan runs manually.
 
 The `anki_data` volume must be created (`fly volumes create anki_data
 --region iad --size 10 -a anki-ai-cards-anki`, size in GB — 10GB is
@@ -38,26 +40,50 @@ automatically from the fly.toml. Volumes can be extended later
 (`fly volumes extend <id> -a anki-ai-cards-anki --size <n>`, then
 `fly apps restart anki-ai-cards-anki` to pick it up) but never shrunk.
 
-**AnkiConnect must be reached via Flycast (`anki-ai-cards-anki.flycast`), not
-raw 6PN (`.internal`).** AnkiConnect's web server is IPv4-only —
-`webBindAddress` in its addon config must stay `0.0.0.0`; setting it to `::`
-makes it fail to even start listening ("Failed to listen on port 8765").
-Fly's private 6PN network is direct machine-to-machine and IPv6-only, so an
-IPv4-only listener is simply unreachable over it, no matter what it's bound
-to. Flycast routes through Fly's own proxy instead, which — like the public
-proxy reaching an app's health check — connects to the app over IPv4
-internally regardless of the caller's protocol. This needs: a private IPv6
-allocated for the app (`fly ips allocate-v6 --private -a anki-ai-cards-anki`),
-an `[http_service]` block in `deploy/anki-headless/fly.toml` (required for
-Flycast to function at all — but does not by itself expose anything
-publicly; confirm with `fly ips list -a anki-ai-cards-anki` that no public IP
-exists), and `backend/fly.toml`'s `ANKICONNECT_URL` pointed at the `.flycast`
-hostname. `fly proxy`'s tunnel likely goes over the same direct-6PN path as
-`.internal` (same as how VNC over `fly proxy` worked while AnkiConnect over
-`fly proxy` didn't, before this fix, since VNC's server binds more
-permissively than AnkiConnect's) — so it may not be a reliable way to test
-the Flycast path specifically. The real test is the chat agent successfully
-calling an AnkiConnect tool end to end.
+**AnkiConnect must be reached via Flycast (`anki-ai-cards-anki.flycast`) *and*
+through the socat relay (port 8766), never raw 6PN (`.internal`) or
+AnkiConnect's own port (8765) directly.** Two independent problems, both
+confirmed empirically (see PROGRESS.md/session history if it exists, or just
+trust this note — re-deriving this cost a long debugging session):
+
+1. AnkiConnect's web server is IPv4-only — `webBindAddress` in its addon
+   config must stay `0.0.0.0`; setting it to `::` makes it fail to even start
+   listening ("Failed to listen on port 8765"). Fly's private 6PN network is
+   direct machine-to-machine and IPv6-only, so an IPv4-only listener is
+   simply unreachable over it, no matter what it's bound to. Flycast routes
+   through Fly's own proxy instead, which — like the public proxy reaching an
+   app's health check — connects to the app over IPv4 internally regardless
+   of the caller's protocol.
+2. Flycast alone wasn't sufficient: AnkiConnect (`/data/addons21/2055492159/
+   web.py`) is a hand-rolled, single-threaded, `select()`-based HTTP server
+   with a 5-second socket timeout and a manual byte-level request parser —
+   not a standard library. Confirmed via direct SSH testing that it answers
+   genuine loopback connections (`curl http://127.0.0.1:8765` from inside the
+   anki app's own container) perfectly every time, but resets connections
+   arriving via the Flycast-proxied path specifically (`ConnectionResetError`/
+   `httpcore.ReadError` on the caller's side, nothing logged on AnkiConnect's
+   side since addon errors don't reach container stdout). Root cause inside
+   Fly's proxy behavior was never fully pinned down — rather than keep
+   debugging third-party legacy code's exact timing/framing assumptions
+   against infrastructure we can't directly observe, `deploy/anki-headless/`
+   now builds a custom image (`Dockerfile` + `entrypoint.sh`) running a
+   `socat` relay: Flycast talks to the relay (port 8766), which forwards to
+   AnkiConnect over genuine `127.0.0.1:8765` loopback — the one path proven
+   to work reliably.
+
+Setup needs: a private IPv6 allocated for the app (`fly ips allocate-v6
+--private -a anki-ai-cards-anki`), an `[http_service]` block in
+`deploy/anki-headless/fly.toml` pointed at the **relay's** port 8766 (not
+AnkiConnect's own 8765) — required for Flycast to function at all, but does
+not by itself expose anything publicly; confirm with `fly ips list
+-a anki-ai-cards-anki` that no public IP exists — and `backend/fly.toml`'s
+`ANKICONNECT_URL` pointed at `anki-ai-cards-anki.flycast:8766`. `fly proxy`'s
+tunnel likely goes over the same direct-6PN path as `.internal` (confirmed:
+VNC over `fly proxy` worked while AnkiConnect over `fly proxy` didn't, before
+the relay, since VNC's server binds more permissively than AnkiConnect's) —
+so it's not a reliable way to test the Flycast+relay path specifically. The
+real test is the chat agent successfully calling an AnkiConnect tool end to
+end.
 
 One-time AnkiWeb login via VNC, after that first deploy:
 
@@ -87,8 +113,9 @@ One-time AnkiWeb login via VNC, after that first deploy:
    types), not via `fly proxy` + the smoke-test script from Dylan's own
    machine — that CLI path likely can't validate Flycast reachability (see
    above). The smoke-test script itself is still useful pointed at
-   `anki-ai-cards-anki.flycast:8765` from *within* another Fly app in the
-   same org (e.g. `fly ssh console -a anki-ai-cards-backend`).
+   `anki-ai-cards-anki.flycast:8766` (the relay's port, not AnkiConnect's own
+   8765) from *within* another Fly app in the same org (e.g.
+   `fly ssh console -a anki-ai-cards-backend`).
 
 ## Backend/frontend deployment (manual steps for Dylan)
 

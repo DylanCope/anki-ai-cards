@@ -236,27 +236,39 @@ Ralph loop never runs `fly deploy` itself):
 
 ### 1. Headless Anki + AnkiConnect
 
+Same rule as backend/frontend — run from inside `deploy/anki-headless/`, not
+the repo root, since this now builds from a real Dockerfile in that directory:
+
 ```bash
-fly launch --config deploy/anki-headless/fly.toml --no-deploy   # first time only, creates the app
+cd deploy/anki-headless
+fly launch --no-deploy   # first time only, creates the app
 fly volumes create anki_data --region iad --size 10 -a anki-ai-cards-anki   # GB — must exist before first deploy
 fly ips allocate-v6 --private -a anki-ai-cards-anki   # Flycast address — see below for why this is needed
-fly deploy --config deploy/anki-headless/fly.toml
+fly deploy
 fly ips list -a anki-ai-cards-anki   # confirm: only the private Flycast address, no public IPs
 ```
 
-**Why Flycast, not raw `.internal`:** AnkiConnect's web server is IPv4-only —
-its `webBindAddress` config must stay `0.0.0.0`; it fails to even start
-listening if changed to an IPv6 address like `::`. But Fly's private 6PN
-network (`anki-ai-cards-anki.internal`) is direct machine-to-machine and
+**Why Flycast, and why a relay on top of it:** AnkiConnect's web server is
+IPv4-only — its `webBindAddress` config must stay `0.0.0.0`; it fails to even
+start listening if changed to an IPv6 address like `::`. But Fly's private
+6PN network (`anki-ai-cards-anki.internal`) is direct machine-to-machine and
 IPv6-only, so the backend can never reach an IPv4-only listener over it.
 Flycast (`anki-ai-cards-anki.flycast`) routes through Fly's own proxy
 instead — same as the public proxy already does for health checks — which
 reaches the app over IPv4 internally regardless of the caller's protocol.
+That alone wasn't quite enough, though: AnkiConnect turned out to be a
+hand-rolled, single-threaded HTTP server (not a standard library), which
+resets connections arriving via the Flycast-proxied path even though it
+handles genuine loopback connections perfectly — so `deploy/anki-headless/`
+now builds a small custom image (see its `Dockerfile`/`entrypoint.sh`) that
+runs a `socat` relay in front of AnkiConnect: Flycast talks to the relay
+(port 8766), and the relay forwards to AnkiConnect over real
+`127.0.0.1:8765` loopback, which is the one thing proven to work reliably.
 `fly ips allocate-v6 --private` is what makes the Flycast address exist;
-`deploy/anki-headless/fly.toml`'s `[http_service]` block is required for
-Flycast to work at all, but does **not** by itself make AnkiConnect publicly
-reachable — only a public IP would do that, hence checking `fly ips list`
-shows none.
+`deploy/anki-headless/fly.toml`'s `[http_service]` block (pointed at the
+relay's port 8766, not AnkiConnect's own 8765) is required for Flycast to
+work at all, but does **not** by itself make anything publicly reachable —
+only a public IP would do that, hence checking `fly ips list` shows none.
 
 Size the volume for your collection: 10GB is comfortable for up to ~10,000
 notes with audio/images (roughly 1MB of media per note, well above what
@@ -293,12 +305,13 @@ Then, once deployed:
 6. This login persists on the `/data` volume — you shouldn't need to repeat
    it unless the volume is recreated.
 7. **The real verification is the chat UI itself**, not a CLI smoke test —
-   `fly proxy`'s tunnel goes over the same direct 6PN path as raw
-   `.internal` addressing (bypassing Fly's proxy the same way app-to-app 6PN
-   does), so it can't validate the Flycast path the backend actually uses.
-   Once the backend is deployed with the updated `ANKICONNECT_URL`, ask the
-   chat agent to list your Anki note types — if it succeeds, Flycast is
-   working end to end.
+   `fly proxy`'s tunnel goes over the same direct 6PN path as raw `.internal`
+   addressing (confirmed: VNC over `fly proxy` worked while AnkiConnect over
+   `fly proxy` didn't, before the relay), so it can't validate the Flycast +
+   relay path the backend actually uses. Once the backend is deployed with
+   the updated `ANKICONNECT_URL` (port 8766, the relay — not AnkiConnect's
+   own 8765), ask the chat agent to list your Anki note types — if it
+   succeeds, the whole path is working end to end.
 
 You can also trigger a manual AnkiWeb sync at any time without opening VNC,
 since AnkiConnect's `sync` action does exactly what clicking the sync button
