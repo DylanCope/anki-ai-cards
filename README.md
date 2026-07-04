@@ -260,14 +260,23 @@ IPv6-only, so the backend can never reach an IPv4-only listener over it.
 Flycast (`anki-ai-cards-anki.flycast`) routes through Fly's own proxy
 instead — same as the public proxy already does for health checks — which
 reaches the app over IPv4 internally regardless of the caller's protocol.
-That alone wasn't quite enough, though: AnkiConnect turned out to be a
-hand-rolled, single-threaded HTTP server (not a standard library), which
-resets connections arriving via the Flycast-proxied path even though it
-handles genuine loopback connections perfectly — so `deploy/anki-headless/`
-now builds a small custom image (see its `Dockerfile`/`entrypoint.sh`) that
-runs a `socat` relay in front of AnkiConnect: Flycast talks to the relay
-(port 8766), and the relay forwards to AnkiConnect over real
-`127.0.0.1:8765` loopback, which is the one thing proven to work reliably.
+On top of that, AnkiConnect is a hand-rolled, single-threaded HTTP server
+(not a standard library) — as a defensive measure against its fragility,
+`deploy/anki-headless/` builds a small custom image (see its
+`Dockerfile`/`entrypoint.sh`) that runs a `socat` relay in front of it:
+Flycast talks to the relay (on the app's `internal_port`), and the relay
+forwards to AnkiConnect over real `127.0.0.1:8765` loopback.
+
+**Important:** a Flycast address (`<app>.flycast`) must always be dialed on
+port 80/443, never on the target app's `internal_port` directly — Flycast is
+a proxy that itself listens on the external port and forwards to
+`internal_port` from there, same as Fly's public proxy. Dialing
+`internal_port` directly bypasses the proxy and gets a bare, unrouted TCP
+connection that resets after a few seconds — this was the actual root cause
+behind an "AnkiConnect list note types" failure that looked identical to
+AnkiConnect itself rejecting proxied connections. `backend/fly.toml`'s
+`ANKICONNECT_URL` is `http://anki-ai-cards-anki.flycast` with no port suffix
+for exactly this reason.
 
 **On top of that:** Anki itself segfaults intermittently and auto-restarts
 within a couple seconds (visible in `fly logs -a anki-ai-cards-anki` as
@@ -281,10 +290,11 @@ and `backend/app/clients/ankiconnect.py` retries transient connection
 failures a few times regardless, so a request landing in that window should
 usually just succeed on retry rather than surfacing as an error.
 `fly ips allocate-v6 --private` is what makes the Flycast address exist;
-`deploy/anki-headless/fly.toml`'s `[http_service]` block (pointed at the
-relay's port 8766, not AnkiConnect's own 8765) is required for Flycast to
-work at all, but does **not** by itself make anything publicly reachable —
-only a public IP would do that, hence checking `fly ips list` shows none.
+`deploy/anki-headless/fly.toml`'s `[http_service]` block (its `internal_port`
+pointed at the relay, not AnkiConnect's own 8765 — this is the port Flycast
+forwards *to*, not the one callers dial) is required for Flycast to work at
+all, but does **not** by itself make anything publicly reachable — only a
+public IP would do that, hence checking `fly ips list` shows none.
 
 Size the volume for your collection: 10GB is comfortable for up to ~10,000
 notes with audio/images (roughly 1MB of media per note, well above what
@@ -325,9 +335,9 @@ Then, once deployed:
    addressing (confirmed: VNC over `fly proxy` worked while AnkiConnect over
    `fly proxy` didn't, before the relay), so it can't validate the Flycast +
    relay path the backend actually uses. Once the backend is deployed with
-   the updated `ANKICONNECT_URL` (port 8766, the relay — not AnkiConnect's
-   own 8765), ask the chat agent to list your Anki note types — if it
-   succeeds, the whole path is working end to end.
+   `ANKICONNECT_URL` set to `http://anki-ai-cards-anki.flycast` (port 80, no
+   port suffix — see above), ask the chat agent to list your Anki note
+   types — if it succeeds, the whole path is working end to end.
 
 You can also trigger a manual AnkiWeb sync at any time without opening VNC,
 since AnkiConnect's `sync` action does exactly what clicking the sync button

@@ -214,7 +214,7 @@ consent, VNC login) remain Dylan's manual steps.
   append to the "Blocked" entry in PROGRESS.md with what you additionally
   tried and ruled out.
 
-- [ ] **15. Fix AnkiConnect connectivity in production, verified end to
+- [x] **15. Fix AnkiConnect connectivity in production, verified end to
   end.** Blocked on task 14 — the backend must be externally reachable
   before this can be tested at all. Dylan asked the deployed chat agent to
   list Anki note types and got an error. AGENTS.md's "Headless Anki

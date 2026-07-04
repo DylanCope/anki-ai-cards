@@ -8,21 +8,21 @@
 # deployed from *inside* `deploy/anki-headless/`, not the repo root with
 # `--config` — see AGENTS.md.
 #
-# The backend reaches AnkiConnect via Flycast (`anki-ai-cards-anki.flycast`),
-# NOT raw 6PN (`.internal`) — AnkiConnect's underlying web server is IPv4-only
-# (its `webBindAddress` config must stay `0.0.0.0`; it fails to even start
-# listening if given an IPv6 address like `::`), but 6PN direct machine-to-
-# machine connections are IPv6-only. Flycast routes through Fly's own proxy
-# instead, which — like the public proxy — reaches the app over IPv4
-# internally. That alone wasn't enough, though: AnkiConnect's hand-rolled,
-# single-threaded socket server turned out to reset connections arriving via
-# Flycast specifically (works fine over genuine loopback, resets over the
-# proxied path — root cause never fully pinned down, likely a timing/framing
-# assumption its manual HTTP parser makes that a direct connection satisfies
-# but a proxied one doesn't). The socat relay (port 8766, this file's
-# internal_port) sidesteps that entirely: it's what Flycast actually talks
-# to, and it forwards to AnkiConnect over genuine 127.0.0.1:8765 loopback, so
-# AnkiConnect never has to handle the proxied connection directly.
+# The backend reaches AnkiConnect via Flycast (`anki-ai-cards-anki.flycast`,
+# dialed on port 80 — Flycast is itself a proxy that always listens on the
+# external port 80/443 and forwards to this file's `internal_port` from
+# there, same as Fly's public proxy; dialing `internal_port` directly from
+# the caller bypasses the proxy and just gets a connection reset ~3s later —
+# see AGENTS.md's "Headless Anki deployment" point 4 for the full story of
+# how long that went undiagnosed), NOT raw 6PN (`.internal`) — AnkiConnect's
+# underlying web server is IPv4-only (its `webBindAddress` config must stay
+# `0.0.0.0`; it fails to even start listening if given an IPv6 address like
+# `::`), but 6PN direct machine-to-machine connections are IPv6-only. As a
+# defensive measure against AnkiConnect's hand-rolled, single-threaded socket
+# server (see AGENTS.md point 2), a socat relay (port 8766, this file's
+# `internal_port` — the port Flycast forwards *to*, never what a caller
+# dials) sits in front of it: Flycast talks to the relay, and the relay
+# forwards to AnkiConnect over genuine 127.0.0.1:8765 loopback.
 #
 # The `[http_service]` block is required for Flycast to work at all, but does
 # NOT make AnkiConnect publicly reachable by itself — that only happens if

@@ -44,11 +44,12 @@ automatically from the fly.toml. Volumes can be extended later
 (`fly volumes extend <id> -a anki-ai-cards-anki --size <n>`, then
 `fly apps restart anki-ai-cards-anki` to pick it up) but never shrunk.
 
-**AnkiConnect must be reached via Flycast (`anki-ai-cards-anki.flycast`) *and*
-through the socat relay (port 8766), never raw 6PN (`.internal`) or
-AnkiConnect's own port (8765) directly.** Two independent problems, both
-confirmed empirically (see PROGRESS.md/session history if it exists, or just
-trust this note — re-deriving this cost a long debugging session):
+**AnkiConnect must be reached via Flycast (`anki-ai-cards-anki.flycast`, dialed
+on port 80 — see point 4, NOT the app's `internal_port`) *and* through the
+socat relay, never raw 6PN (`.internal`) or AnkiConnect's own port (8765)
+directly.** Several independent problems, all confirmed empirically (see
+PROGRESS.md/session history if it exists, or just trust this note —
+re-deriving this cost a long debugging session):
 
 1. AnkiConnect's web server is IPv4-only — `webBindAddress` in its addon
    config must stay `0.0.0.0`; setting it to `::` makes it fail to even start
@@ -58,21 +59,23 @@ trust this note — re-deriving this cost a long debugging session):
    through Fly's own proxy instead, which — like the public proxy reaching an
    app's health check — connects to the app over IPv4 internally regardless
    of the caller's protocol.
-2. Flycast alone wasn't sufficient: AnkiConnect (`/data/addons21/2055492159/
-   web.py`) is a hand-rolled, single-threaded, `select()`-based HTTP server
-   with a 5-second socket timeout and a manual byte-level request parser —
-   not a standard library. Confirmed via direct SSH testing that it answers
-   genuine loopback connections (`curl http://127.0.0.1:8765` from inside the
-   anki app's own container) perfectly every time, but resets connections
-   arriving via the Flycast-proxied path specifically (`ConnectionResetError`/
-   `httpcore.ReadError` on the caller's side, nothing logged on AnkiConnect's
-   side since addon errors don't reach container stdout). Rather than keep
-   debugging third-party legacy code's exact timing/framing assumptions
-   against infrastructure we can't directly observe, `deploy/anki-headless/`
-   builds a custom image (`Dockerfile` + `entrypoint.sh`) running a `socat`
-   relay: Flycast talks to the relay (port 8766), which forwards to
-   AnkiConnect over genuine `127.0.0.1:8765` loopback — the one path proven
-   to work reliably.
+2. AnkiConnect (`/data/addons21/2055492159/web.py`) is a hand-rolled,
+   single-threaded, `select()`-based HTTP server with a 5-second socket
+   timeout and a manual byte-level request parser — not a standard library.
+   `deploy/anki-headless/` builds a custom image (`Dockerfile` +
+   `entrypoint.sh`) running a `socat` relay in front of it (Flycast talks to
+   the relay on the app's `internal_port`, which forwards to AnkiConnect over
+   genuine `127.0.0.1:8765` loopback) as a defensive measure against this
+   server's fragility, rather than pointing Flycast at AnkiConnect's own port
+   directly. **Caveat:** the original justification recorded here — that
+   AnkiConnect itself was observed resetting connections arriving via the
+   Flycast-proxied path specifically — turned out to be confounded with point
+   4's port bug (dialing the app's `internal_port` directly instead of the
+   Flycast proxy's port 80 also produces a connection reset, indistinguishable
+   from this at the client). Whether AnkiConnect would in fact tolerate being
+   dialed directly through a *correctly-addressed* Flycast connection was
+   never re-tested after point 4 was found — the relay works and is low-risk,
+   so it was left in place rather than re-opening that question.
 3. **Anki itself segfaults intermittently and auto-restarts** (the base
    image's `/startup.sh` loops `anki -b /data`, `sleep 2` forever) — seen in
    `fly logs -a anki-ai-cards-anki` as `Segmentation fault` a few seconds
@@ -93,6 +96,30 @@ trust this note — re-deriving this cost a long debugging session):
    error) up to `MAX_ATTEMPTS` times with `RETRY_DELAY_SECONDS` between
    attempts — long enough to ride out the restart regardless of whether the
    dbus fix helps.
+4. **The actual, previously-undiagnosed root cause of task 15's "list Anki
+   note types" failure: `ANKICONNECT_URL` was dialing the anki app's
+   `internal_port` (8766, the relay's port) directly instead of Flycast's
+   proxy port (80).** Flycast is Fly's private-network equivalent of the
+   public proxy — the address you dial (`<app>.flycast`) is a proxy sitting
+   in front of the app, always listening on the service's *external* port
+   (80/443, same as `force_https`/`[http_service]` govern for the public
+   proxy) and forwarding from there to `internal_port` on an actual healthy
+   machine. Dialing `internal_port` directly bypasses this proxy entirely and
+   gets a bare TCP connection to... nothing — confirmed by replacing the
+   socat relay with a bare Python listener logging every accepted connection,
+   which never saw a single `accept()` while `anki-ai-cards-anki.flycast:8766`
+   was being dialed from the backend, even for a self-connection from the
+   anki app back to its own Flycast address. The client sees this as
+   `ConnectionResetError`/`httpcore.ReadError` roughly 3.3s after connecting
+   (Flycast's own give-up timeout) — indistinguishable from point 2's
+   originally-suspected AnkiConnect-level reset, which is why this went
+   undiagnosed for as long as it did. Fix: `backend/fly.toml`'s
+   `ANKICONNECT_URL` is now `http://anki-ai-cards-anki.flycast` (implicit port
+   80, force_https=false on that app means plain HTTP) — no port suffix.
+   **Never point `ANKICONNECT_URL` (or any Flycast address) at a port other
+   than 80/443** — that port always belongs to the target app's `fly.toml`,
+   dialed over genuine loopback/6PN from *inside* that app's own container,
+   never from a remote caller.
 
 Setup needs: a private IPv6 allocated for the app (`fly ips allocate-v6
 --private -a anki-ai-cards-anki`), an `[http_service]` block in
@@ -100,7 +127,8 @@ Setup needs: a private IPv6 allocated for the app (`fly ips allocate-v6
 AnkiConnect's own 8765) — required for Flycast to function at all, but does
 not by itself expose anything publicly; confirm with `fly ips list
 -a anki-ai-cards-anki` that no public IP exists — and `backend/fly.toml`'s
-`ANKICONNECT_URL` pointed at `anki-ai-cards-anki.flycast:8766`. `fly proxy`'s
+`ANKICONNECT_URL` pointed at `anki-ai-cards-anki.flycast` (port 80 — see point
+4 above, never the relay's own port). `fly proxy`'s
 tunnel likely goes over the same direct-6PN path as `.internal` (confirmed:
 VNC over `fly proxy` worked while AnkiConnect over `fly proxy` didn't, before
 the relay, since VNC's server binds more permissively than AnkiConnect's) —
@@ -140,8 +168,8 @@ One-time AnkiWeb login via VNC, after that first deploy:
    smoke test from Dylan's own machine, which can't validate Flycast
    reachability (see above). `backend/scripts/smoke_test_ankiconnect.py` is
    still useful for narrower checks pointed at
-   `anki-ai-cards-anki.flycast:8766` (the relay's port, not AnkiConnect's own
-   8765) from *within* another Fly app in the same org (e.g.
+   `anki-ai-cards-anki.flycast` (port 80 — see point 4 above, not the relay's
+   own port) from *within* another Fly app in the same org (e.g.
    `fly ssh console -a anki-ai-cards-backend`).
 
 ## Backend/frontend deployment (manual steps for Dylan)

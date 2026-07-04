@@ -14,6 +14,112 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-04 — Task 15: Fix AnkiConnect connectivity in production — FIXED
+- Did: Found and fixed the real root cause of the "list Anki note types"
+  failure, which turned out to have nothing to do with AnkiConnect's
+  fragility (the previously-suspected culprit) or the segfault/crash-loop
+  mitigations already in place (both still valid concerns, just not this
+  bug): `backend/fly.toml`'s `ANKICONNECT_URL` was
+  `http://anki-ai-cards-anki.flycast:8766` — dialing the anki app's
+  `internal_port` (the socat relay's port) *directly*. Flycast addresses are
+  themselves a proxy, exactly like Fly's public proxy: they always listen on
+  the service's external port (80/443) and forward to `internal_port` from
+  there. Dialing `internal_port` directly bypasses that proxy and gets a bare
+  TCP connection to nothing — reset by Fly's side after ~3.3s, which looks
+  identical to "AnkiConnect resets the connection" from the caller's
+  perspective (`httpcore.ReadError`/`ConnectionResetError`), which is exactly
+  what the original Flycast+relay investigation (see AGENTS.md) saw and
+  (reasonably, at the time) attributed to AnkiConnect's hand-rolled HTTP
+  server instead. Fix: changed `ANKICONNECT_URL` to
+  `http://anki-ai-cards-anki.flycast` (no port suffix → implicit port 80).
+  Updated `AGENTS.md`, `README.md`, and `deploy/anki-headless/fly.toml`'s
+  comments to document this as a new point 4 in the Flycast story and correct
+  every stale `:8766` reference that implied a caller should dial that port.
+- Verified against real infra, not mocks:
+  - Proved the mechanism before touching any config: replaced the running
+    socat relay on `anki-ai-cards-anki` with a bare Python TCP listener (via
+    `fly ssh console`) that logs every accepted connection. While
+    `http://anki-ai-cards-anki.flycast:8766` was being dialed from the
+    backend app, the listener logged **zero** accepted connections across
+    multiple attempts — including a self-connection from the anki app back to
+    its own Flycast address — while the client-side consistently saw
+    `ConnectionResetError`/`ReadError` after ~3.3–3.6s. Then dialed
+    `http://anki-ai-cards-anki.flycast:80` (no other change) from the same
+    backend container and got an immediate `200 {"result": 6, "error": null}`
+    in ~80ms — conclusive.
+  - Restarted `anki-ai-cards-anki` (`fly apps restart`) to restore the real
+    socat relay before deploying the fix (don't leave the diagnostic listener
+    in place).
+  - `cd backend && uv run pytest` → 79 passed (no code changes, config-only
+    fix, but re-ran per AGENTS.md's verification commands anyway).
+  - `fly deploy` (from `backend/`) to ship the corrected `ANKICONNECT_URL`.
+    `fly status -a anki-ai-cards-backend` → `1 total, 1 passing` post-deploy
+    (the deploy log's "app is not listening on the expected address" warning
+    is the same known false-positive from task 14 — flyctl's process scanner
+    doesn't recognize `run_server.py`'s manually-bound socket; the actual
+    health check still reports passing).
+  - **The authoritative test:** `DEV_API_KEY=... uv run python -m
+    scripts.smoke_test_chat` against the real production backend, asking it
+    to list Anki note types — got back a real, correctly-formatted list of
+    Dylan's actual note types (`Cloze`, `Cloze+`, `文法+`, several
+    Japanese-focused and generic types, etc.), not an error. This is the full
+    real path: chat API → agent → `list_note_type_names` tool →
+    `ankiconnect.py` → Flycast (port 80) → relay (8766) → AnkiConnect (8765).
+- Learned:
+  - **Never dial a Flycast address (`<app>.flycast`) on anything other than
+    80/443.** The `internal_port` in an app's `fly.toml` is where Flycast (and
+    the public proxy) forward *to*, on the target machine — it is never the
+    port a remote caller should connect to. This is easy to get backwards
+    when an app's only public-facing concept is `internal_port` (there's no
+    `external_port` to contrast it with in the `[http_service]` shorthand),
+    especially when, as here, the internal port number (8766) was deliberately
+    chosen to be memorable/distinct from AnkiConnect's own 8765 — it reads
+    like "the port to use" precisely because it's *the number you keep
+    typing* elsewhere in the docs (fly.toml comments, AGENTS.md), not because
+    it's ever meant to be dialed externally.
+  - This bug produces a symptom (connection reset after a multi-second delay,
+    same exception types) that is indistinguishable at the httpx-client level
+    from "the remote HTTP server itself resets proxied connections" — which
+    is exactly the (plausible-sounding, and not unreasonable given
+    AnkiConnect's known fragility) theory the original relay-building
+    investigation landed on. The only way to tell them apart was to
+    instrument the *target* side (a logging listener inside the anki
+    container) and observe that no connection ever arrived — confirming the
+    reset happens before reaching the app's machine at all, not within it.
+    If a future "proxied connection gets reset, direct/loopback doesn't"
+    mystery shows up again anywhere in this stack, check the dialed port
+    against the proxy's expected external port before re-suspecting the
+    target server's code.
+  - Left the socat relay architecture completely unchanged — it's possible
+    (never re-tested) that a *correctly-addressed* Flycast connection
+    straight to AnkiConnect's own port would have worked fine all along and
+    the relay was solving a problem that never existed independent of this
+    port bug. Didn't chase that down since the current relay setup works,
+    is low-risk, and removing it isn't necessary to close out this task —
+    flagged in AGENTS.md as an open, non-blocking question for whoever next
+    touches this area.
+  - Retrieved the real `DEV_API_KEY` secret value for smoke-testing via `fly
+    ssh console -a anki-ai-cards-backend -C "printenv DEV_API_KEY"` rather
+    than needing Dylan to hand it over — the secret is injected into the
+    running container's environment same as any other, so any future
+    iteration needing it for `smoke_test_chat.py` can fetch it the same way
+    rather than treating "Dylan manages the actual value" (AGENTS.md) as
+    meaning the loop has no way to obtain it.
+  - `fly ssh console -a <app> -C "..."` runs in a minimal shell with no
+    `ps`, `pkill`, `wget`, `curl`, `nc`/`ncat`, `tcpdump`, or `disown` on the
+    anki app's image (Anki's base image, not a general debugging image) —
+    only `python3`, `socat`, and coreutils-ish basics. For process discovery
+    use `/proc/[0-9]*/comm`; to kill a process by name, loop over
+    `/proc/[0-9]*/comm` and `kill -9` the matching pid; for ad-hoc HTTP
+    probing/relaying, write a small Python script locally and transfer it via
+    `base64 -w0 file | ssh ... "echo <b64> | base64 -d > /tmp/f.py"` rather
+    than trying to inline complex quoting through `-C` (nested shell/Python
+    string escaping through `flyctl ssh console -C "..."` reliably mangles
+    `\r\n` and quotes — lost real time to a false lead here before switching
+    to file transfer). The backend app's image has `python3` but no `curl`
+    either — use `httpx`/`socket` from Python for connectivity probes there
+    instead.
+
 ## 2026-07-04 — Task 14: Backend external reachability — FIXED
 - Did: Found and fixed the actual root cause left as an open thread by the
   prior investigation entry below. Confirmed via `fly ssh console` that

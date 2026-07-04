@@ -19,14 +19,19 @@ primary_region = 'iad'
 
 [env]
   # Reaches the headless Anki app (deploy/anki-headless/fly.toml) via Flycast
-  # (.flycast) on port 8766 — a socat relay, NOT AnkiConnect's own port 8765
-  # directly. Flycast alone got the connection through (fixing raw 6PN's
-  # IPv4-vs-IPv6 mismatch), but AnkiConnect's hand-rolled HTTP server then
-  # reset connections arriving via the proxied path anyway; the relay forwards
-  # to AnkiConnect over genuine 127.0.0.1 loopback, which works reliably.
+  # (.flycast) on port 80 — Flycast's Fly Proxy always listens on the
+  # service's *external* port (80/443, same as the public proxy) and forwards
+  # to that app's fly.toml `internal_port` (8766, a socat relay in front of
+  # AnkiConnect — NOT AnkiConnect's own port 8765 directly) from there.
+  # Dialing `internal_port` (8766) directly, as this used to do, bypasses the
+  # Fly Proxy entirely and gets a bare TCP connection that nothing is
+  # listening on at that address — hence a connection reset ~3s later once
+  # Flycast's own retry/timeout gives up, never even reaching the app's
+  # kernel socket (confirmed via a raw listener on the anki app that never
+  # saw an incoming connection while port 8766 was being dialed directly).
   # Still fully private — no public IP is allocated for the anki app. See
-  # deploy/anki-headless/fly.toml's header comment for the full story.
-  ANKICONNECT_URL = 'http://anki-ai-cards-anki.flycast:8766'
+  # deploy/anki-headless/fly.toml's header comment for the socat relay story.
+  ANKICONNECT_URL = 'http://anki-ai-cards-anki.flycast'
   # SQLite file lives on the persistent volume mounted below.
   DATABASE_PATH = '/data/anki-ai-cards.db'
   # The frontend's public URL — used to build the OAuth redirect_uri (see
