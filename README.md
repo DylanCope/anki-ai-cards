@@ -303,7 +303,13 @@ fly deploy
 ```
 
 `frontend/fly.toml` already points `BACKEND_URL` at the backend app's private
-address.
+address, both as a runtime `[env]` var and — necessarily — as a
+`[build.args]` value, since `next.config.ts` reads it at `next build` time to
+bake the `/api`/`/auth` proxy destination into Next's routes manifest; the
+runtime `[env]` value alone arrives too late for that. If the frontend loads
+forever and its logs show `ECONNREFUSED 127.0.0.1:8000`, that means it was
+built without the `BACKEND_URL` build arg (e.g. an image built before this
+fix) — `fly deploy` again to rebuild with it.
 
 ### After deploying
 

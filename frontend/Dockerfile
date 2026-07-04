@@ -10,6 +10,16 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+
+# BACKEND_URL must be available at build time, not just runtime: next.config.ts
+# reads process.env.BACKEND_URL at module load, and Next.js bakes the
+# rewrites() destination into its routes manifest during `next build` — the
+# standalone server never re-reads it live at startup. Fly's fly.toml [env]
+# block only sets runtime env vars, so this must come in as a build arg
+# (see frontend/fly.toml's [build.args]).
+ARG BACKEND_URL
+ENV BACKEND_URL=$BACKEND_URL
+
 RUN npm run build
 
 FROM node:24-slim AS runtime
