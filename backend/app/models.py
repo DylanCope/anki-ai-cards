@@ -15,11 +15,18 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#  Keep in sync with app.agent.model_registry.DEFAULT_MODEL_ID — duplicated
+# as a plain string here (rather than imported) so this persistence module
+# doesn't depend on the agent layer.
+_DEFAULT_MODEL_ID = "claude-opus-4-8"
+
+
 class Conversation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     # None until the first user message arrives, then set once from a
     # truncated snippet of it — see app.api.chat's post_chat.
     title: str | None = Field(default=None)
+    model: str = Field(default=_DEFAULT_MODEL_ID)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -116,6 +123,22 @@ def _add_conversation_id_column_if_missing(engine) -> None:
             conn.commit()
 
 
+def _add_conversation_model_column_if_missing(engine) -> None:
+    """Same rationale as `_add_conversation_id_column_if_missing` — adding
+    model selection to an already-deployed `Conversation` table needs its
+    own ALTER TABLE. Existing rows backfill to the prior hardcoded default
+    (Opus 4.8), preserving today's behavior for conversations that predate
+    model selection."""
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(conversation)")}
+        if "model" not in columns:
+            conn.exec_driver_sql(
+                f"ALTER TABLE conversation ADD COLUMN model TEXT NOT NULL DEFAULT '{_DEFAULT_MODEL_ID}'"
+            )
+            conn.commit()
+
+
 def _backfill_legacy_conversation(engine) -> None:
     """Any ConversationMessage row with no conversation_id predates the
     multi-conversation feature — group them all into one real Conversation
@@ -142,5 +165,6 @@ def init_db():
     engine = get_engine()
     SQLModel.metadata.create_all(engine)
     _add_conversation_id_column_if_missing(engine)
+    _add_conversation_model_column_if_missing(engine)
     _backfill_legacy_conversation(engine)
     return engine

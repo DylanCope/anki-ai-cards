@@ -8,6 +8,7 @@ import pytest
 from sqlmodel import Session
 
 from app.agent import core, tools, workflow_specs
+from app.agent.model_registry import DEFAULT_MODEL_ID
 from app.models import init_db
 
 
@@ -274,13 +275,13 @@ async def test_run_turn_no_tool_use(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        result = await core.run_turn([], "hi", model_id=DEFAULT_MODEL_ID)
 
     assert result["reply"] == "Hello Dylan!"
     assert len(call_snapshots) == 1
     kwargs = call_snapshots[0]
-    assert kwargs["model"] == core.MODEL_ID
+    assert kwargs["model"] == DEFAULT_MODEL_ID
     assert kwargs["tools"] == tools.TOOL_SCHEMAS
     assert kwargs["messages"][-1] == {"role": "user", "content": "hi"}
 
@@ -307,8 +308,8 @@ async def test_run_turn_one_tool_call_then_end_turn(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "what note types do I have?")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        result = await core.run_turn([], "what note types do I have?", model_id=DEFAULT_MODEL_ID)
 
     list_mock.assert_awaited_once_with()
     assert result["reply"] == "You have a Cloze note type."
@@ -344,8 +345,8 @@ async def test_run_turn_passes_access_token_to_tools(db, monkeypatch):
         side_effect=[tool_use_response, end_turn_response]
     )
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "read the doc", access_token="tok-xyz")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn([], "read the doc", access_token="tok-xyz", model_id=DEFAULT_MODEL_ID)
 
     fetch_mock.assert_awaited_once_with("abc", "tok-xyz")
 
@@ -374,8 +375,8 @@ async def test_run_turn_recovers_from_a_failing_tool_call(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "what note types do I have?")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        result = await core.run_turn([], "what note types do I have?", model_id=DEFAULT_MODEL_ID)
 
     assert result["reply"] == "I couldn't reach Anki just now — want me to try again?"
     assert len(call_snapshots) == 2
@@ -386,6 +387,28 @@ async def test_run_turn_recovers_from_a_failing_tool_call(db, monkeypatch):
     assert tool_result["tool_use_id"] == "toolu_3"
     assert tool_result["is_error"] is True
     assert "timed out" in tool_result["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_routes_to_the_gemini_provider_for_a_gemini_model(db, monkeypatch):
+    # run_turn must pick the provider adapter matching model_id's registry
+    # entry, not always Anthropic — this is the whole point of model
+    # selection. Patching gemini_provider.create_message directly (rather
+    # than mocking the underlying google-genai client, covered in
+    # test_gemini_provider.py) isolates core.py's provider-dispatch logic.
+    gemini_create = AsyncMock(
+        return_value=_response("end_turn", [_text_block("Konnichiwa!")])
+    )
+    monkeypatch.setattr(core.gemini_provider, "create_message", gemini_create)
+    anthropic_create = AsyncMock()
+    monkeypatch.setattr(core.anthropic_provider, "create_message", anthropic_create)
+
+    result = await core.run_turn([], "hi", model_id="gemini-2.5-flash")
+
+    assert result["reply"] == "Konnichiwa!"
+    gemini_create.assert_awaited_once()
+    assert gemini_create.await_args.kwargs["model_id"] == "gemini-2.5-flash"
+    anthropic_create.assert_not_awaited()
 
 
 # --- known workflow specs are surfaced at the start of a conversation ---
@@ -402,8 +425,8 @@ async def test_run_turn_surfaces_known_specs_on_empty_history(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn([], "hi", model_id=DEFAULT_MODEL_ID)
 
     system_prompt = call_snapshots[0]["system"]
     assert "lesson-doc" in system_prompt
@@ -420,8 +443,8 @@ async def test_run_turn_no_specs_uses_plain_system_prompt(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn([], "hi", model_id=DEFAULT_MODEL_ID)
 
     assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT
 
@@ -441,7 +464,7 @@ async def test_run_turn_does_not_surface_specs_on_nonempty_history(db, monkeypat
         {"role": "user", "content": "earlier message"},
         {"role": "assistant", "content": "earlier reply"},
     ]
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn(history, "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn(history, "hi", model_id=DEFAULT_MODEL_ID)
 
     assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT

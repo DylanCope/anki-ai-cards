@@ -6,11 +6,13 @@ import type {
   ChatResponseBody,
   ChatTurn,
   Conversation,
+  ModelInfo,
 } from "@/app/lib/types";
 import MessageBubble from "@/app/components/MessageBubble";
 import AudioOptionsCard from "@/app/components/AudioOptionsCard";
 import CardPayloadCard from "@/app/components/CardPayloadCard";
 import ConversationSidebar from "@/app/components/ConversationSidebar";
+import ModelSelector from "@/app/components/ModelSelector";
 import SignIn from "@/app/components/SignIn";
 
 type AuthState = "checking" | "signed_out" | "signed_in";
@@ -19,31 +21,43 @@ export default function ChatApp() {
   const [auth, setAuth] = useState<AuthState>("checking");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<number | null>(null);
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Bootstrap: load the conversation list, then open the most recently
-  // updated one (or create a fresh one if this account has none yet).
+  const activeConversation = conversations.find((c) => c.id === conversationId) ?? null;
+
+  // Bootstrap: load the model catalogue and conversation list, then open
+  // the most recently updated conversation (or create a fresh one if this
+  // account has none yet).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/conversations");
-        if (res.status === 401) {
+        const [conversationsRes, modelsRes] = await Promise.all([
+          fetch("/api/conversations"),
+          fetch("/api/models"),
+        ]);
+        if (conversationsRes.status === 401 || modelsRes.status === 401) {
           if (!cancelled) setAuth("signed_out");
           return;
         }
-        if (!res.ok) throw new Error(`Conversation list request failed (${res.status})`);
-        let list = (await res.json()) as Conversation[];
+        if (!conversationsRes.ok) {
+          throw new Error(`Conversation list request failed (${conversationsRes.status})`);
+        }
+        if (!modelsRes.ok) throw new Error(`Model list request failed (${modelsRes.status})`);
+        let list = (await conversationsRes.json()) as Conversation[];
+        const modelList = (await modelsRes.json()) as ModelInfo[];
         if (list.length === 0) {
           const created = await fetch("/api/conversations", { method: "POST" });
           list = [(await created.json()) as Conversation];
         }
         if (!cancelled) {
           setConversations(list);
+          setModels(modelList);
           setConversationId(list[0].id);
           setAuth("signed_in");
         }
@@ -107,6 +121,27 @@ export default function ChatApp() {
     if (sending || id === conversationId) return;
     setError(null);
     setConversationId(id);
+  }
+
+  async function changeModel(modelId: string) {
+    if (conversationId === null || sending) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelId }),
+      });
+      if (res.status === 401) {
+        setAuth("signed_out");
+        return;
+      }
+      if (!res.ok) throw new Error(`Model update failed (${res.status})`);
+      const updated = (await res.json()) as Conversation;
+      setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+    } catch {
+      setError("Could not change the model.");
+    }
   }
 
   async function sendMessage(text: string) {
@@ -178,6 +213,16 @@ export default function ChatApp() {
         disabled={sending}
       />
       <div className="flex flex-1 flex-col">
+        {activeConversation && (
+          <div className="flex justify-end border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+            <ModelSelector
+              models={models}
+              selectedId={activeConversation.model}
+              onSelect={changeModel}
+              disabled={sending}
+            />
+          </div>
+        )}
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-6">
           {turns.map((turn, index) => (
             <div key={index}>

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
+from app.agent.model_registry import DEFAULT_MODEL_ID
 from app.api import chat as chat_module
 from app.auth import create_session_cookie
 from app.main import app
@@ -72,7 +73,7 @@ def _new_conversation_id() -> int:
 
 
 def _text_only_run_turn(reply_text: str):
-    async def run_turn(history, message, *, access_token=None):
+    async def run_turn(history, message, *, access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -132,7 +133,7 @@ def test_post_chat_second_call_only_persists_new_messages_and_reuses_history(mon
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, access_token=None):
+    async def run_turn(history, message, *, access_token=None, model_id=None):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -170,7 +171,7 @@ def test_post_chat_keeps_separate_conversations_isolated(monkeypatch):
     conversation_b = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, access_token=None):
+    async def run_turn(history, message, *, access_token=None, model_id=None):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -211,7 +212,7 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
         session.refresh(clip_two)
         clip_ids = [clip_one.id, clip_two.id]
 
-    async def run_turn(history, message, *, access_token=None):
+    async def run_turn(history, message, *, access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -265,7 +266,7 @@ def test_post_chat_extracts_card_payload(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, access_token=None):
+    async def run_turn(history, message, *, access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -343,7 +344,7 @@ def test_post_chat_saves_bug_report_and_returns_500_without_traceback(monkeypatc
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, access_token=None):
+    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
         raise httpx.HTTPStatusError(
             "Bad response", request=httpx.Request("POST", "http://x"), response=httpx.Response(500)
         )
@@ -377,7 +378,7 @@ def test_post_chat_failure_still_persists_the_turn(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, access_token=None):
+    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -411,7 +412,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def failing_run_turn(history, message, *, access_token=None):
+    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -420,7 +421,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
         "/api/chat", json={"conversation_id": conversation_id, "message": "first try"}
     )
 
-    async def run_turn(history, message, *, access_token=None):
+    async def run_turn(history, message, *, access_token=None, model_id=None):
         captured_histories.append(history)
         return {
             "history": [
@@ -452,7 +453,7 @@ def test_list_and_get_bug_reports(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, access_token=None):
+    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -493,7 +494,7 @@ def test_get_chat_history_returns_text_only_transcript(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, access_token=None):
+    async def run_turn(history, message, *, access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -550,7 +551,90 @@ def test_create_conversation(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["title"] is None
+    assert body["model"] == DEFAULT_MODEL_ID
     assert "id" in body and "created_at" in body and "updated_at" in body
+
+
+def test_create_conversation_with_a_chosen_model():
+    _seed_token()
+    response = _authed_client().post("/api/conversations", json={"model": "gemini-2.5-flash"})
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "gemini-2.5-flash"
+
+
+def test_create_conversation_rejects_an_unknown_model():
+    _seed_token()
+    response = _authed_client().post("/api/conversations", json={"model": "gpt-4o"})
+
+    assert response.status_code == 400
+
+
+def test_update_conversation_model_requires_auth(client):
+    response = client.patch("/api/conversations/1", json={"model": "gemini-2.5-flash"})
+    assert response.status_code == 401
+
+
+def test_update_conversation_model_404s_for_unknown_conversation():
+    _seed_token()
+    response = _authed_client().patch(
+        "/api/conversations/999", json={"model": "gemini-2.5-flash"}
+    )
+    assert response.status_code == 404
+
+
+def test_update_conversation_model_rejects_an_unknown_model():
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    response = _authed_client().patch(
+        f"/api/conversations/{conversation_id}", json={"model": "gpt-4o"}
+    )
+
+    assert response.status_code == 400
+
+
+def test_update_conversation_model_switches_which_provider_a_later_turn_uses(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    captured_model_ids = []
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        captured_model_ids.append(model_id)
+        return {"history": [], "reply": "ok"}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    authed = _authed_client()
+
+    patch_response = authed.patch(
+        f"/api/conversations/{conversation_id}", json={"model": "gemini-2.5-pro"}
+    )
+    assert patch_response.status_code == 200
+    assert patch_response.json()["model"] == "gemini-2.5-pro"
+
+    authed.post("/api/chat", json={"conversation_id": conversation_id, "message": "hi"})
+
+    assert captured_model_ids == ["gemini-2.5-pro"]
+
+
+def test_list_models_requires_auth(client):
+    response = client.get("/api/models")
+    assert response.status_code == 401
+
+
+def test_list_models_returns_the_catalogue():
+    _seed_token()
+    response = _authed_client().get("/api/models")
+
+    assert response.status_code == 200
+    listed = response.json()
+    ids = {m["id"] for m in listed}
+    assert DEFAULT_MODEL_ID in ids
+    assert "gemini-2.5-flash" in ids
+    first = listed[0]
+    assert {"id", "provider", "display_name", "input_price_per_mtok", "output_price_per_mtok", "description"} <= set(
+        first.keys()
+    )
 
 
 def test_list_conversations_requires_auth(client):

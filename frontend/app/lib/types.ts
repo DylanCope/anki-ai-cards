@@ -3,8 +3,18 @@ export type ChatRole = "user" | "assistant";
 export interface Conversation {
   id: number;
   title: string | null;
+  model: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  provider: "anthropic" | "gemini";
+  display_name: string;
+  input_price_per_mtok: number;
+  output_price_per_mtok: number;
+  description: string;
 }
 
 export interface ChatHistoryEntry {

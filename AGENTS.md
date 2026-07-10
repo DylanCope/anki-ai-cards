@@ -176,7 +176,7 @@ One-time AnkiWeb login via VNC, after that first deploy:
 
 `backend/fly.toml` + `backend/Dockerfile` and `frontend/fly.toml` +
 `frontend/Dockerfile` build/deploy the two main apps. Neither fly.toml
-declares secrets (`ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`,
+declares secrets (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `ELEVENLABS_API_KEY`,
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL`,
 `SESSION_SECRET_KEY`, `DEV_API_KEY`) — push those once via `fly secrets set -a
 anki-ai-cards-backend KEY=value` before the first deploy. `backend/fly.toml`'s

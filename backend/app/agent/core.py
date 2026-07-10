@@ -1,30 +1,33 @@
-"""Agent core: drives the `anthropic` SDK's tool-use loop to completion.
+"""Agent core: drives the tool-use loop to completion against whichever
+model provider the conversation is set to.
 
-`run_turn` is the entry point task 9's chat API will call: given the prior
-conversation history and a new user message, it loops through Claude's
-tool_use requests (dispatching each via `app.agent.tools.dispatch_tool`)
-until Claude produces a final text reply.
+`run_turn` is the entry point the chat API calls: given the prior
+conversation history and a new user message, it loops through tool_use
+requests (dispatching each via `app.agent.tools.dispatch_tool`) until the
+model produces a final text reply. The loop itself is provider-agnostic —
+each provider adapter in `app.agent.providers` normalizes its response into
+the same Anthropic-shaped `{content: [...], stop_reason: ...}` object, since
+that's also what gets persisted and re-parsed by `app.api.chat`.
 """
 
 import json
-import os
-
-import anthropic
 
 from app.agent import workflow_specs
+from app.agent.model_registry import get_model
 from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.providers import anthropic_provider, gemini_provider
 from app.agent.tools import TOOL_SCHEMAS, dispatch_tool
 
-MODEL_ID = "claude-opus-4-8"
 MAX_TOKENS = 4096
 
 # Safety valve against a runaway tool-use loop (e.g. a tool that always
 # triggers another tool call) — not expected to be hit in normal operation.
 MAX_ITERATIONS = 10
 
-
-def _get_client() -> anthropic.AsyncAnthropic:
-    return anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+_PROVIDER_MODULES = {
+    "anthropic": anthropic_provider,
+    "gemini": gemini_provider,
+}
 
 
 def _build_system_prompt(history: list[dict]) -> str:
@@ -52,26 +55,29 @@ async def run_turn(
     message: str,
     *,
     access_token: str | None = None,
+    model_id: str,
 ) -> dict:
     """Run one user turn to completion, returning the updated history and
     the assistant's final text reply.
 
     `access_token` is the caller's Google OAuth access token, threaded
     through to tools (like `fetch_google_doc`) that need it — it is never
-    read from the model's tool input.
+    read from the model's tool input. `model_id` selects which model (and
+    therefore which provider adapter) drives this turn — see
+    `app.agent.model_registry`.
     """
 
-    client = _get_client()
+    provider_module = _PROVIDER_MODULES[get_model(model_id).provider]
     system_prompt = _build_system_prompt(history)
     messages: list[dict] = [*history, {"role": "user", "content": message}]
 
     for _ in range(MAX_ITERATIONS):
-        response = await client.messages.create(
-            model=MODEL_ID,
-            max_tokens=MAX_TOKENS,
+        response = await provider_module.create_message(
             system=system_prompt,
             tools=TOOL_SCHEMAS,
             messages=messages,
+            max_tokens=MAX_TOKENS,
+            model_id=model_id,
         )
         messages.append({"role": "assistant", "content": response.content})
 

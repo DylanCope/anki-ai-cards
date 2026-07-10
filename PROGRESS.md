@@ -14,6 +14,111 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-10 — Add Gemini as a second model provider, with a picker + pricing
+- Did: Dylan wanted Gemini support (he has a Google API key) plus model
+  selection — likely motivated by the recurring Anthropic credit-balance
+  exhaustion (bug reports 3/5-9, 12): the agent was hardcoded to
+  `claude-opus-4-8`, the priciest Claude tier, for every single turn.
+  - New `app/agent/model_registry.py`: a static catalogue of 6 models —
+    Claude Opus 4.8/Sonnet 5/Haiku 4.5 and Gemini 2.5 Pro/Flash/Flash-Lite —
+    each with `provider`, `display_name`, and per-MTok input/output pricing
+    (cached from ai.google.dev and the Anthropic pricing table as of
+    2026-07). `get_model(id)` validates and looks up.
+  - New `app/agent/providers/` package: `anthropic_provider.py` (the
+    existing Anthropic call, unchanged, just relocated) and
+    `gemini_provider.py`, both exposing the same
+    `create_message(system, tools, messages, max_tokens, model_id) ->
+    response` shape. `run_turn` (`app/agent/core.py`) now looks up
+    `model_id`'s provider and calls the matching module — the tool-use loop
+    itself doesn't change per provider.
+  - The Gemini adapter is the real engineering: Gemini's function-calling
+    API accepts Anthropic's `input_schema` almost as-is (its
+    `FunctionDeclaration.parameters_json_schema` takes raw JSON Schema
+    directly — confirmed against the installed `google-genai` 2.11.0 SDK via
+    Python introspection, not guessed from docs). What differs is message/
+    response shape: Gemini pairs function calls/responses by `name` (our
+    tool_result blocks only carry an id, so `_collect_tool_use_names` builds
+    an id→name map from the message history before translating); Gemini
+    only allows `role` "user"/"model" (no separate tool-result role); system
+    prompt is request config (`system_instruction`), not a content block.
+    Gemini responses get normalized into the same `SimpleNamespace`-based
+    shape (`.type`/`.text`/`.id`/`.name`/`.input`, `stop_reason` "tool_use"/
+    "end_turn") the rest of the codebase (persistence, `_extract_payloads`,
+    existing tests) already expects from Anthropic SDK objects — this is
+    also literally the same block-shape the test suite's `_text_block`/
+    `_tool_use_block` helpers already used, so no new representation was
+    invented, just reused. `automatic_function_calling.disable=True` is set
+    since we drive the loop ourselves, matching the existing manual-loop
+    pattern rather than Gemini's built-in auto-calling.
+  - `Conversation` gained a `model` column (another hand-rolled ALTER TABLE
+    migration, same pattern as the `conversation_id`/`model` columns before
+    it — existing rows backfill to the prior hardcoded default so nothing
+    changes for conversations that predate this).
+  - New endpoints: `GET /api/models` (the catalogue, for the picker UI),
+    `POST /api/conversations` now accepts an optional `model` (default
+    Opus 4.8, 400s on an unknown id), `PATCH /api/conversations/{id}`
+    changes a conversation's model at any time — per Dylan's answer,
+    selection is per-conversation and switchable mid-conversation, not
+    locked after the first message.
+  - Frontend: new `ModelSelector.tsx` (grouped `<select>` showing each
+    model's name and `$in/$out per MTok`, plus a description line for the
+    selected one) in a header bar above the chat thread; `ChatApp.tsx` loads
+    `/api/models` alongside the conversation list on mount and PATCHes on
+    change.
+  - `GEMINI_API_KEY` added to `.env.example` and AGENTS.md's secrets list —
+    **not yet set as a Fly secret**, that's Dylan's step (he has the key,
+    hasn't shared the value — correctly so, secrets don't belong in chat).
+- Verified:
+  - `cd backend && uv run pytest` → 129 passed. New coverage: the model
+    registry; the Gemini adapter's message/response translation in both
+    directions including the error-tool-result and missing-function-call-id
+    cases (`test_gemini_provider.py`, mocking `genai.Client` directly —
+    also a real, schema-validated `types.GenerateContentResponse`/`Content`/
+    `Part` construction in the assertions, not hand-rolled fakes, so a
+    future SDK upgrade that changes these shapes will fail loudly here);
+    `core.py` provider dispatch actually routing to the Gemini module
+    (caught a real bug this way — see Learned); a migration test for the
+    new `model` column against a hand-built pre-migration table; the new
+    `/api/models`/conversation model endpoints end to end.
+    `cd frontend && npm run build && npm run lint` also pass.
+  - **Not yet verified against the real Gemini API** — blocked on
+    `GEMINI_API_KEY` not being set as a Fly secret yet. Deployed the code
+    anyway (Claude models are unaffected and keep working; Gemini models
+    will fail with a `KeyError`/auth error until the secret is set, same
+    class of failure as any other missing-secret case in this codebase).
+    Once Dylan runs `fly secrets set -a anki-ai-cards-backend
+    GEMINI_API_KEY=...`, a real end-to-end check (pick a Gemini model in a
+    conversation, ask it to list Anki note types, confirm it actually calls
+    the tool and gets a real answer) is the remaining verification step —
+    flagging this explicitly rather than marking it done.
+- Learned:
+  - **A dict built from provider *functions* at module-import time
+    (`{"gemini": gemini_provider.create_message}`) silently defeats
+    `monkeypatch.setattr(gemini_provider, "create_message", ...)`** — the
+    dict already holds the original function object, so patching the
+    module attribute afterward has no effect on `core.py`'s dispatch. Fixed
+    by storing provider *modules* and resolving `.create_message` at call
+    time instead (`provider_module.create_message(...)`), consistent with
+    how the rest of the codebase already patches through modules (e.g.
+    `monkeypatch.setattr(tools.ankiconnect, "list_note_type_names", ...)`).
+    Worth remembering for any future dispatch-table-of-callables pattern in
+    this codebase.
+  - Don't trust a WebFetch summary of an SDK's docs for exact API shape
+    when the SDK itself is installable — `uv add google-genai` then
+    `inspect.signature(...)` on the real classes settled several
+    ambiguities a fetched doc summary got subtly wrong or omitted (e.g. one
+    summary claimed function-response content goes under `role: "tool"`;
+    the actual `Content.role` field docstring says only "user" or "model"
+    are valid). Prefer introspecting the real installed package over a
+    second-hand summary whenever the package is cheap to install.
+  - Gemini's `FunctionCall`/`FunctionResponse` types in this SDK version
+    (`google-genai` 2.11.0) do carry an `id` field despite most public
+    examples showing name-only pairing — used it when present (real
+    parallel-call support) and synthesize one only as a fallback, rather
+    than assuming Anthropic-style ids don't exist on the Gemini side at all.
+
+---
+
 ## 2026-07-10 — Failed turns vanishing on reload + added multiple conversations
 - Did: Dylan hit "bug report #12 filed" with no detail shown, and the
   message disappeared entirely on reload. Root-caused via

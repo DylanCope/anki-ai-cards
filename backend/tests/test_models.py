@@ -10,6 +10,7 @@ from app.models import (
     PendingCard,
     ProcessingCursor,
     WorkflowSpec,
+    _DEFAULT_MODEL_ID,
     init_db,
 )
 
@@ -29,6 +30,17 @@ def test_conversation_roundtrip(engine) -> None:
     with Session(engine) as session:
         conversation = session.exec(select(Conversation)).one()
         assert conversation.title == "Lesson doc cards"
+        assert conversation.model == _DEFAULT_MODEL_ID
+
+
+def test_conversation_model_can_be_set_explicitly(engine) -> None:
+    with Session(engine) as session:
+        session.add(Conversation(model="gemini-2.5-flash"))
+        session.commit()
+
+    with Session(engine) as session:
+        conversation = session.exec(select(Conversation)).one()
+        assert conversation.model == "gemini-2.5-flash"
 
 
 def test_conversation_message_roundtrip(engine) -> None:
@@ -85,6 +97,42 @@ def test_init_db_migrates_a_pre_conversation_database(tmp_path, monkeypatch) -> 
     init_db()
     with Session(engine) as session:
         assert len(session.exec(select(Conversation)).all()) == 1
+
+
+def test_init_db_migrates_a_pre_model_selection_database(tmp_path, monkeypatch) -> None:
+    # Simulate a database from before model selection existed: a real
+    # conversation table with no `model` column. init_db() must add the
+    # column and backfill existing rows to the prior hardcoded default
+    # (Opus 4.8) rather than erroring or leaving them without a model.
+    db_path = tmp_path / "pre_model_selection.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE conversation ("
+            "id INTEGER PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO conversation (title, created_at, updated_at) "
+            "VALUES ('Old conversation', '2026-07-01T00:00:00', '2026-07-01T00:00:00')"
+        )
+        conn.commit()
+
+    engine = init_db()
+
+    with Session(engine) as session:
+        conversation = session.exec(select(Conversation)).one()
+        assert conversation.title == "Old conversation"
+        assert conversation.model == _DEFAULT_MODEL_ID
+
+    # Idempotent, and doesn't clobber a model already set on a real row.
+    with Session(engine) as session:
+        conversation.model = "gemini-2.5-flash"
+        session.add(conversation)
+        session.commit()
+    init_db()
+    with Session(engine) as session:
+        assert session.exec(select(Conversation)).one().model == "gemini-2.5-flash"
 
 
 def test_workflow_spec_roundtrip(engine) -> None:

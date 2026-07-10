@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.agent import core as agent_core
+from app.agent.model_registry import AVAILABLE_MODELS, DEFAULT_MODEL_ID, get_model
 from app.auth import require_auth
 from app.clients import google_docs
 from app.models import (
@@ -44,6 +45,7 @@ from app.models import (
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 conversations_router = APIRouter(prefix="/api/conversations", tags=["conversations"])
+models_router = APIRouter(prefix="/api/models", tags=["models"])
 
 TITLE_MAX_LENGTH = 60
 
@@ -56,6 +58,24 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     payloads: list[dict]
+
+
+class CreateConversationRequest(BaseModel):
+    model: str = DEFAULT_MODEL_ID
+
+
+class UpdateConversationRequest(BaseModel):
+    model: str
+
+
+def _conversation_to_dict(conversation: Conversation) -> dict:
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "model": conversation.model,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+    }
 
 
 def _title_from_message(message: str) -> str:
@@ -206,7 +226,9 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
 
     access_token = await _get_access_token(email)
     try:
-        result = await agent_core.run_turn(history, body.message, access_token=access_token)
+        result = await agent_core.run_turn(
+            history, body.message, access_token=access_token, model_id=conversation.model
+        )
     except Exception as exc:
         detail = f"{traceback.format_exc()}\n\nUser message: {body.message}"
         with Session(engine) as session:
@@ -293,19 +315,22 @@ async def get_chat_history(
 
 
 @conversations_router.post("")
-async def create_conversation(email: str = Depends(require_auth)) -> dict:
+async def create_conversation(
+    body: CreateConversationRequest = CreateConversationRequest(),
+    email: str = Depends(require_auth),
+) -> dict:
+    try:
+        get_model(body.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     engine = get_engine()
     with Session(engine) as session:
-        conversation = Conversation()
+        conversation = Conversation(model=body.model)
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
-    return {
-        "id": conversation.id,
-        "title": conversation.title,
-        "created_at": conversation.created_at,
-        "updated_at": conversation.updated_at,
-    }
+    return _conversation_to_dict(conversation)
 
 
 @conversations_router.get("")
@@ -315,14 +340,42 @@ async def list_conversations(email: str = Depends(require_auth)) -> list[dict]:
         rows = session.exec(
             select(Conversation).order_by(Conversation.updated_at.desc())
         ).all()
+    return [_conversation_to_dict(row) for row in rows]
+
+
+@conversations_router.patch("/{conversation_id}")
+async def update_conversation(
+    conversation_id: int,
+    body: UpdateConversationRequest,
+    email: str = Depends(require_auth),
+) -> dict:
+    try:
+        get_model(body.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    engine = get_engine()
+    with Session(engine) as session:
+        conversation = _get_conversation_or_404(session, conversation_id)
+        conversation.model = body.model
+        session.add(conversation)
+        session.commit()
+        session.refresh(conversation)
+    return _conversation_to_dict(conversation)
+
+
+@models_router.get("")
+async def list_models(email: str = Depends(require_auth)) -> list[dict]:
     return [
         {
-            "id": row.id,
-            "title": row.title,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
+            "id": model.id,
+            "provider": model.provider,
+            "display_name": model.display_name,
+            "input_price_per_mtok": model.input_price_per_mtok,
+            "output_price_per_mtok": model.output_price_per_mtok,
+            "description": model.description,
         }
-        for row in rows
+        for model in AVAILABLE_MODELS
     ]
 
 
