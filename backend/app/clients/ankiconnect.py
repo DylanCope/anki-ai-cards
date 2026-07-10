@@ -27,6 +27,7 @@ RETRYABLE_EXCEPTIONS = (
     httpx.ReadError,
     httpx.RemoteProtocolError,
     httpx.ConnectTimeout,
+    httpx.ReadTimeout,
 )
 MAX_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 2.0

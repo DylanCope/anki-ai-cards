@@ -14,6 +14,87 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-10 — Ad hoc fix: card creation failing with a generic frontend error, no detail
+- Did: Dylan tried to create a Cloze+ card ("これはペンです with a cloze on the
+  particle") and got only "Something went wrong sending that message. Please
+  try again." with no way to tell what failed. Root-caused via
+  `GET /api/bug-reports/11` on production: `list_anki_note_types` (AnkiConnect
+  `modelNames`) raised `httpx.ReadTimeout`, which was *not* in
+  `backend/app/clients/ankiconnect.py`'s `RETRYABLE_EXCEPTIONS` (only
+  `ConnectError`/`ReadError`/`RemoteProtocolError`/`ConnectTimeout` were)
+  despite the retry logic's stated purpose being exactly to ride out this
+  kind of transient AnkiConnect unavailability — so it went straight to an
+  unhandled exception. That in turn exposed a second, more architectural gap:
+  `app/agent/core.py`'s `run_turn` never caught exceptions from
+  `dispatch_tool` at all — *any* tool failure crashed the entire chat turn to
+  a bare 500, rather than the agent being able to see the error and respond
+  to Dylan about it. Fixed both:
+  - Added `httpx.ReadTimeout` to `RETRYABLE_EXCEPTIONS`.
+  - `run_turn`'s tool-dispatch loop now catches any exception per tool call
+    and turns it into a `tool_result` with `is_error: true` and a
+    `"{tool_name} failed: {exc}"` message, instead of letting it propagate —
+    Claude sees the failure like the Anthropic tool-use API intends and can
+    explain it, retry, or ask Dylan what to do, rather than the turn dying
+    with no assistant reply.
+  - Hardened `chat.py`'s `_extract_payloads`: an errored `generate_audio` tool
+    call now produces `options: []` (guarded with `isinstance(result, list)`)
+    instead of accidentally putting the raw error string in the `options`
+    field of the `audio_options` payload.
+  - `chat.py`'s outer `try/except` around `run_turn` (task 16) is unchanged
+    and still exists as a last-resort net for non-tool failures (e.g. the
+    Anthropic API itself erroring, as seen in bug reports 3/5-9).
+- Verified:
+  - `cd backend && uv run pytest` → 90 passed (2 new tests: AnkiConnect
+    retries a `ReadTimeout` then succeeds; `run_turn` recovers from a failing
+    tool call and still produces a real assistant reply with a correctly
+    shaped `is_error` tool_result).
+  - Deployed (`fly deploy` from `backend/`).
+  - Real reproduction via `smoke_test_chat.py` against production: while
+    AnkiConnect was still down, the agent now replies conversationally
+    ("Anki is timing out again... want me to try again?") instead of the
+    chat API 500ing — confirms the graceful-degradation fix works for real,
+    independent of whatever was wrong with Anki itself.
+  - Separately root-caused *why* AnkiConnect was down: `fly logs -a
+    anki-ai-cards-anki` showed the Anki process's main thread genuinely
+    wedged — its last log line was a "blocked main thread for 43387ms"
+    stack dump from `on_periodic_sync_timer`/`on_periodic_backup_timer`
+    (**not** the documented segfault-restart loop from task 15/AGENTS.md —
+    a different failure mode: the process doesn't crash, it just never
+    returns from a periodic background job), with literally no further log
+    output for ~3 hours (no health check is configured on this app to
+    auto-recover it). `fly apps restart anki-ai-cards-anki` brought it back;
+    confirmed via `smoke_test_chat.py` that `list_anki_note_types` then
+    returned Dylan's real note-type list (including Cloze+), and a full
+    replay of the original failing request now gets a proper proposed-card
+    response with clarifying questions, instead of erroring.
+- Learned:
+  - **There are now two distinct known AnkiConnect-unavailability failure
+    modes**, and they look different in `fly logs`: (1) the segfault-restart
+    loop from task 15 (`Segmentation fault` shortly after `Starting Anki...`,
+    self-heals within the existing retry budget), and (2) this one — the
+    main thread stalling for tens of seconds at a time on periodic
+    sync/backup timers, which can apparently wedge the process entirely with
+    no further recovery and no crash for `flyd`/health checks to react to.
+    No health check is configured on `anki-ai-cards-anki` at all, so mode
+    (2) has no automatic recovery — a future iteration should consider
+    either adding a health check tied to AnkiConnect's `version` action, or
+    disabling Anki's periodic media-sync/backup timers in this headless
+    single-purpose deployment (it doesn't need them; syncing only ever
+    happens via the explicit `sync_anki` tool call) — not attempted here,
+    flagging it rather than guessing at a UI-settings change to an
+    unattended headless instance without Dylan's sign-off.
+  - Any tool failure surfacing to the model as an `is_error` tool_result
+    (rather than crashing the turn) means `_extract_payloads` must now be
+    defensive about tool_results that aren't the shape a given tool normally
+    returns — worth double-checking if a new tool/payload type is added
+    later (`create_anki_note`'s payload building already guarded this with
+    `isinstance(result, dict)`; `generate_audio`'s didn't, until this fix).
+  - Bug report history (`GET /api/bug-reports`) was the actual fastest path
+    to root-causing this — no need to guess from the vague frontend message
+    or reproduce blind.
+
+---
+
 ## 2026-07-04 — Task 19: Audio-generation bug — fixed and verified end to end
 - Did: Picked up where the prior iteration left off (blocked on an ElevenLabs
   account/plan decision it assumed only Dylan could make). Before accepting

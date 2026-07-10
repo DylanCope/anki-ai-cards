@@ -293,6 +293,44 @@ async def test_run_turn_passes_access_token_to_tools(db, monkeypatch):
     fetch_mock.assert_awaited_once_with("abc", "tok-xyz")
 
 
+@pytest.mark.asyncio
+async def test_run_turn_recovers_from_a_failing_tool_call(db, monkeypatch):
+    # A tool raising must not crash the whole turn — it should come back as
+    # an `is_error` tool_result so Claude can explain the failure to Dylan
+    # (or retry/ask a follow-up) instead of the chat API 500ing with no
+    # assistant reply at all.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    list_mock = AsyncMock(side_effect=tools.ankiconnect.AnkiConnectError("timed out"))
+    monkeypatch.setattr(tools.ankiconnect, "list_note_type_names", list_mock)
+
+    tool_use_response = _response(
+        "tool_use",
+        [_tool_use_block("toolu_3", "list_anki_note_types", {})],
+    )
+    end_turn_response = _response(
+        "end_turn",
+        [_text_block("I couldn't reach Anki just now — want me to try again?")],
+    )
+
+    create, call_snapshots = _mock_create([tool_use_response, end_turn_response])
+    client = AsyncMock()
+    client.messages.create = create
+
+    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
+        result = await core.run_turn([], "what note types do I have?")
+
+    assert result["reply"] == "I couldn't reach Anki just now — want me to try again?"
+    assert len(call_snapshots) == 2
+
+    second_call_messages = call_snapshots[1]["messages"]
+    tool_result = second_call_messages[-1]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == "toolu_3"
+    assert tool_result["is_error"] is True
+    assert "timed out" in tool_result["content"]
+
+
 # --- known workflow specs are surfaced at the start of a conversation ---
 
 

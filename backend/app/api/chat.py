@@ -95,7 +95,7 @@ def _extract_payloads(new_messages: list[dict]) -> list[dict]:
                     {
                         "type": "audio_options",
                         "text": tool_input.get("text"),
-                        "options": result or [],
+                        "options": result if isinstance(result, list) else [],
                     }
                 )
             elif block["name"] == "create_anki_note":

@@ -120,6 +120,25 @@ async def test_invoke_retries_transient_connection_errors_then_succeeds():
 
 
 @respx.mock
+async def test_invoke_retries_read_timeout_then_succeeds():
+    # A ReadTimeout (connection accepted, no response in time) is exactly
+    # what Anki's intermittent segfault-restart window looks like — it must
+    # be retried like the other transient connection errors, not just
+    # ConnectError/ConnectTimeout which only cover the pre-connect case.
+    route = respx.post(ANKICONNECT_URL).mock(
+        side_effect=[
+            httpx.ReadTimeout("timed out"),
+            Response(200, json={"result": 6, "error": None}),
+        ]
+    )
+
+    result = await ankiconnect.invoke("version")
+
+    assert result == 6
+    assert route.call_count == 2
+
+
+@respx.mock
 async def test_invoke_raises_after_exhausting_retries():
     route = respx.post(ANKICONNECT_URL).mock(
         side_effect=httpx.ConnectError("connection refused")

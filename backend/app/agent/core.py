@@ -85,9 +85,25 @@ async def run_turn(
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            result = await dispatch_tool(
-                block.name, block.input, access_token=access_token
-            )
+            try:
+                result = await dispatch_tool(
+                    block.name, block.input, access_token=access_token
+                )
+            except Exception as exc:
+                # Surface the failure back to the model as an error tool_result
+                # instead of letting it crash the whole turn — Claude can then
+                # explain what went wrong (and optionally retry/ask Dylan)
+                # rather than the chat API hard-failing with no assistant
+                # reply at all.
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"{block.name} failed: {exc}",
+                        "is_error": True,
+                    }
+                )
+                continue
             tool_results.append(
                 {
                     "type": "tool_result",
