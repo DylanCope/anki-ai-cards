@@ -14,6 +14,109 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-10 — Failed turns vanishing on reload + added multiple conversations
+- Did: Dylan hit "bug report #12 filed" with no detail shown, and the
+  message disappeared entirely on reload. Root-caused via
+  `GET /api/bug-reports/12`: an Anthropic `invalid_request_error` — "Your
+  credit balance is too low to access the Anthropic API." **This is an
+  account billing issue, not a code bug** — same failure as bug reports
+  3/5-9 from 2026-07-04/05, recurring because the account still doesn't have
+  enough credit. Dylan needs to add credits/billing at
+  console.anthropic.com; nothing in this codebase can fix that.
+
+  The "message disappeared on reload" part *was* a real, separate code bug
+  though: `post_chat`'s `except` branch only ever created a `BugReport` and
+  returned a 500 — it never persisted anything to `ConversationMessage`, so
+  a failed turn (including the user's own message) left zero trace once the
+  page reloaded. Fixed: on failure, both the user's message and a short
+  explanatory assistant reply ("Something went wrong — bug report #N
+  filed.") are now persisted, so reloading shows what was asked and that it
+  failed, not nothing.
+
+  Also implemented Dylan's second ask from the same message: multiple named
+  conversations with a "new chat" / history sidebar, like a normal chat app
+  (previously there was exactly one, permanent, unbounded conversation
+  thread per account).
+  - New `Conversation` table (`id`, `title`, `created_at`, `updated_at`).
+    `ConversationMessage` gained a `conversation_id` FK. Title auto-fills
+    from a truncated snippet of the first message in that conversation
+    (success *or* failure — see above) and is never overwritten after that.
+  - Since this project has no migration framework (`create_all()` only ever
+    creates whole missing tables) and the real production DB already had 64
+    `ConversationMessage` rows predating this column, `init_db()` now also
+    runs a small hand-rolled, idempotent migration: `ALTER TABLE
+    conversationmessage ADD COLUMN conversation_id INTEGER` if missing, then
+    groups any `conversation_id IS NULL` rows into one backfilled
+    "Earlier conversation" so existing history is preserved and visible,
+    never silently orphaned.
+  - New endpoints: `POST /api/conversations` (create), `GET
+    /api/conversations` (list, most-recently-updated first). `POST
+    /api/chat` now requires `conversation_id` in the body; `GET
+    /api/chat/history` now requires it as a query param and 404s on an
+    unknown id. Both `prior_rows` lookups and new-message persistence are
+    scoped to that id, so conversations are fully isolated from each other
+    (including from the agent's point of view — each new conversation
+    starts with empty history, so `core._build_system_prompt`'s "surface
+    known workflow specs on empty history" behavior now naturally triggers
+    per new conversation rather than only once ever).
+  - Frontend: new `ConversationSidebar.tsx` (list + "+ New chat" button) and
+    `ChatApp.tsx` now tracks `conversationId`, loads the most-recently-
+    updated conversation (or creates one) on mount, and switches/loads
+    history when a different one is selected in the sidebar.
+  - `scripts/smoke_test_chat.py` updated to create (or accept
+    `--conversation-id` to reuse) a conversation before posting — the old
+    single-conversation call shape no longer exists.
+- Verified:
+  - `cd backend && uv run pytest` → 107 passed (new: migration test using a
+    hand-built pre-migration SQLite table to prove the ALTER TABLE +
+    backfill path; conversation isolation; failed-turn persistence; role-
+    alternation across a fail-then-retry sequence — a failed turn that only
+    persisted the user's message, with no assistant reply, would leave two
+    consecutive `user` messages in the next call's history, which the
+    Anthropic API rejects; conversation create/list endpoints;
+    `smoke_test_chat.py`'s new conversation-creation step).
+    `cd frontend && npm run build && npm run lint` also pass.
+  - Deployed backend and frontend. **Backed up the real production SQLite
+    file via `fly ssh sftp get` before deploying**, given this migration
+    touches Dylan's actual existing chat history, not just test data.
+  - Verified the migration against real production data (not a copy): 64
+    pre-existing `conversationmessage` rows, `conversation_id` column
+    genuinely absent beforehand (confirmed via `PRAGMA table_info` over `fly
+    ssh console`) — after deploy, all 64 rows present with `conversation_id`
+    set, zero left `NULL`, folded into one real `Conversation` row titled
+    "Earlier conversation". No data loss.
+  - Verified the failed-turn persistence fix against a **real** failure
+    (the still-ongoing low-credit-balance error, not a mocked one): sent a
+    real chat message via `smoke_test_chat.py`, got the expected 500 with a
+    new bug report id, then confirmed via `GET /api/chat/history
+    ?conversation_id=...` that the user's message and the "bug report filed"
+    explanation are both there — this exact case (a real API failure) is
+    what silently vanished before the fix.
+  - Frontend UI/UX (sidebar layout, "new chat" flow, switching
+    conversations) is unverified in an actual browser — `npm run build`/
+    `lint` only prove it type-checks and compiles; note for Dylan to check
+    it in a browser.
+- Learned:
+  - The Anthropic account credit-balance issue is not a one-off — it's now
+    recurred at least twice (2026-07-04/05 and again today). Worth Dylan
+    setting up auto-reload/a higher balance on the Anthropic account if this
+    keeps interrupting real usage, since no amount of code-level retry logic
+    can work around an account-level billing block.
+  - Adding a column to an already-deployed SQLite table (as opposed to a
+    whole new table) is a real migration, not something `create_all()`
+    handles — this is the first time this project needed one. The pattern
+    used here (`PRAGMA table_info` to check, `ALTER TABLE ... ADD COLUMN` if
+    missing, idempotent) is the template for the next one; there's still no
+    Alembic/versioned-migration framework and, given this app's SQLite/
+    single-user scale, hand-rolling each one like this remains the right
+    call over adding that dependency.
+  - Backing up the real volume file before a schema-touching deploy (`fly
+    ssh sftp get`) is cheap insurance and worth doing again for any future
+    change that alters (not just adds) how existing production rows are
+    read.
+
+---
+
 ## 2026-07-10 — Ad hoc fix: picked audio never actually reached the Anki card
 - Did: Dylan created a card end to end (generated audio, listened, picked an
   option, card was created and synced to his phone) but the audio was

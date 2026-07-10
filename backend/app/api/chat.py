@@ -1,11 +1,19 @@
 """Chat API: the frontend's only entry point into the inner agent.
 
-`POST /api/chat` loads the persisted conversation (`ConversationMessage`
-rows), runs one turn of `app.agent.core.run_turn`, persists whatever new
-messages that turn produced, and returns the agent's text reply plus any
-structured payloads (audio options, created cards) extracted from the tool
-calls made during the turn. `GET /api/chat/history` returns a plain-text
-transcript for rendering a chat thread.
+Conversations are first-class (`Conversation` rows) so Dylan can start a new
+chat and switch back to older ones — every `ConversationMessage` belongs to
+exactly one. `POST /api/chat` loads the persisted conversation for the given
+`conversation_id`, runs one turn of `app.agent.core.run_turn`, persists
+whatever new messages that turn produced, and returns the agent's text reply
+plus any structured payloads (audio options, created cards) extracted from
+the tool calls made during the turn. `GET /api/chat/history` returns a
+plain-text transcript of one conversation for rendering a chat thread.
+
+If a turn fails outright (the `except Exception` branch below), the user's
+message and a short explanatory assistant reply are still persisted —
+earlier versions only ever persisted a successful turn's messages, so a
+failed turn would vanish entirely on reload with no trace of what was asked
+or what went wrong.
 
 Content blocks coming back from `run_turn`'s history may be either
 `anthropic` SDK objects (fresh from the model) or plain dicts (reconstructed
@@ -25,18 +33,43 @@ from sqlmodel import Session, select
 from app.agent import core as agent_core
 from app.auth import require_auth
 from app.clients import google_docs
-from app.models import AudioClip, BugReport, ConversationMessage, OAuthToken, get_engine
+from app.models import (
+    AudioClip,
+    BugReport,
+    Conversation,
+    ConversationMessage,
+    OAuthToken,
+    get_engine,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+conversations_router = APIRouter(prefix="/api/conversations", tags=["conversations"])
+
+TITLE_MAX_LENGTH = 60
 
 
 class ChatRequest(BaseModel):
+    conversation_id: int
     message: str
 
 
 class ChatResponse(BaseModel):
     reply: str
     payloads: list[dict]
+
+
+def _title_from_message(message: str) -> str:
+    stripped = message.strip().replace("\n", " ")
+    if len(stripped) <= TITLE_MAX_LENGTH:
+        return stripped
+    return stripped[:TITLE_MAX_LENGTH].rstrip() + "…"
+
+
+def _get_conversation_or_404(session: Session, conversation_id: int) -> Conversation:
+    conversation = session.get(Conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
 
 
 def _content_block_to_dict(block) -> dict:
@@ -162,9 +195,13 @@ async def _get_access_token(email: str) -> str:
 async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> ChatResponse:
     engine = get_engine()
     with Session(engine) as session:
+        conversation = _get_conversation_or_404(session, body.conversation_id)
         prior_rows = session.exec(
-            select(ConversationMessage).order_by(ConversationMessage.id)
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == body.conversation_id)
+            .order_by(ConversationMessage.id)
         ).all()
+        first_message = not prior_rows
     history = [{"role": row.role, "content": json.loads(row.content)} for row in prior_rows]
 
     access_token = await _get_access_token(email)
@@ -177,6 +214,34 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
             session.add(bug_report)
             session.commit()
             session.refresh(bug_report)
+
+        # Persist the failed turn instead of silently dropping it — without
+        # this, a failure meant the user's own message (and any trace that
+        # something went wrong) vanished on the next page reload, since
+        # nothing about a failed turn was ever saved.
+        error_text = f"Something went wrong — bug report #{bug_report.id} filed."
+        with Session(engine) as session:
+            session.add(
+                ConversationMessage(
+                    conversation_id=body.conversation_id,
+                    role="user",
+                    content=json.dumps(body.message),
+                )
+            )
+            session.add(
+                ConversationMessage(
+                    conversation_id=body.conversation_id,
+                    role="assistant",
+                    content=json.dumps([{"type": "text", "text": error_text}]),
+                )
+            )
+            conversation = session.get(Conversation, body.conversation_id)
+            conversation.updated_at = datetime.now(timezone.utc)
+            if first_message and conversation.title is None:
+                conversation.title = _title_from_message(body.message)
+            session.add(conversation)
+            session.commit()
+
         raise HTTPException(
             status_code=500,
             detail={"error": "Something went wrong.", "bug_report_id": bug_report.id},
@@ -188,8 +253,17 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
     with Session(engine) as session:
         for message in new_messages:
             session.add(
-                ConversationMessage(role=message["role"], content=json.dumps(message["content"]))
+                ConversationMessage(
+                    conversation_id=body.conversation_id,
+                    role=message["role"],
+                    content=json.dumps(message["content"]),
+                )
             )
+        conversation = session.get(Conversation, body.conversation_id)
+        conversation.updated_at = datetime.now(timezone.utc)
+        if first_message and conversation.title is None:
+            conversation.title = _title_from_message(body.message)
+        session.add(conversation)
         session.commit()
 
     return ChatResponse(
@@ -198,10 +272,17 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
 
 
 @router.get("/history")
-async def get_chat_history(email: str = Depends(require_auth)) -> list[dict]:
+async def get_chat_history(
+    conversation_id: int, email: str = Depends(require_auth)
+) -> list[dict]:
     engine = get_engine()
     with Session(engine) as session:
-        rows = session.exec(select(ConversationMessage).order_by(ConversationMessage.id)).all()
+        _get_conversation_or_404(session, conversation_id)
+        rows = session.exec(
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == conversation_id)
+            .order_by(ConversationMessage.id)
+        ).all()
 
     transcript = []
     for row in rows:
@@ -209,6 +290,40 @@ async def get_chat_history(email: str = Depends(require_auth)) -> list[dict]:
         if text is not None:
             transcript.append({"role": row.role, "text": text})
     return transcript
+
+
+@conversations_router.post("")
+async def create_conversation(email: str = Depends(require_auth)) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        conversation = Conversation()
+        session.add(conversation)
+        session.commit()
+        session.refresh(conversation)
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+    }
+
+
+@conversations_router.get("")
+async def list_conversations(email: str = Depends(require_auth)) -> list[dict]:
+    engine = get_engine()
+    with Session(engine) as session:
+        rows = session.exec(
+            select(Conversation).order_by(Conversation.updated_at.desc())
+        ).all()
+    return [
+        {
+            "id": row.id,
+            "title": row.title,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+        for row in rows
+    ]
 
 
 bug_reports_router = APIRouter(prefix="/api/bug-reports", tags=["bug-reports"])

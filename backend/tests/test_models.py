@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import Session, create_engine, select
 
 from app.models import (
+    Conversation,
     ConversationMessage,
     OAuthToken,
     PendingCard,
@@ -20,15 +21,70 @@ def engine(tmp_path, monkeypatch):
     return init_db()
 
 
+def test_conversation_roundtrip(engine) -> None:
+    with Session(engine) as session:
+        session.add(Conversation(title="Lesson doc cards"))
+        session.commit()
+
+    with Session(engine) as session:
+        conversation = session.exec(select(Conversation)).one()
+        assert conversation.title == "Lesson doc cards"
+
+
 def test_conversation_message_roundtrip(engine) -> None:
     with Session(engine) as session:
-        session.add(ConversationMessage(role="user", content="hello"))
+        session.add(Conversation())
+        session.commit()
+        conversation_id = session.exec(select(Conversation)).one().id
+        session.add(
+            ConversationMessage(
+                conversation_id=conversation_id, role="user", content="hello"
+            )
+        )
         session.commit()
 
     with Session(engine) as session:
         message = session.exec(select(ConversationMessage)).one()
+        assert message.conversation_id == conversation_id
         assert message.role == "user"
         assert message.content == "hello"
+
+
+def test_init_db_migrates_a_pre_conversation_database(tmp_path, monkeypatch) -> None:
+    # Simulate a database from before the Conversation table/column existed:
+    # a conversationmessage table with no conversation_id column at all, one
+    # real row in it. init_db() must add the column and fold that row into a
+    # backfilled "legacy" conversation rather than losing it or erroring.
+    db_path = tmp_path / "pre_migration.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE conversationmessage ("
+            "id INTEGER PRIMARY KEY, role TEXT, content TEXT, created_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO conversationmessage (role, content, created_at) "
+            "VALUES ('user', '\"hi from before\"', '2026-07-01T00:00:00')"
+        )
+        conn.commit()
+
+    engine = init_db()
+
+    with Session(engine) as session:
+        conversations = session.exec(select(Conversation)).all()
+        assert len(conversations) == 1
+        assert conversations[0].title == "Earlier conversation"
+
+        message = session.exec(select(ConversationMessage)).one()
+        assert message.conversation_id == conversations[0].id
+        assert message.content == '"hi from before"'
+
+    # Idempotent: running it again on an already-migrated database is a no-op,
+    # not a second legacy conversation.
+    init_db()
+    with Session(engine) as session:
+        assert len(session.exec(select(Conversation)).all()) == 1
 
 
 def test_workflow_spec_roundtrip(engine) -> None:

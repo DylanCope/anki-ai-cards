@@ -8,15 +8,31 @@ calling `init_db()`.
 import os
 from datetime import datetime, timezone
 
-from sqlmodel import Field, SQLModel, create_engine
+from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class Conversation(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    # None until the first user message arrives, then set once from a
+    # truncated snippet of it — see app.api.chat's post_chat.
+    title: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class ConversationMessage(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
+    # Nullable for backward compatibility with rows written before multiple
+    # conversations existed — init_db() backfills any such rows into a
+    # single legacy Conversation on first startup after upgrade, so this is
+    # only ever NULL on a database that hasn't been migrated yet.
+    conversation_id: int | None = Field(
+        default=None, foreign_key="conversation.id", index=True
+    )
     role: str
     content: str
     created_at: datetime = Field(default_factory=_utcnow)
@@ -81,7 +97,50 @@ def get_engine():
     return create_engine(f"sqlite:///{database_path}")
 
 
+def _add_conversation_id_column_if_missing(engine) -> None:
+    """`create_all()` only creates whole missing tables, never alters an
+    existing one — this project has no migration framework, so a column
+    added to an already-deployed table (like `conversation_id` here) needs
+    its own explicit, idempotent ALTER TABLE, or the real production
+    database (which predates the `Conversation` table) would keep 404ing on
+    `conversation_id` forever."""
+
+    with engine.connect() as conn:
+        columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(conversationmessage)")
+        }
+        if "conversation_id" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conversationmessage ADD COLUMN conversation_id INTEGER"
+            )
+            conn.commit()
+
+
+def _backfill_legacy_conversation(engine) -> None:
+    """Any ConversationMessage row with no conversation_id predates the
+    multi-conversation feature — group them all into one real Conversation
+    so existing history is preserved (visible in the conversation list)
+    rather than silently orphaned/hidden."""
+
+    with Session(engine) as session:
+        orphaned = session.exec(
+            select(ConversationMessage).where(ConversationMessage.conversation_id == None)  # noqa: E711
+        ).all()
+        if not orphaned:
+            return
+        legacy = Conversation(title="Earlier conversation")
+        session.add(legacy)
+        session.commit()
+        session.refresh(legacy)
+        for row in orphaned:
+            row.conversation_id = legacy.id
+            session.add(row)
+        session.commit()
+
+
 def init_db():
     engine = get_engine()
     SQLModel.metadata.create_all(engine)
+    _add_conversation_id_column_if_missing(engine)
+    _backfill_legacy_conversation(engine)
     return engine

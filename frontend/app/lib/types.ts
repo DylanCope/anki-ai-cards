@@ -1,5 +1,12 @@
 export type ChatRole = "user" | "assistant";
 
+export interface Conversation {
+  id: number;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ChatHistoryEntry {
   role: ChatRole;
   text: string;

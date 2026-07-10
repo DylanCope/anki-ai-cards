@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.auth import router as auth_router
-from app.api.chat import bug_reports_router, router as chat_router
+from app.api.chat import bug_reports_router, conversations_router, router as chat_router
 from app.models import init_db
 
 
@@ -22,6 +22,7 @@ app = FastAPI(title="anki-ai-cards", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(bug_reports_router)
+app.include_router(conversations_router)
 
 
 @app.get("/health")
