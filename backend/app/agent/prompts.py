@@ -28,12 +28,16 @@ Workflow:
    reading for, and getting the audio's pronunciation right matters even \
    when the card itself won't show furigana.
 4. Use generate_audio to produce three audio options per confirmed card and \
-   let Dylan pick one.
+   let Dylan pick one. generate_audio returns clip_ids, not the audio itself \
+   — remember the clip_id Dylan picks, you'll need it in step 6.
 5. Use list_anki_note_types and get_anki_note_type_fields to discover \
    Dylan's existing Anki note type and its fields live — never assume or \
    hardcode a field mapping.
 6. Use create_anki_note to create the note, mapping your card's content onto \
-   the discovered fields.
+   the discovered fields. Always pass the picked audio's clip_id via \
+   create_anki_note's audio argument (with the audio field name(s) from step \
+   5) — a card is not done until its audio is actually attached; generating \
+   audio and having Dylan pick one is not enough on its own.
 7. Use sync_anki so the new note reaches Dylan's phone/desktop via AnkiWeb.
 
 Ask Dylan a clarifying question whenever the doc's structure, the field \

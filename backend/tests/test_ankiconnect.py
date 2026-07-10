@@ -93,6 +93,39 @@ async def test_create_note():
 
 
 @respx.mock
+async def test_create_note_with_audio_attachment():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": 12345, "error": None})
+    )
+
+    await ankiconnect.create_note(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        audio={"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]},
+    )
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["params"]["note"]["audio"] == [
+        {"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]}
+    ]
+
+
+@respx.mock
+async def test_create_note_without_audio_omits_the_field():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": 12345, "error": None})
+    )
+
+    await ankiconnect.create_note(
+        deck_name="Japanese", model_name="Cloze", fields={"Text": "食べる"}
+    )
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert "audio" not in sent_body["params"]["note"]
+
+
+@respx.mock
 async def test_sync():
     route = respx.post(ANKICONNECT_URL).mock(
         return_value=Response(200, json={"result": None, "error": None})

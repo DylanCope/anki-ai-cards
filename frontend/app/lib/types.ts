@@ -8,6 +8,7 @@ export interface ChatHistoryEntry {
 export interface AudioOptionsPayload {
   type: "audio_options";
   text: string | null;
+  clip_ids: number[];
   options: string[];
 }
 

@@ -14,6 +14,93 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-10 — Ad hoc fix: picked audio never actually reached the Anki card
+- Did: Dylan created a card end to end (generated audio, listened, picked an
+  option, card was created and synced to his phone) but the audio was
+  missing on the card. Root cause: this was never actually wired up.
+  `generate_audio` returned raw base64 audio straight to the model as the
+  tool_result, the frontend's "Pick" button just sent a plain chat message
+  ("Use audio option 2."), and `create_anki_note`/`ankiconnect.create_note`
+  had no concept of audio at all — there was no code path that ever called
+  AnkiConnect's media-attachment mechanism, so the chosen clip went nowhere
+  regardless of what the model said it did.
+
+  This also explains bug report #3 from 2026-07-04 ("prompt is too long:
+  1037558 tokens > 1000000 maximum") — stuffing full base64 audio (60-96KB
+  per clip, several per session) into every `generate_audio` tool_result
+  meant it was being resent on *every subsequent* Anthropic API call for the
+  rest of the conversation, snowballing fast.
+
+  Fixed both problems together with one design: audio is no longer sent to
+  the model at all.
+  - Added an `AudioClip` table (`app/models.py`): `id`, `text`, `voice`,
+    `audio` (raw bytes), `created_at`.
+  - `dispatch_tool`'s `generate_audio` now persists each ElevenLabs take as
+    an `AudioClip` row and returns only `{"clip_ids": [...]}` as the
+    tool_result the model sees — small integers, not tens of KB of base64,
+    fixing the context-bloat root cause too.
+  - `create_anki_note`'s schema gained an optional `audio: {clip_id, fields}`
+    argument. `dispatch_tool` looks the clip up by id, base64-encodes it, and
+    passes AnkiConnect's native `note.audio` attachment object (`data`,
+    `filename`, `fields`) through to `ankiconnect.create_note` — AnkiConnect
+    itself handles storing the file in Anki's media collection *and*
+    appending the `[sound:filename]` tag to the named field(s), so no
+    separate `storeMediaFile` tool/step was needed.
+  - `chat.py`'s `_extract_payloads` (which builds the frontend's
+    `audio_options` payload) now looks up the real audio bytes from
+    `AudioClip` by `clip_id` for playback, since the tool_result it used to
+    read the base64 directly from no longer carries it. Needed passing
+    `engine` into `_extract_payloads` for the DB read.
+  - `SYSTEM_PROMPT` (`prompts.py`) now explicitly says a card isn't done
+    until its audio is attached via `create_anki_note`'s `audio` argument —
+    generating audio and having Dylan pick one isn't enough on its own.
+  - Frontend: `AudioOptionsPayload` gained `clip_ids`; `AudioOptionsCard`'s
+    "Pick" button now sends the `clip_id` explicitly in its message (e.g.
+    "Use audio option 2 (clip_id 18).") rather than relying on the model to
+    correctly map "option 2" back to a clip_id from earlier in the
+    conversation — cheap to make unambiguous, so did.
+- Verified:
+  - `cd backend && uv run pytest` → 94 passed (7 new/updated: AudioClip
+    persistence on generate_audio, create_anki_note attaching a clip by id
+    end to end with a mocked AnkiConnect call, rejecting an unknown
+    clip_id, the AnkiConnect client's `audio` param on/off, and the chat-API
+    integration test for the new clip_id-based audio_options payload).
+    `cd frontend && npm run build && npm run lint` also pass.
+  - Deployed both backend and frontend (`fly deploy` from each dir).
+  - Real end-to-end verification against production, not mocks: asked the
+    deployed agent to generate audio, pick an option, and create a new
+    verification card ("これ{{c1::は}}ペンですよ", distinct text to avoid
+    Anki's duplicate rejection tripping up the test). Then queried
+    AnkiConnect directly (`findNotes`/`notesInfo` over Flycast via `fly ssh
+    console`) and confirmed the real, live note's `Text Audio` field
+    contains `[sound:anki-ai-cards-4.mp3]`, and `getMediaFilesNames`
+    confirms that file genuinely exists in Anki's media collection (not just
+    referenced) — then called `sync` and got a clean `{"error": null}`, so
+    it reaches AnkiWeb.
+  - Along the way, the agent correctly refused to fake past AnkiConnect's
+    duplicate-note rejection (tried a harmless `duplicate_scope` field once,
+    caught itself, and explained honestly that `create_anki_note` has no
+    allow-duplicate option) rather than reporting false success — a good
+    sign for the graceful-tool-error-handling work from earlier today.
+- Learned:
+  - AnkiConnect's `addNote.audio` array (each entry: `data`/`url`/`path`,
+    `filename`, `fields`) does storage *and* field-tagging in one call —
+    don't build a separate `storeMediaFile` tool unless a future need
+    (e.g. attaching audio to an *existing* note) requires the two steps
+    decoupled.
+  - Anything the model needs to reference *exactly* across tool calls but
+    is large/binary (audio, later maybe images) belongs in a DB row keyed by
+    a small id, never round-tripped through the model's own context —
+    that's both a reliability issue (LLMs can't reproduce binary blobs
+    exactly) and, as this session showed, a real cost/context-limit issue at
+    normal usage volumes, not just a theoretical one.
+  - `create_anki_note` still has no "update existing note" or "allow
+    duplicate" capability — surfaced by hand during verification, not
+    something Dylan asked for yet. Worth a future task if he wants to revise
+    a card after the fact rather than only ever creating new ones.
+
+---
+
 ## 2026-07-10 — Ad hoc fix: card creation failing with a generic frontend error, no detail
 - Did: Dylan tried to create a Cloze+ card ("これはペンです with a cloze on the
   particle") and got only "Something went wrong sending that message. Please

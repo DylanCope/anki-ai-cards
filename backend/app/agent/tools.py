@@ -12,8 +12,11 @@ the model's tool input.
 
 import base64
 
+from sqlmodel import Session
+
 from app.agent import workflow_specs
 from app.clients import ankiconnect, elevenlabs, google_docs
+from app.models import AudioClip, get_engine
 
 TOOL_SCHEMAS: list[dict] = [
     {
@@ -61,7 +64,10 @@ TOOL_SCHEMAS: list[dict] = [
             "Generate audio options for a piece of Japanese text via ElevenLabs, "
             "so Dylan can pick the best-sounding take. Available in a male or "
             "female voice — pick whichever fits the card (e.g. the speaker in "
-            "the lesson), or ask Dylan if it's not obvious which he wants."
+            "the lesson), or ask Dylan if it's not obvious which he wants. "
+            "Returns clip_ids (not the raw audio) — once Dylan picks one, pass "
+            "its clip_id into create_anki_note's audio argument to actually "
+            "attach it to the note; the clip is not saved anywhere on its own."
         ),
         "input_schema": {
             "type": "object",
@@ -103,6 +109,31 @@ TOOL_SCHEMAS: list[dict] = [
                 "tags": {
                     "type": "array",
                     "items": {"type": "string"},
+                },
+                "audio": {
+                    "type": "object",
+                    "description": (
+                        "Attach a previously generated audio clip (a clip_id "
+                        "from generate_audio's result, after Dylan picked an "
+                        "option) to this note. AnkiConnect stores the audio in "
+                        "Anki's media collection and appends the [sound:...] "
+                        "reference to each listed field itself."
+                    ),
+                    "properties": {
+                        "clip_id": {
+                            "type": "integer",
+                            "description": "A clip_id from generate_audio's result.",
+                        },
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Field name(s) to attach the audio to, e.g. the "
+                                "discovered audio field for this note type."
+                            ),
+                        },
+                    },
+                    "required": ["clip_id", "fields"],
                 },
             },
             "required": ["deck_name", "model_name", "fields"],
@@ -185,14 +216,43 @@ async def dispatch_tool(
         options = await elevenlabs.generate_audio_options(
             tool_input["text"], n=n, voice=voice
         )
-        return [base64.b64encode(option).decode("ascii") for option in options]
+        # Persist the raw audio server-side and hand the model back only
+        # small integer ids — not the audio itself. The model can't and
+        # shouldn't reproduce large binary blobs in a later tool call; it
+        # only needs a stable reference to pass into create_anki_note once
+        # Dylan picks one. (This also avoids repeatedly re-sending tens of
+        # KB of base64 per clip on every subsequent turn of the conversation.)
+        engine = get_engine()
+        clip_ids = []
+        with Session(engine) as session:
+            for option in options:
+                clip = AudioClip(text=tool_input["text"], voice=voice, audio=option)
+                session.add(clip)
+                session.commit()
+                session.refresh(clip)
+                clip_ids.append(clip.id)
+        return {"clip_ids": clip_ids}
 
     if name == "create_anki_note":
+        audio = None
+        audio_input = tool_input.get("audio")
+        if audio_input:
+            engine = get_engine()
+            with Session(engine) as session:
+                clip = session.get(AudioClip, audio_input["clip_id"])
+            if clip is None:
+                raise ValueError(f"Unknown audio clip_id: {audio_input['clip_id']!r}")
+            audio = {
+                "data": base64.b64encode(clip.audio).decode("ascii"),
+                "filename": f"anki-ai-cards-{clip.id}.mp3",
+                "fields": audio_input["fields"],
+            }
         note_id = await ankiconnect.create_note(
             deck_name=tool_input["deck_name"],
             model_name=tool_input["model_name"],
             fields=tool_input["fields"],
             tags=tool_input.get("tags"),
+            audio=audio,
         )
         return {"note_id": note_id}
 

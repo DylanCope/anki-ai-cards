@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlmodel import Session
 
 from app.agent import core, tools, workflow_specs
 from app.models import init_db
@@ -98,18 +99,25 @@ async def test_dispatch_get_anki_note_type_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_generate_audio(monkeypatch):
+async def test_dispatch_generate_audio(db, monkeypatch):
     mock = AsyncMock(return_value=[b"aaa", b"bbb", b"ccc"])
     monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
 
     result = await tools.dispatch_tool("generate_audio", {"text": "こんにちは"})
 
     mock.assert_awaited_once_with("こんにちは", n=3, voice=tools.elevenlabs.DEFAULT_VOICE)
-    assert result == [base64.b64encode(b).decode("ascii") for b in [b"aaa", b"bbb", b"ccc"]]
+    # The raw audio is persisted server-side and referenced by id — never
+    # sent back as part of the tool_result the model sees (see tools.py).
+    assert len(result["clip_ids"]) == 3
+    with Session(tools.get_engine()) as session:
+        clips = [session.get(tools.AudioClip, cid) for cid in result["clip_ids"]]
+    assert [c.audio for c in clips] == [b"aaa", b"bbb", b"ccc"]
+    assert all(c.text == "こんにちは" for c in clips)
+    assert all(c.voice == tools.elevenlabs.DEFAULT_VOICE for c in clips)
 
 
 @pytest.mark.asyncio
-async def test_dispatch_generate_audio_custom_n(monkeypatch):
+async def test_dispatch_generate_audio_custom_n(db, monkeypatch):
     mock = AsyncMock(return_value=[b"aaa"])
     monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
 
@@ -119,7 +127,7 @@ async def test_dispatch_generate_audio_custom_n(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_generate_audio_custom_voice(monkeypatch):
+async def test_dispatch_generate_audio_custom_voice(db, monkeypatch):
     mock = AsyncMock(return_value=[b"aaa"])
     monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
 
@@ -148,8 +156,57 @@ async def test_dispatch_create_anki_note(monkeypatch):
         model_name="Cloze",
         fields={"Text": "{{c1::食べる}}"},
         tags=["lesson"],
+        audio=None,
     )
     assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_attaches_picked_audio_clip(db, monkeypatch):
+    generate_mock = AsyncMock(return_value=[b"aaa", b"bbb"])
+    monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", generate_mock)
+    generated = await tools.dispatch_tool("generate_audio", {"text": "食べる"})
+    picked_clip_id = generated["clip_ids"][1]
+
+    create_mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", create_mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze+",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "audio": {"clip_id": picked_clip_id, "fields": ["Text Audio"]},
+        },
+    )
+
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        tags=None,
+        audio={
+            "data": base64.b64encode(b"bbb").decode("ascii"),
+            "filename": f"anki-ai-cards-{picked_clip_id}.mp3",
+            "fields": ["Text Audio"],
+        },
+    )
+    assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_rejects_unknown_audio_clip(db):
+    with pytest.raises(ValueError, match="Unknown audio clip_id"):
+        await tools.dispatch_tool(
+            "create_anki_note",
+            {
+                "deck_name": "Japanese",
+                "model_name": "Cloze+",
+                "fields": {"Text": "{{c1::食べる}}"},
+                "audio": {"clip_id": 999, "fields": ["Text Audio"]},
+            },
+        )
 
 
 @pytest.mark.asyncio

@@ -82,13 +82,22 @@ async def create_note(
     model_name: str,
     fields: dict[str, str],
     tags: list[str] | None = None,
+    audio: dict[str, object] | None = None,
 ) -> int:
+    """`audio`, if given, is a single AnkiConnect audio-attachment object
+    (`{"data": <base64>, "filename": ..., "fields": [...]}`) — AnkiConnect
+    stores it in the collection's media folder and appends the resulting
+    `[sound:filename]` tag to each named field itself, so callers never need
+    a separate storeMediaFile step."""
+
     note: dict[str, object] = {
         "deckName": deck_name,
         "modelName": model_name,
         "fields": fields,
         "tags": tags or [],
     }
+    if audio:
+        note["audio"] = [audio]
     return await invoke("addNote", note=note)
 
 

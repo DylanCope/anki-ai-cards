@@ -63,6 +63,19 @@ class BugReport(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class AudioClip(SQLModel, table=True):
+    """A single ElevenLabs-generated audio take, persisted server-side so a
+    later create_anki_note call can attach it by id (`clip_id`) instead of
+    the model having to reproduce the raw audio bytes itself — see
+    app.agent.tools.dispatch_tool's generate_audio/create_anki_note handling."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    text: str
+    voice: str
+    audio: bytes
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 def get_engine():
     database_path = os.environ["DATABASE_PATH"]
     return create_engine(f"sqlite:///{database_path}")

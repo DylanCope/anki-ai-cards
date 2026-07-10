@@ -13,6 +13,7 @@ from a prior turn's persisted JSON) — `_content_block_to_dict` normalizes
 both to dicts before anything here inspects or persists them.
 """
 
+import base64
 import json
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -24,7 +25,7 @@ from sqlmodel import Session, select
 from app.agent import core as agent_core
 from app.auth import require_auth
 from app.clients import google_docs
-from app.models import BugReport, ConversationMessage, OAuthToken, get_engine
+from app.models import AudioClip, BugReport, ConversationMessage, OAuthToken, get_engine
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -65,7 +66,7 @@ def _display_text(content) -> str | None:
     return "\n".join(texts) if texts else None
 
 
-def _extract_payloads(new_messages: list[dict]) -> list[dict]:
+def _extract_payloads(new_messages: list[dict], engine) -> list[dict]:
     """Pull frontend-renderable structured payloads (audio options, created
     cards) out of this turn's tool calls, keyed by matching each tool_use
     block to its tool_result by `tool_use_id`."""
@@ -91,11 +92,29 @@ def _extract_payloads(new_messages: list[dict]) -> list[dict]:
             result = tool_results.get(block["id"])
             tool_input = block["input"]
             if block["name"] == "generate_audio":
+                clip_ids = (
+                    result.get("clip_ids", []) if isinstance(result, dict) else []
+                )
+                options = []
+                if clip_ids:
+                    with Session(engine) as session:
+                        clips_by_id = {
+                            clip.id: clip
+                            for clip in session.exec(
+                                select(AudioClip).where(AudioClip.id.in_(clip_ids))
+                            ).all()
+                        }
+                    options = [
+                        base64.b64encode(clips_by_id[cid].audio).decode("ascii")
+                        for cid in clip_ids
+                        if cid in clips_by_id
+                    ]
                 payloads.append(
                     {
                         "type": "audio_options",
                         "text": tool_input.get("text"),
-                        "options": result if isinstance(result, list) else [],
+                        "clip_ids": clip_ids,
+                        "options": options,
                     }
                 )
             elif block["name"] == "create_anki_note":
@@ -173,7 +192,9 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
             )
         session.commit()
 
-    return ChatResponse(reply=result["reply"], payloads=_extract_payloads(new_messages))
+    return ChatResponse(
+        reply=result["reply"], payloads=_extract_payloads(new_messages, engine)
+    )
 
 
 @router.get("/history")

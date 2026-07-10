@@ -24,7 +24,11 @@ export default function AudioOptionsCard({ payload, onPick, disabled }: Props) {
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onPick(`Use audio option ${index + 1}.`)}
+              onClick={() =>
+                onPick(
+                  `Use audio option ${index + 1} (clip_id ${payload.clip_ids[index]}).`
+                )
+              }
               className="shrink-0 rounded-full bg-foreground px-3 py-1 text-xs font-medium text-background disabled:opacity-50"
             >
               Pick

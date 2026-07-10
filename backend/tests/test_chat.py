@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
@@ -10,7 +11,14 @@ from sqlmodel import Session, select
 from app.api import chat as chat_module
 from app.auth import create_session_cookie
 from app.main import app
-from app.models import BugReport, ConversationMessage, OAuthToken, get_engine, init_db
+from app.models import (
+    AudioClip,
+    BugReport,
+    ConversationMessage,
+    OAuthToken,
+    get_engine,
+    init_db,
+)
 
 ALLOWED_EMAIL = "dylanr.cope@gmail.com"
 
@@ -126,6 +134,15 @@ def test_post_chat_second_call_only_persists_new_messages_and_reuses_history(mon
 
 def test_post_chat_extracts_audio_options_payload(monkeypatch):
     _seed_token()
+    with Session(get_engine()) as session:
+        clip_one = AudioClip(text="こんにちは", voice="male", audio=b"aaa")
+        clip_two = AudioClip(text="こんにちは", voice="male", audio=b"bbb")
+        session.add(clip_one)
+        session.add(clip_two)
+        session.commit()
+        session.refresh(clip_one)
+        session.refresh(clip_two)
+        clip_ids = [clip_one.id, clip_two.id]
 
     async def run_turn(history, message, *, access_token=None):
         new_history = [
@@ -148,7 +165,7 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
                     {
                         "type": "tool_result",
                         "tool_use_id": "tool-1",
-                        "content": json.dumps(["b64-one", "b64-two"]),
+                        "content": json.dumps({"clip_ids": clip_ids}),
                     }
                 ],
             },
@@ -163,7 +180,15 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
     assert response.status_code == 200
     payloads = response.json()["payloads"]
     assert payloads == [
-        {"type": "audio_options", "text": "こんにちは", "options": ["b64-one", "b64-two"]}
+        {
+            "type": "audio_options",
+            "text": "こんにちは",
+            "clip_ids": clip_ids,
+            "options": [
+                base64.b64encode(b"aaa").decode("ascii"),
+                base64.b64encode(b"bbb").decode("ascii"),
+            ],
+        }
     ]
 
 
