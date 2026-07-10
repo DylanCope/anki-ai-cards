@@ -15,8 +15,18 @@ The real difference is message/response shape:
     blocks map to "user", same as plain text turns.
   - Gemini takes `system_instruction` as request config, not a content
     block.
+  - Gemini 3.x's `functionCall` parts carry an opaque `thought_signature`
+    (bytes) that MUST be replayed verbatim on any later request that
+    includes that function call in history, or the API 400s ("Function
+    call is missing a thought_signature") — confirmed against the real API,
+    not documented anywhere obvious. Carried on our internal tool_use block
+    as an extra `gemini_thought_signature` (base64 string, since it has to
+    survive a `json.dumps` round-trip through `ConversationMessage`); absent
+    on Anthropic-originated blocks, so `app.api.chat`'s serialization only
+    adds the key when present and Claude-only conversations are unaffected.
 """
 
+import base64
 import json
 import os
 import uuid
@@ -69,13 +79,21 @@ def _to_gemini_contents(messages: list[dict]) -> list[types.Content]:
             if block_type == "text":
                 parts.append(types.Part.from_text(text=_block_get(block, "text")))
             elif block_type == "tool_use":
+                raw_signature = (
+                    block.get("gemini_thought_signature")
+                    if isinstance(block, dict)
+                    else getattr(block, "gemini_thought_signature", None)
+                )
                 parts.append(
                     types.Part(
                         function_call=types.FunctionCall(
                             id=_block_get(block, "id"),
                             name=_block_get(block, "name"),
                             args=_block_get(block, "input"),
-                        )
+                        ),
+                        thought_signature=base64.b64decode(raw_signature)
+                        if raw_signature
+                        else None,
                     )
                 )
             elif block_type == "tool_result":
@@ -113,14 +131,17 @@ def _to_internal_response(response: types.GenerateContentResponse) -> object:
         elif part.function_call:
             has_function_call = True
             call_id = part.function_call.id or f"gemini_call_{uuid.uuid4().hex[:12]}"
-            blocks.append(
-                SimpleNamespace(
-                    type="tool_use",
-                    id=call_id,
-                    name=part.function_call.name,
-                    input=dict(part.function_call.args or {}),
-                )
+            block = SimpleNamespace(
+                type="tool_use",
+                id=call_id,
+                name=part.function_call.name,
+                input=dict(part.function_call.args or {}),
             )
+            if part.thought_signature:
+                block.gemini_thought_signature = base64.b64encode(
+                    part.thought_signature
+                ).decode("ascii")
+            blocks.append(block)
 
     stop_reason = "tool_use" if has_function_call else "end_turn"
     return SimpleNamespace(content=blocks, stop_reason=stop_reason)

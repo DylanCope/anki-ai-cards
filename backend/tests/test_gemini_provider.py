@@ -1,3 +1,4 @@
+import base64
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -6,7 +7,7 @@ from google.genai import types
 from app.agent.providers import gemini_provider
 
 
-def _make_response(parts: list[types.Part], *, model_version: str = "gemini-2.5-flash"):
+def _make_response(parts: list[types.Part], *, model_version: str = "gemini-3.1-flash-lite"):
     return types.GenerateContentResponse(
         candidates=[types.Candidate(content=types.Content(role="model", parts=parts))],
         model_version=model_version,
@@ -125,6 +126,71 @@ def test_to_internal_response_synthesizes_id_when_gemini_omits_one():
     assert result.content[0].id.startswith("gemini_call_")
 
 
+def test_to_internal_response_captures_thought_signature_when_present():
+    response = _make_response(
+        [
+            types.Part(
+                function_call=types.FunctionCall(id="call-1", name="sync_anki", args={}),
+                thought_signature=b"opaque-bytes",
+            )
+        ]
+    )
+
+    result = gemini_provider._to_internal_response(response)
+
+    assert result.content[0].gemini_thought_signature == base64.b64encode(
+        b"opaque-bytes"
+    ).decode("ascii")
+
+
+def test_to_internal_response_has_no_thought_signature_attribute_when_absent():
+    response = _make_response(
+        [types.Part(function_call=types.FunctionCall(id="call-1", name="sync_anki", args={}))]
+    )
+
+    result = gemini_provider._to_internal_response(response)
+
+    assert not hasattr(result.content[0], "gemini_thought_signature")
+
+
+def test_to_gemini_contents_replays_thought_signature_on_tool_use():
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call-1",
+                    "name": "sync_anki",
+                    "input": {},
+                    "gemini_thought_signature": base64.b64encode(b"opaque-bytes").decode(
+                        "ascii"
+                    ),
+                }
+            ],
+        },
+    ]
+
+    contents = gemini_provider._to_gemini_contents(messages)
+
+    assert contents[1].parts[0].thought_signature == b"opaque-bytes"
+
+
+def test_to_gemini_contents_tool_use_without_signature_sends_none():
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "call-1", "name": "sync_anki", "input": {}}],
+        },
+    ]
+
+    contents = gemini_provider._to_gemini_contents(messages)
+
+    assert contents[1].parts[0].thought_signature is None
+
+
 @pytest.mark.asyncio
 async def test_create_message_calls_gemini_and_returns_normalized_response(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -146,7 +212,7 @@ async def test_create_message_calls_gemini_and_returns_normalized_response(monke
         ],
         messages=[{"role": "user", "content": "what note types do I have?"}],
         max_tokens=4096,
-        model_id="gemini-2.5-flash",
+        model_id="gemini-3.1-flash-lite",
     )
 
     assert result.stop_reason == "end_turn"
@@ -154,7 +220,7 @@ async def test_create_message_calls_gemini_and_returns_normalized_response(monke
 
     generate_content.assert_awaited_once()
     call_kwargs = generate_content.call_args.kwargs
-    assert call_kwargs["model"] == "gemini-2.5-flash"
+    assert call_kwargs["model"] == "gemini-3.1-flash-lite"
     config = call_kwargs["config"]
     assert config.system_instruction == "You are a helpful assistant."
     assert config.tools[0].function_declarations[0].name == "list_anki_note_types"

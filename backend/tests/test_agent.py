@@ -403,11 +403,11 @@ async def test_run_turn_routes_to_the_gemini_provider_for_a_gemini_model(db, mon
     anthropic_create = AsyncMock()
     monkeypatch.setattr(core.anthropic_provider, "create_message", anthropic_create)
 
-    result = await core.run_turn([], "hi", model_id="gemini-2.5-flash")
+    result = await core.run_turn([], "hi", model_id="gemini-3.1-flash-lite")
 
     assert result["reply"] == "Konnichiwa!"
     gemini_create.assert_awaited_once()
-    assert gemini_create.await_args.kwargs["model_id"] == "gemini-2.5-flash"
+    assert gemini_create.await_args.kwargs["model_id"] == "gemini-3.1-flash-lite"
     anthropic_create.assert_not_awaited()
 
 

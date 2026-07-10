@@ -98,7 +98,15 @@ def _content_block_to_dict(block) -> dict:
     if block.type == "text":
         return {"type": "text", "text": block.text}
     if block.type == "tool_use":
-        return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+        result = {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+        # Gemini-only: an opaque signature that must be replayed on later
+        # requests referencing this tool call — absent (None) on
+        # Anthropic-originated blocks. See gemini_provider's module
+        # docstring for why this can't just live provider-side.
+        thought_signature = getattr(block, "gemini_thought_signature", None)
+        if thought_signature is not None:
+            result["gemini_thought_signature"] = thought_signature
+        return result
     raise ValueError(f"Unsupported content block type: {block.type!r}")
 
 

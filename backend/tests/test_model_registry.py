@@ -14,9 +14,9 @@ def test_available_models_span_both_providers():
 
 
 def test_get_model_returns_matching_model():
-    model = model_registry.get_model("gemini-2.5-flash")
+    model = model_registry.get_model("gemini-3.1-flash-lite")
 
-    assert model.id == "gemini-2.5-flash"
+    assert model.id == "gemini-3.1-flash-lite"
     assert model.provider == "gemini"
 
 

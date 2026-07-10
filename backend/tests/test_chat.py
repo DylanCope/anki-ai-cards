@@ -557,10 +557,10 @@ def test_create_conversation(monkeypatch):
 
 def test_create_conversation_with_a_chosen_model():
     _seed_token()
-    response = _authed_client().post("/api/conversations", json={"model": "gemini-2.5-flash"})
+    response = _authed_client().post("/api/conversations", json={"model": "gemini-3.1-flash-lite"})
 
     assert response.status_code == 200
-    assert response.json()["model"] == "gemini-2.5-flash"
+    assert response.json()["model"] == "gemini-3.1-flash-lite"
 
 
 def test_create_conversation_rejects_an_unknown_model():
@@ -571,14 +571,14 @@ def test_create_conversation_rejects_an_unknown_model():
 
 
 def test_update_conversation_model_requires_auth(client):
-    response = client.patch("/api/conversations/1", json={"model": "gemini-2.5-flash"})
+    response = client.patch("/api/conversations/1", json={"model": "gemini-3.1-flash-lite"})
     assert response.status_code == 401
 
 
 def test_update_conversation_model_404s_for_unknown_conversation():
     _seed_token()
     response = _authed_client().patch(
-        "/api/conversations/999", json={"model": "gemini-2.5-flash"}
+        "/api/conversations/999", json={"model": "gemini-3.1-flash-lite"}
     )
     assert response.status_code == 404
 
@@ -607,14 +607,14 @@ def test_update_conversation_model_switches_which_provider_a_later_turn_uses(mon
     authed = _authed_client()
 
     patch_response = authed.patch(
-        f"/api/conversations/{conversation_id}", json={"model": "gemini-2.5-pro"}
+        f"/api/conversations/{conversation_id}", json={"model": "gemini-3.1-pro-preview"}
     )
     assert patch_response.status_code == 200
-    assert patch_response.json()["model"] == "gemini-2.5-pro"
+    assert patch_response.json()["model"] == "gemini-3.1-pro-preview"
 
     authed.post("/api/chat", json={"conversation_id": conversation_id, "message": "hi"})
 
-    assert captured_model_ids == ["gemini-2.5-pro"]
+    assert captured_model_ids == ["gemini-3.1-pro-preview"]
 
 
 def test_list_models_requires_auth(client):
@@ -630,7 +630,7 @@ def test_list_models_returns_the_catalogue():
     listed = response.json()
     ids = {m["id"] for m in listed}
     assert DEFAULT_MODEL_ID in ids
-    assert "gemini-2.5-flash" in ids
+    assert "gemini-3.1-flash-lite" in ids
     first = listed[0]
     assert {"id", "provider", "display_name", "input_price_per_mtok", "output_price_per_mtok", "description"} <= set(
         first.keys()
@@ -656,3 +656,29 @@ def test_list_conversations_orders_most_recently_updated_first(monkeypatch):
 
     assert [c["id"] for c in listed] == [older["id"], newer["id"]]
     assert listed[0]["title"] == "hi"
+
+
+def test_content_block_to_dict_carries_gemini_thought_signature_when_present():
+    from types import SimpleNamespace
+
+    block = SimpleNamespace(
+        type="tool_use",
+        id="call-1",
+        name="sync_anki",
+        input={},
+        gemini_thought_signature="b64-opaque-bytes",
+    )
+
+    result = chat_module._content_block_to_dict(block)
+
+    assert result["gemini_thought_signature"] == "b64-opaque-bytes"
+
+
+def test_content_block_to_dict_omits_gemini_thought_signature_when_absent():
+    from types import SimpleNamespace
+
+    block = SimpleNamespace(type="tool_use", id="call-1", name="sync_anki", input={})
+
+    result = chat_module._content_block_to_dict(block)
+
+    assert "gemini_thought_signature" not in result

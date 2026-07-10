@@ -46,29 +46,39 @@ AVAILABLE_MODELS: list[ModelInfo] = [
         output_price_per_mtok=5.00,
         description="Anthropic's fastest, cheapest model — fine for simple lookups and confirmations.",
     ),
+    # The whole Gemini 2.5 generation (Pro/Flash/Flash-Lite) 404s with "no
+    # longer available to new users" on Dylan's API key — confirmed directly
+    # against the real API (2026-07-10), not assumed from docs. These 3.x
+    # IDs are what's actually reachable on his key today; empirically
+    # verified live: gemini-3.1-flash-lite responds reliably (including
+    # function calling); gemini-3-flash-preview and gemini-3.1-pro-preview
+    # exist and accept requests but hit 429 (quota) or 503 (overloaded) on
+    # a free-tier key — likely fine once Dylan enables billing, kept in the
+    # picker rather than removed since the restriction is account-tier, not
+    # a real unavailability.
     ModelInfo(
-        id="gemini-2.5-pro",
+        id="gemini-3.1-pro-preview",
         provider="gemini",
-        display_name="Gemini 2.5 Pro",
-        input_price_per_mtok=1.25,
-        output_price_per_mtok=10.00,
-        description="Google's most capable Gemini model — cheaper than Opus at broadly comparable quality.",
+        display_name="Gemini 3.1 Pro (preview)",
+        input_price_per_mtok=2.00,
+        output_price_per_mtok=12.00,
+        description="Google's most capable current Gemini model. On a free-tier API key this may hit quota limits — needs billing enabled for reliable use.",
     ),
     ModelInfo(
-        id="gemini-2.5-flash",
+        id="gemini-3-flash-preview",
         provider="gemini",
-        display_name="Gemini 2.5 Flash",
-        input_price_per_mtok=0.30,
-        output_price_per_mtok=2.50,
-        description="Fast and inexpensive — a good everyday default if you want to conserve Anthropic credits.",
+        display_name="Gemini 3 Flash (preview)",
+        input_price_per_mtok=0.50,
+        output_price_per_mtok=3.00,
+        description="Cheaper than Opus at solid quality. Preview model — occasionally returns 'overloaded' errors.",
     ),
     ModelInfo(
-        id="gemini-2.5-flash-lite",
+        id="gemini-3.1-flash-lite",
         provider="gemini",
-        display_name="Gemini 2.5 Flash-Lite",
-        input_price_per_mtok=0.10,
-        output_price_per_mtok=0.40,
-        description="Google's cheapest model — for simple, low-stakes turns where cost matters most.",
+        display_name="Gemini 3.1 Flash-Lite",
+        input_price_per_mtok=0.25,
+        output_price_per_mtok=1.50,
+        description="Google's cheapest reliable model — confirmed working end to end, including tool calls, on a free-tier key.",
     ),
 ]
 

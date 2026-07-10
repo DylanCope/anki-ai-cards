@@ -14,6 +14,88 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-10 — Gemini verification: two real bugs found and fixed against the live API
+- Did: continuation of the same day's Gemini work, once Dylan set
+  `GEMINI_API_KEY` as a real Fly secret. Real end-to-end testing (not
+  assumptions from docs) surfaced two problems the unit tests couldn't have
+  caught, since they only exist against the genuine API:
+  1. **The entire model_registry Gemini lineup was wrong for a real key.**
+     `client.models.list()` against Dylan's actual key (via `fly ssh
+     console`) showed `gemini-2.5-pro`/`-flash`/`-flash-lite` all *listed*,
+     but real `generate_content` calls to every one of them 404'd with
+     "This model ... is no longer available to new users" — an
+     undocumented-in-the-obvious-places account-tier restriction, not a
+     typo or a stale doc. Rather than guess at replacements, tried every
+     plausible current model id directly against the real API
+     (`generate_content(model=..., contents="Say OK")` in a loop over ~14
+     candidates) to find what's *actually* callable on this key today:
+     `gemini-3.1-flash-lite` works reliably (including function calling,
+     tested directly); `gemini-3-flash-preview` and `gemini-3.1-pro-preview`
+     exist and accept requests but hit 429 (quota) or 503 (overloaded) —
+     free-tier rate limits, not real unavailability. Replaced the registry's
+     3 Gemini entries with these real ids + current pricing
+     ($0.25/$1.50, $0.50/$3.00, $2.00/$12.00 respectively), with the
+     preview-tier ones' descriptions noting they may need paid billing for
+     reliable use.
+  2. **Gemini 3.x requires replaying an opaque `thought_signature` on any
+     function-call part that appears again in later request history**, or
+     the API 400s ("Function call is missing a thought_signature ... This
+     is required for tools to work correctly") — this only ever fires on
+     the *second* API call of a tool-use turn (the one that sends the
+     tool_result back), so no amount of single-call testing would surface
+     it; only running an actual multi-step tool-use turn against the real
+     API did. Conceptually the same requirement as Anthropic's
+     thinking-block-replay rule. Fixed by capturing `part.thought_signature`
+     (opaque bytes) onto the internal tool_use block as a
+     `gemini_thought_signature` attribute (base64-encoded, since it has to
+     survive `json.dumps` for persistence), replaying it when rebuilding a
+     Gemini `FunctionCall` part from history, and — the one place this
+     leaked into the "provider-agnostic" persistence layer —
+     `app/api/chat.py`'s `_content_block_to_dict` now carries the field
+     through when present (`getattr(..., None)`, so Anthropic-only
+     conversations are completely unaffected; the key is simply absent from
+     their serialized blocks).
+- Verified:
+  - `cd backend && uv run pytest` → 135 passed. New coverage: thought-
+    signature capture/omission on the response side and replay/absence on
+    the request side (`test_gemini_provider.py`); the persistence-layer
+    passthrough in isolation (`test_content_block_to_dict_carries_gemini_
+    thought_signature_when_present`/`_omits_..._when_absent` in
+    `test_chat.py`, since that's the actual code path that changed, not
+    just the provider module).
+  - Deployed, then **real, live, multi-turn verification against
+    production** (not mocks, not a single-shot call): created a
+    conversation on `gemini-3.1-flash-lite`, asked it to identify itself
+    and list real Anki note types — it correctly said "a large language
+    model, trained by Google" and returned the actual live note-type list
+    via a real `list_anki_note_types` tool call. Sent a **second** message
+    in the same conversation ("check the fields for the Cloze+ note type")
+    — this is exactly the multi-turn-with-replayed-tool-call scenario the
+    `thought_signature` bug would have broken — and it correctly made a
+    fresh `get_anki_note_type_fields` call and returned the real fields
+    (Text, Back Extra, Context, Text Audio). Gemini model selection is now
+    genuinely working, not just unit-tested.
+- Learned:
+  - **When a third-party API's error message doesn't match assumptions,
+    verify empirically against the real account rather than pattern-
+    matching to public docs or search results** — the "no longer available
+    to new users" 404 wasn't something either the earlier WebSearch/WebFetch
+    research or the SDK's own `models.list()` response would have predicted
+    (the model shows up in the list; only the actual inference call reveals
+    the restriction). A tight loop of real `generate_content` calls against
+    every plausible model id was faster and more reliable than reasoning
+    about it from documentation.
+  - Multi-step/tool-use features specifically need a *multi-turn* live test,
+    not just a single successful call — the `thought_signature` requirement
+    only manifests on the second request of a tool-use exchange. This
+    mirrors the project's existing "test in prod, not just mocks" practice
+    (see AGENTS.md / task 13's manual-verification convention) but is worth
+    calling out explicitly for tool-calling features on any *new* provider:
+    a single "does it respond" smoke test is not sufficient evidence the
+    tool-use loop actually works.
+
+---
+
 ## 2026-07-10 — Add Gemini as a second model provider, with a picker + pricing
 - Did: Dylan wanted Gemini support (he has a Google API key) plus model
   selection — likely motivated by the recurring Anthropic credit-balance
