@@ -10,15 +10,17 @@ import httpx
 
 API_BASE_URL = "https://api.elevenlabs.io/v1"
 
-# A default premade ElevenLabs voice (public "Adam" voice ID). The previous
-# default, "Rachel" (21m00Tcm4TlvDq8ikWAM), 402s on Dylan's account ("Free
-# users cannot use library voices via the API") — confirmed directly against
-# the real API that ElevenLabs' free-tier "library voice" restriction is
-# per-voice, not blanket across all premade voices: this one (and several
-# other premade voices) return real audio on the same account/key, Rachel
-# does not. The agent layer can pass a different `voice_id` per call if
-# needed later.
-DEFAULT_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
+# Dylan's own ElevenLabs voices (not the shared/library premade ones task 19
+# fell back to). These 402'd with "Free users cannot use library voices via
+# the API" on the free tier, same restriction Rachel hit — confirmed fixed
+# by Dylan upgrading to a paid ElevenLabs plan (Starter tier or above), not
+# by anything in this code. The agent picks one per `voice` ("male"/"female")
+# rather than always using a single fixed voice.
+VOICE_IDS = {
+    "male": "Mv8AjrYZCBkdsmDHNwcB",
+    "female": "8EkOjt4xTPGMclNlh1pk",
+}
+DEFAULT_VOICE = "male"
 
 # Explicit multilingual model so Japanese text is synthesized correctly
 # regardless of whatever ElevenLabs defaults `model_id` to server-side.
@@ -55,9 +57,17 @@ def _api_key() -> str:
 
 
 async def generate_audio_options(
-    text: str, n: int = 3, voice_id: str = DEFAULT_VOICE_ID
+    text: str, n: int = 3, voice: str = DEFAULT_VOICE
 ) -> list[bytes]:
-    """Generate `n` distinct audio takes for `text`, returning raw audio bytes."""
+    """Generate `n` distinct audio takes for `text` in the given voice
+    ("male" or "female"), returning raw audio bytes."""
+    try:
+        voice_id = VOICE_IDS[voice]
+    except KeyError:
+        raise ValueError(
+            f"Unknown voice {voice!r}; expected one of {sorted(VOICE_IDS)}"
+        ) from None
+
     settings = [_VOICE_SETTINGS_VARIANTS[i % len(_VOICE_SETTINGS_VARIANTS)] for i in range(n)]
 
     async with httpx.AsyncClient() as client:

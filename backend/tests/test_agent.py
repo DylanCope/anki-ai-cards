@@ -104,7 +104,7 @@ async def test_dispatch_generate_audio(monkeypatch):
 
     result = await tools.dispatch_tool("generate_audio", {"text": "こんにちは"})
 
-    mock.assert_awaited_once_with("こんにちは", n=3)
+    mock.assert_awaited_once_with("こんにちは", n=3, voice=tools.elevenlabs.DEFAULT_VOICE)
     assert result == [base64.b64encode(b).decode("ascii") for b in [b"aaa", b"bbb", b"ccc"]]
 
 
@@ -115,7 +115,17 @@ async def test_dispatch_generate_audio_custom_n(monkeypatch):
 
     await tools.dispatch_tool("generate_audio", {"text": "hi", "n": 1})
 
-    mock.assert_awaited_once_with("hi", n=1)
+    mock.assert_awaited_once_with("hi", n=1, voice=tools.elevenlabs.DEFAULT_VOICE)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_audio_custom_voice(monkeypatch):
+    mock = AsyncMock(return_value=[b"aaa"])
+    monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
+
+    await tools.dispatch_tool("generate_audio", {"text": "hi", "voice": "female"})
+
+    mock.assert_awaited_once_with("hi", n=3, voice="female")
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ def _set_api_key(monkeypatch):
 @respx.mock
 async def test_generate_audio_options_makes_three_distinct_requests():
     route = respx.post(
-        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
     ).mock(
         side_effect=[
             Response(200, content=b"audio-one"),
@@ -45,7 +45,7 @@ async def test_generate_audio_options_makes_three_distinct_requests():
 @respx.mock
 async def test_generate_audio_options_respects_n():
     respx.post(
-        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
     ).mock(return_value=Response(200, content=b"audio"))
 
     results = await elevenlabs.generate_audio_options("hello", n=1)
@@ -56,7 +56,7 @@ async def test_generate_audio_options_respects_n():
 @respx.mock
 async def test_generate_audio_options_raises_elevenlabs_error_with_api_detail():
     respx.post(
-        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
     ).mock(
         return_value=Response(
             402,
@@ -81,8 +81,25 @@ async def test_generate_audio_options_raises_elevenlabs_error_with_api_detail():
 @respx.mock
 async def test_generate_audio_options_raises_elevenlabs_error_for_non_json_body():
     respx.post(
-        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
     ).mock(return_value=Response(500, text="internal server error"))
 
     with pytest.raises(elevenlabs.ElevenLabsError, match="internal server error"):
         await elevenlabs.generate_audio_options("hello", n=1)
+
+
+@respx.mock
+async def test_generate_audio_options_uses_female_voice_id():
+    route = respx.post(
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS['female']}"
+    ).mock(return_value=Response(200, content=b"audio"))
+
+    results = await elevenlabs.generate_audio_options("hello", n=1, voice="female")
+
+    assert results == [b"audio"]
+    assert route.call_count == 1
+
+
+async def test_generate_audio_options_rejects_unknown_voice():
+    with pytest.raises(ValueError, match="Unknown voice"):
+        await elevenlabs.generate_audio_options("hello", n=1, voice="robot")

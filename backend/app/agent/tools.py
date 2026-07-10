@@ -57,7 +57,12 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "generate_audio",
-        "description": "Generate audio options for a piece of Japanese text via ElevenLabs, so Dylan can pick the best-sounding take.",
+        "description": (
+            "Generate audio options for a piece of Japanese text via ElevenLabs, "
+            "so Dylan can pick the best-sounding take. Available in a male or "
+            "female voice — pick whichever fits the card (e.g. the speaker in "
+            "the lesson), or ask Dylan if it's not obvious which he wants."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -69,6 +74,12 @@ TOOL_SCHEMAS: list[dict] = [
                     "type": "integer",
                     "description": "Number of audio options to generate.",
                     "default": 3,
+                },
+                "voice": {
+                    "type": "string",
+                    "enum": ["male", "female"],
+                    "description": "Which voice to use.",
+                    "default": "male",
                 },
             },
             "required": ["text"],
@@ -170,7 +181,10 @@ async def dispatch_tool(
 
     if name == "generate_audio":
         n = tool_input.get("n", 3)
-        options = await elevenlabs.generate_audio_options(tool_input["text"], n=n)
+        voice = tool_input.get("voice", elevenlabs.DEFAULT_VOICE)
+        options = await elevenlabs.generate_audio_options(
+            tool_input["text"], n=n, voice=voice
+        )
         return [base64.b64encode(option).decode("ascii") for option in options]
 
     if name == "create_anki_note":
