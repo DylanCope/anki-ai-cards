@@ -8,7 +8,6 @@ import pytest
 from sqlmodel import Session
 
 from app.agent import core, tools, workflow_specs
-from app.agent.model_registry import DEFAULT_MODEL_ID
 from app.models import init_db
 
 
@@ -402,12 +401,12 @@ async def test_run_turn_no_tool_use(db, monkeypatch):
     client.messages.create = create
 
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "hi", model_id=DEFAULT_MODEL_ID)
+        result = await core.run_turn([], "hi", model_id="claude-opus-4-8")
 
     assert result["reply"] == "Hello Dylan!"
     assert len(call_snapshots) == 1
     kwargs = call_snapshots[0]
-    assert kwargs["model"] == DEFAULT_MODEL_ID
+    assert kwargs["model"] == "claude-opus-4-8"
     assert kwargs["tools"] == tools.TOOL_SCHEMAS
     assert kwargs["messages"][-1] == {"role": "user", "content": "hi"}
 
@@ -435,7 +434,7 @@ async def test_run_turn_one_tool_call_then_end_turn(db, monkeypatch):
     client.messages.create = create
 
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "what note types do I have?", model_id=DEFAULT_MODEL_ID)
+        result = await core.run_turn([], "what note types do I have?", model_id="claude-opus-4-8")
 
     list_mock.assert_awaited_once_with()
     assert result["reply"] == "You have a Cloze note type."
@@ -472,7 +471,7 @@ async def test_run_turn_passes_access_token_to_tools(db, monkeypatch):
     )
 
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "read the doc", access_token="tok-xyz", model_id=DEFAULT_MODEL_ID)
+        await core.run_turn([], "read the doc", access_token="tok-xyz", model_id="claude-opus-4-8")
 
     fetch_mock.assert_awaited_once_with("abc", "tok-xyz")
 
@@ -502,7 +501,7 @@ async def test_run_turn_recovers_from_a_failing_tool_call(db, monkeypatch):
     client.messages.create = create
 
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "what note types do I have?", model_id=DEFAULT_MODEL_ID)
+        result = await core.run_turn([], "what note types do I have?", model_id="claude-opus-4-8")
 
     assert result["reply"] == "I couldn't reach Anki just now — want me to try again?"
     assert len(call_snapshots) == 2
@@ -552,7 +551,7 @@ async def test_run_turn_surfaces_known_specs_on_empty_history(db, monkeypatch):
     client.messages.create = create
 
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "hi", model_id=DEFAULT_MODEL_ID)
+        await core.run_turn([], "hi", model_id="claude-opus-4-8")
 
     system_prompt = call_snapshots[0]["system"]
     assert "lesson-doc" in system_prompt
@@ -570,7 +569,7 @@ async def test_run_turn_no_specs_uses_plain_system_prompt(db, monkeypatch):
     client.messages.create = create
 
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "hi", model_id=DEFAULT_MODEL_ID)
+        await core.run_turn([], "hi", model_id="claude-opus-4-8")
 
     assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT
 
@@ -591,6 +590,6 @@ async def test_run_turn_does_not_surface_specs_on_nonempty_history(db, monkeypat
         {"role": "assistant", "content": "earlier reply"},
     ]
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn(history, "hi", model_id=DEFAULT_MODEL_ID)
+        await core.run_turn(history, "hi", model_id="claude-opus-4-8")
 
     assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT

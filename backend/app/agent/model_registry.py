@@ -82,7 +82,7 @@ AVAILABLE_MODELS: list[ModelInfo] = [
     ),
 ]
 
-DEFAULT_MODEL_ID = "claude-opus-4-8"
+DEFAULT_MODEL_ID = "gemini-3.1-flash-lite"
 
 _MODELS_BY_ID = {model.id: model for model in AVAILABLE_MODELS}
 

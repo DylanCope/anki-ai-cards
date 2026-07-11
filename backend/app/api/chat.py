@@ -386,14 +386,21 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
             f"{body.message}\n\n(Attached image_id: {body.image_id} for use on a card.)"
         )
 
-    access_token = await _get_access_token(email)
     try:
+        access_token = await _get_access_token(email)
         result = await agent_core.run_turn(
             history,
             effective_message,
             access_token=access_token,
             model_id=conversation.model,
         )
+    except HTTPException:
+        # _get_access_token raises this deliberately (e.g. 401 when there's
+        # no stored Google credential) — let it propagate as-is rather than
+        # burying a clean, already-meaningful status code inside the generic
+        # 500/bug-report path below, which is for genuinely unexpected
+        # failures only.
+        raise
     except Exception as exc:
         detail = f"{traceback.format_exc()}\n\nUser message: {body.message}"
         with Session(engine) as session:

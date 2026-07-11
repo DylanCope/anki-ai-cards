@@ -18,7 +18,7 @@ def _utcnow() -> datetime:
 #  Keep in sync with app.agent.model_registry.DEFAULT_MODEL_ID — duplicated
 # as a plain string here (rather than imported) so this persistence module
 # doesn't depend on the agent layer.
-_DEFAULT_MODEL_ID = "claude-opus-4-8"
+_DEFAULT_MODEL_ID = "gemini-3.1-flash-lite"
 
 
 class Conversation(SQLModel, table=True):
