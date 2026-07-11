@@ -16,6 +16,8 @@ import ConversationSidebar from "@/app/components/ConversationSidebar";
 import ModelSelector from "@/app/components/ModelSelector";
 import SignIn from "@/app/components/SignIn";
 import ThemeToggle from "@/app/components/ThemeToggle";
+import TypingIndicator from "@/app/components/TypingIndicator";
+import Toast from "@/app/components/Toast";
 
 type AuthState = "checking" | "signed_out" | "signed_in";
 
@@ -276,11 +278,7 @@ export default function ChatApp() {
               )}
             </div>
           ))}
-          {error && (
-            <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-              {error}
-            </p>
-          )}
+          {sending && <TypingIndicator />}
           <div ref={bottomRef} />
         </div>
         <form
@@ -317,6 +315,7 @@ export default function ChatApp() {
           </button>
         </form>
       </div>
+      {error && <Toast message={error} onDismiss={() => setError(null)} />}
     </div>
   );
 }

@@ -14,6 +14,56 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 27: Typing indicator + toast-style errors
+- Did: two new small components, wired into `ChatApp.tsx`, no other files
+  touched:
+  - `TypingIndicator.tsx`: an assistant-style bubble (`rounded-xl`,
+    `border-border`/`bg-surface`, matching `MessageBubble`'s assistant
+    styling) containing three `animate-bounce` dots staggered via
+    `[animation-delay:-0.3s]`/`[animation-delay:-0.15s]` arbitrary-property
+    classes (Tailwind v4 supports these directly, no config change needed).
+    Rendered in `ChatApp.tsx`'s message list right after the turns map,
+    conditioned on `sending` — replaces relying solely on the composer's
+    `disabled={sending}` as the only feedback that a request is in flight.
+  - `Toast.tsx`: a small dismissible banner, `fixed inset-x-0 bottom-4
+    z-50` overlay (`pointer-events-none` on the wrapper, `pointer-events-auto`
+    on the actual banner, so it never intercepts clicks elsewhere), styled
+    with `bg-surface`/`border-red-500/30` (kept the red accent for
+    error-severity since there's no dedicated "danger" token yet) plus a ✕
+    dismiss button calling `onDismiss`.
+  - `ChatApp.tsx`: removed the old inline `{error && <p ...>}` block from
+    inside the scrollable message list, replaced with `{error && <Toast
+    message={error} onDismiss={() => setError(null)} />}` rendered as a
+    sibling of the whole chat column (outside the flex column entirely, at
+    the same level as the sidebar) so it floats over everything and never
+    affects layout or disables the composer — the composer's own
+    `disabled={sending}` is unrelated to error state and was already
+    correct.
+  - Left `sendMessage`'s existing `setError(...)` call sites untouched —
+    task 16/17's bug-report-id message formatting already produces the
+    right string, this task only changed how that string is *displayed*.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors.
+  - Deploy-and-verify (frontend-only task): `fly deploy` from `frontend/`
+    succeeded (same benign transient "not listening on expected address"
+    warning seen in every prior frontend deploy entry, followed by a clean
+    Next.js `Ready in 0ms` startup); `fly status -a anki-ai-cards-frontend`
+    shows the machine `started`; `curl -s -o /dev/null -w '%{http_code}'
+    https://anki-ai-cards-frontend.fly.dev/` returned `200`; `fly logs -a
+    anki-ai-cards-frontend --no-tail` shows a clean restart with no runtime
+    errors.
+- Learned: nothing new architecturally — this was a small, self-contained
+  UI addition on top of task 25/26's token set and layout. Dylan should
+  confirm in a browser: (1) the bouncing-dots indicator appears in the
+  message list while a request is in flight and disappears when the reply
+  lands; (2) triggering a failed request (e.g. briefly stop the backend, or
+  use devtools to force a non-2xx on `/api/chat`) shows the toast at the
+  bottom of the screen, that it's dismissible via the ✕, and that the
+  composer stays enabled/usable the whole time the toast is showing.
+
+---
+
 ## 2026-07-11 — Task 26: Visual overhaul of the chat surface
 - Did: restyled every chat-surface component onto task 25's token set
   (`bg-background`/`bg-surface`/`border-border`/`bg-accent`/

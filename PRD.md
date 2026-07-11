@@ -439,7 +439,7 @@ this step in PROGRESS.md for every task in this range.
   a primarily-visual change requiring Dylan's manual browser review across
   both light and dark mode.
 
-- [ ] **27. Typing indicator + toast-style errors.** Depends on task 25 for
+- [x] **27. Typing indicator + toast-style errors.** Depends on task 25 for
   consistent styling. `frontend/app/components/ChatApp.tsx`: show an
   animated "assistant is composing" indicator (e.g. bouncing dots) in the
   message list while `sending` is true, instead of only disabling the
