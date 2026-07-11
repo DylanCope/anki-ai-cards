@@ -27,6 +27,9 @@ export default function ChatApp() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const MAX_TEXTAREA_HEIGHT_PX = 200;
 
   const activeConversation = conversations.find((c) => c.id === conversationId) ?? null;
 
@@ -98,6 +101,14 @@ export default function ChatApp() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns]);
+
+  // Auto-resize the composer to fit its content, up to a max height.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
+  }, [input]);
 
   async function startNewChat() {
     if (sending) return;
@@ -256,17 +267,28 @@ export default function ChatApp() {
           }}
           className="flex gap-2 border-t border-zinc-200 p-4 dark:border-zinc-800"
         >
-          <input
+          <textarea
+            ref={textareaRef}
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey) return;
+              // Skip submission while an IME composition is in progress —
+              // Enter also confirms kana->kanji conversion.
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              event.preventDefault();
+              sendMessage(input);
+            }}
             placeholder="Message the agent..."
             disabled={sending}
-            className="flex-1 rounded-full border border-zinc-300 px-4 py-2 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900"
+            rows={1}
+            style={{ maxHeight: MAX_TEXTAREA_HEIGHT_PX }}
+            className="flex-1 resize-none overflow-y-auto rounded-2xl border border-zinc-300 px-4 py-2 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900"
           />
           <button
             type="submit"
             disabled={sending || !input.trim()}
-            className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-50"
+            className="self-end rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-50"
           >
             Send
           </button>

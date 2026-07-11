@@ -14,6 +14,57 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 21: Composer auto-resizing textarea, Enter/Shift+Enter, IME-safe
+- Did: `frontend/app/components/ChatApp.tsx` — replaced the single-line
+  `<input>` composer with a `<textarea rows={1}>`. Auto-resize is a small
+  `useEffect` keyed on `input` that resets `textarea.style.height = "auto"`
+  then sets it to `Math.min(scrollHeight, MAX_TEXTAREA_HEIGHT_PX)` (200px) —
+  the standard "reset then measure" trick, since without the reset
+  `scrollHeight` never shrinks back down as content is deleted. Past the max
+  height the textarea scrolls internally (`overflow-y-auto` + `resize-none`
+  in its className, `maxHeight` via inline style so it matches the JS
+  constant exactly rather than duplicating the value in Tailwind).
+  `onKeyDown` submits on a bare `Enter` (`event.preventDefault()` +
+  `sendMessage(input)`), lets `Shift+Enter` fall through to the textarea's
+  default newline-insertion behavior, and — the actual point of this task —
+  skips submission entirely when `event.nativeEvent.isComposing` or
+  `event.keyCode === 229` is true, so Enter-to-confirm during Japanese IME
+  kana→kanji conversion doesn't also send the message. The form's own
+  `onSubmit` (button click / any other submit path) is unchanged. Added a
+  `textareaRef` and moved the send button to `self-end` so it stays bottom-
+  aligned as the textarea grows upward from one row.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings.
+  - Deploy-and-verify per AGENTS.md (frontend-only task): `fly deploy` from
+    `frontend/` succeeded (saw the same benign "not listening on expected
+    address" warning mid-rollout as task 20's entry noted — transient during
+    the old machine's stop, not a real problem); `fly status -a
+    anki-ai-cards-frontend` shows the machine `started`; `curl -s -o
+    /dev/null -w '%{http_code}' https://anki-ai-cards-frontend.fly.dev/`
+    returned `200`; `fly logs -a anki-ai-cards-frontend` shows a clean
+    `Next.js 16.2.10` / `Ready in 0ms` startup with no errors.
+  - **Not verified in an actual browser** — per the task's own Verify
+    clause, IME behavior specifically (Enter-to-convert not sending while
+    composing) can't be exercised by a headless build/lint step at all; it
+    needs Dylan to type Japanese with an IME enabled and confirm directly.
+    Also worth him eyeballing the auto-resize/max-height/internal-scroll
+    behavior while at it, since that's likewise not something `npm run
+    build`/`lint` can confirm visually.
+- Learned:
+  - `event.keyCode` is deprecated but still the only reliable cross-browser
+    signal for "this Enter came from an IME still composing" in some older
+    Safari/older-Firefox combinations where `isComposing` alone has been
+    historically unreliable right at the composition-end boundary — kept
+    both checks per AGENTS.md's existing convention note on this exact
+    topic, not just `isComposing` alone.
+  - Used an inline `style={{ maxHeight: ... }}` for the textarea rather than
+    a Tailwind arbitrary-value class, specifically so the JS resize effect's
+    `Math.min(..., MAX_TEXTAREA_HEIGHT_PX)` and the CSS cap can't drift out
+    of sync if one gets edited without the other later.
+
+---
+
 ## 2026-07-11 — Task 20: Fix independent pane scrolling
 - Did: found PRD.md/AGENTS.md already had uncommitted edits from a prior,
   never-committed spec-interview session adding the UI-overhaul tasks

@@ -358,7 +358,7 @@ this step in PROGRESS.md for every task in this range.
   above; note in PROGRESS.md that Dylan should confirm in a browser by
   sending enough messages to overflow the transcript.
 
-- [ ] **21. Composer: auto-resizing textarea, Enter/Shift+Enter, IME-safe.**
+- [x] **21. Composer: auto-resizing textarea, Enter/Shift+Enter, IME-safe.**
   `frontend/app/components/ChatApp.tsx`: replace the single-line `<input>`
   with a `<textarea>` that grows with content up to a max height (then
   scrolls internally), where Enter submits and Shift+Enter inserts a
