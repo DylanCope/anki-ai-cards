@@ -702,7 +702,7 @@ task 20) for whichever app(s) each task touches.
   confirm uploading an image, seeing the preview, sending it, and asking the
   agent to use it on a card, in a browser.
 
-- [ ] **40. Docs + verification checklist update for image support.**
+- [x] **40. Docs + verification checklist update for image support.**
   Depends on tasks 35-39. Update `docs/manual_verification.md` (task 13's
   checklist) with steps for all three image modes (upload, search-and-pick,
   generate-and-pick) ending in a card that has a visible image field, and

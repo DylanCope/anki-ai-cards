@@ -14,6 +14,56 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 40: Docs + verification checklist update for image support
+- Did:
+  - `docs/manual_verification.md`: added a new "8. Image support: upload,
+    search, and generate" section covering all three image-attachment modes
+    from tasks 33-39, inserted before the existing "Reuse a workflow spec"
+    section (renumbered 8 → 9 to keep sequential). Structured as four
+    sub-checklists: 8a (upload via the composer paperclip icon, including
+    the "x" remove-before-send check), 8b (`search_images`, with an explicit
+    note pointing at the known GCP Custom Search API 403 blocker from task
+    36/PROGRESS if it errors), 8c (`generate_image`, with a similar note
+    about the Gemini free-tier image quota blocker from task 37/39), and 8d
+    (the shared end state: confirm the picked image actually renders on the
+    note in Anki via VNC, then confirm it survives a real AnkiWeb sync to a
+    second device) — ending in a card with a visible image field and a
+    synced-device confirmation, per the task's wording. Updated the "If
+    something doesn't match" footer to note section 8 was cross-checked
+    against tasks 33-39 as of this commit, alongside the existing task 1-12
+    cross-check note.
+  - Checked `.env.example` and `AGENTS.md`'s Conventions section for
+    `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_ID` and the Programmable Search Engine
+    manual-setup note — both were already present and accurate (added in
+    task 36), so no changes were needed there. No `GEMINI_API_KEY` mention
+    was requested by this task's wording (it only names the CSE vars), and
+    it was already documented in `.env.example` from task 37 anyway.
+  - No code changes — this was a docs-only task, matching the PRD's own
+    expectation ("no code changes expected").
+- Verified:
+  - `cd backend && uv run pytest` → 181 passed, unchanged from task 39
+    (confirms no regression from a docs-only change).
+  - `cd frontend && npm run build && npm run lint` → both pass, unchanged.
+  - Did not `fly deploy` — this task touches no application code, only a
+    markdown doc under `docs/`, so there's nothing new to deploy; the
+    task-20-32 "deploy-and-verify" convention doesn't apply here (it's for
+    tasks 20-32 specifically, and even by analogy there's no runtime
+    surface a deploy would exercise).
+- Learned:
+  - **This was the last unchecked task in PRD.md — every task (1-40) is now
+    checked.** All verification commands referenced by this task pass. Per
+    the Ralph loop instructions, this means the next iteration should find
+    every checkbox done and output `<promise>RALPH_DONE</promise>` rather
+    than starting new work — unless PRD.md gains new unchecked tasks in the
+    meantime (e.g. someone adds a follow-up task, or a future iteration
+    discovers necessary work not yet in PRD.md per the loop's own rules).
+  - The two account-level blockers that have been open since tasks 36/37
+    (GCP Custom Search API not enabled, Gemini free-tier image quota) are
+    still unresolved as of this task and remain Dylan's manual steps, not
+    loop work — documented here again since section 8b/8c of the new
+    checklist point directly at them so Dylan doesn't mistake a real account
+    issue for a fresh bug when he runs through the checklist.
+
 ## 2026-07-11 — Task 39: Frontend composer image upload
 - Did:
   - `frontend/app/components/ChatApp.tsx`: added a `Paperclip` (lucide-react)

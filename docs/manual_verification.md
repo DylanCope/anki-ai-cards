@@ -117,7 +117,73 @@ match" note at the bottom.
 - [ ] Confirm the new card appears, with the correct fields, furigana,
   translation, and that the audio plays.
 
-## 8. Reuse a workflow spec (second session)
+## 8. Image support: upload, search, and generate
+
+Exercises tasks 33-39 — three independent ways to attach an image to a card.
+Do all three in one session; each ends with the agent using the resulting
+`image_id` on a `create_anki_note` call's `picture` argument
+(`backend/app/agent/tools.py`).
+
+### 8a. Upload an image
+
+- [ ] Click the paperclip icon next to the composer
+  (`frontend/app/components/ChatApp.tsx`). Select an image file from your
+  device.
+- [ ] Confirm a thumbnail preview appears above the textarea immediately
+  (before you send anything) — this is `POST /api/images` uploading the file
+  and returning an `image_id` right away, not something deferred until send.
+- [ ] Click the preview's "x" — confirm it removes the preview and the next
+  message you send has no image attached (no `(Attached image_id: ...)` text
+  influencing the agent).
+- [ ] Re-attach an image, then send a message like "Use this image on the
+  card for `<some correction>`." Confirm the agent's reply references having
+  an image to work with, and that it proceeds to call `create_anki_note` with
+  a `picture` argument referencing that `image_id`.
+
+### 8b. Search for an image
+
+- [ ] Ask the agent to search for an image for a card, e.g. "Find an image
+  for 猫 (cat)." This calls the `search_images` tool
+  (`backend/app/clients/google_image_search.py`, Google Custom Search).
+- [ ] Confirm an **Image options** card renders in the chat
+  (`frontend/app/components/ImageOptionsCard.tsx`) with 3 thumbnail results
+  and a **Pick** button under each.
+- [ ] **If this errors instead** — check whether it's the known account-level
+  blocker noted in PROGRESS.md (tasks 36/39): `GOOGLE_CSE_API_KEY`'s GCP
+  project needs the "Custom Search JSON API" enabled in Google Cloud Console
+  (APIs & Services > Library) in addition to the Programmable Search Engine
+  console setup — a 403 with `"This project does not have the access to
+  Custom Search JSON API"` means this step, not a code bug. This is Dylan's
+  manual step, not something a loop iteration can fix.
+- [ ] Click **Pick** on one thumbnail. Confirm the agent acknowledges the
+  choice and can proceed to create a note with that image.
+
+### 8c. Generate an image
+
+- [ ] Ask the agent to generate an image for a card, e.g. "Generate an image
+  of a cat for this card instead." This calls the `generate_image` tool
+  (`backend/app/clients/gemini_images.py`, Gemini).
+- [ ] Confirm the same **Image options** card UI renders, this time with 3
+  generated images.
+- [ ] **If this errors instead** — check whether it's the known Gemini
+  free-tier image-generation quota blocker noted in PROGRESS.md (tasks
+  37/39); that's Dylan's account to resolve (billing/quota), not a code bug.
+- [ ] Click **Pick** on one. Confirm the agent proceeds using it.
+
+### 8d. Confirm the image lands on a real card
+
+- [ ] For at least one of 8a-8c, let the agent finish creating the note (same
+  "propose → confirm → create" flow as section 4/6). The **Card added to
+  Anki** card should render as usual.
+- [ ] Open Anki via the VNC session (`fly proxy 5900 -a anki-ai-cards-anki`,
+  per AGENTS.md) and confirm the note has an actual image visible in the
+  field the agent put it in (not just a filename reference or a broken
+  image icon).
+- [ ] Sync (ask the agent, or trigger it manually per section 7), then check
+  the same note on your phone or desktop Anki app — confirm the image
+  displays there too after the normal AnkiWeb sync.
+
+## 9. Reuse a workflow spec (second session)
 
 - [ ] Start a **new** browser session (or just refresh after some time) and
   send an opening message. If you and the agent settled on a workflow
@@ -132,8 +198,9 @@ match" note at the bottom.
 ## If something doesn't match
 
 This doc was written by cross-checking PRD.md tasks 1-12 and the actual code
-in `backend/app/` and `frontend/app/` as of the task-13 commit. If a step
-above doesn't match what the running system actually does:
+in `backend/app/` and `frontend/app/` as of the task-13 commit, then extended
+for image support (section 8) by cross-checking tasks 33-39 as of the task-40
+commit. If a step above doesn't match what the running system actually does:
 
 - If the **code** has moved on (e.g. a later change added a real
   `propose_card` tool or persisted payloads across reloads), this doc is
