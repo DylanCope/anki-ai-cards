@@ -9,6 +9,7 @@ from app.api.chat import (
     models_router,
     router as chat_router,
 )
+from app.api.workflows import router as workflows_router
 from app.models import init_db
 
 
@@ -29,6 +30,7 @@ app.include_router(chat_router)
 app.include_router(bug_reports_router)
 app.include_router(conversations_router)
 app.include_router(models_router)
+app.include_router(workflows_router)
 
 
 @app.get("/health")

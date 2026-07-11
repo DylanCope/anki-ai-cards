@@ -14,6 +14,85 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 31: Backend workflow spec REST endpoints
+- Did:
+  - `backend/app/agent/workflow_specs.py`: added `delete_workflow_spec(name) ->
+    bool` (looks the row up, deletes it, returns `False` if it didn't exist —
+    same shape as the other three helpers, plain sync SQLModel session calls).
+    Also fixed a latent bug found while implementing this: `save_workflow_spec`
+    never bumped `updated_at` on the upsert-update path (only ever set once at
+    row creation via the model's `default_factory`) — unlike `Conversation`,
+    which already does this explicitly in `chat.py`. Since task 31/32's whole
+    point is surfacing `updated_at` to Dylan in a UI, a timestamp that's
+    silently identical to `created_at` forever would be actively misleading,
+    so fixed it in the same edit (`existing.updated_at =
+    datetime.now(timezone.utc)` before the update-path commit) rather than
+    leaving it for a future task to rediscover.
+  - New `backend/app/api/workflows.py`: `router = APIRouter(prefix=
+    "/api/workflow-specs", ...)` with `GET ""` (list), `GET "/{name}"`,
+    `PUT "/{name}"` (create-or-update by name, body `{"spec": str}`), `DELETE
+    "/{name}"` — all behind `Depends(require_auth)`, same pattern as
+    `bug_reports_router`/`conversations_router` in `chat.py`. `GET`/`DELETE`
+    on a missing name both 404 via `HTTPException(404, "Workflow spec not
+    found")`. Response shape per spec:
+    `{name, spec, created_at, updated_at}`.
+  - `backend/app/main.py`: registered the new router
+    (`app.include_router(workflows_router)`), imported from
+    `app.api.workflows`.
+  - Deliberately did **not** add any structured field-mapping validation to
+    the `PUT` body beyond `{spec: str}` — the task and PRD's "Out of scope"
+    section are explicit this stays a plain freeform-text editor over the
+    same string the agent already reads/writes via its own
+    `save_workflow_spec` tool, not a new structured surface.
+- Verified:
+  - `cd backend && uv run pytest` → 153 passed (up from 143). New test files/
+    cases: `backend/tests/test_workflows_api.py` (new — auth-required 401,
+    empty list, PUT-creates-then-GET, PUT-upserts-by-name-not-duplicating,
+    GET/DELETE 404 on missing name, DELETE-then-GET-404); three new cases
+    added to `backend/tests/test_workflow_specs.py` for the helper layer
+    itself (`test_save_bumps_updated_at_on_upsert`,
+    `test_delete_workflow_spec`, `test_delete_missing_workflow_spec_returns_
+    false`).
+  - Deploy-and-verify per AGENTS.md (backend-only task): `fly deploy` from
+    `backend/` succeeded (same benign "not listening on expected address"
+    transient warning seen in every prior backend deploy entry, not a real
+    problem); `fly status -a anki-ai-cards-backend` shows `1 total, 1
+    passing`; `curl https://anki-ai-cards-backend.fly.dev/health` → `200`.
+  - **Real end-to-end verification against production, not mocks**: fetched
+    the real `DEV_API_KEY` via `fly ssh console`, then against
+    `https://anki-ai-cards-backend.fly.dev` directly: baseline `GET
+    /api/workflow-specs` already showed one genuine agent-saved spec ("Cloze+
+    JP cards", written by the agent itself in a real prior session — good
+    confirmation this endpoint reads the exact same data the agent's own
+    tools write) → `PUT /api/workflow-specs/ralph-task-31-smoke-test` with
+    `{"spec": "...v1"}` created it, `created_at`==`updated_at` → a second
+    `PUT` with `{"spec": "...v2"}` upserted the same name (`created_at`
+    unchanged, `updated_at` bumped forward — confirms the `updated_at` fix
+    above actually works against a real DB, not just the unit test) → `GET
+    /api/workflow-specs` showed exactly one row for that name, not two → `GET
+    /api/workflow-specs/{name}` returned the v2 content → `DELETE` returned
+    `{"deleted": true}` → a follow-up `GET` on the same name returned `404` →
+    `DELETE` on an already-missing name also returned `404` → an unauthenticated
+    `GET /api/workflow-specs` (no bearer token) returned `401`.
+- Learned:
+  - `save_workflow_spec`'s missing `updated_at` bump on update was a
+    pre-existing bug in task 8's original implementation, invisible until now
+    because nothing ever displayed `updated_at` to a human before this task —
+    the agent's own `save_workflow_spec`/`load_workflow_spec`/
+    `list_workflow_specs` tools never surface timestamps in a chat reply.
+    Worth a reminder for any future task that adds a REST/UI surface over
+    existing agent-tool-backed data: check whether the underlying helper
+    actually maintains every field the new surface will display, not just
+    that a round-trip of the fields it *already* used works.
+  - Task 32 (frontend Workflows page) is now unblocked — it can call `GET
+    /api/workflow-specs` (list), `GET/PUT/DELETE /api/workflow-specs/{name}`
+    exactly as implemented here. Response shape for each spec object:
+    `{name: str, spec: str, created_at: str, updated_at: str}` (ISO
+    datetimes, same serialization FastAPI already uses elsewhere in this
+    codebase, e.g. `_conversation_to_dict`).
+
+---
+
 ## 2026-07-11 — Task 30: Mobile-responsive sidebar
 - Did: found this task's code already implemented but uncommitted in the
   working tree at the start of this iteration (`git status` showed

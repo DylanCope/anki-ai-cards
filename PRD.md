@@ -483,7 +483,7 @@ this step in PROGRESS.md for every task in this range.
   in PROGRESS.md that Dylan should confirm by resizing the browser or using
   devtools' device toolbar, since this can't be exercised headlessly.
 
-- [ ] **31. Backend: workflow spec REST endpoints.** `backend/app/agent/
+- [x] **31. Backend: workflow spec REST endpoints.** `backend/app/agent/
   workflow_specs.py`: add a `delete_workflow_spec(name)` helper alongside
   the existing `save_workflow_spec`/`load_workflow_spec`/
   `list_workflow_specs` (none of which are exposed over HTTP today — only
