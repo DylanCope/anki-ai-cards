@@ -40,6 +40,18 @@ export default function ChatApp() {
 
   const activeConversation = conversations.find((c) => c.id === conversationId) ?? null;
 
+  const lastUserTurnIndex = (() => {
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i].message.role === "user") return i;
+    }
+    return -1;
+  })();
+  const turnAfterLastUserMessage =
+    lastUserTurnIndex >= 0 ? turns[lastUserTurnIndex + 1] : undefined;
+  const lastUserMessageEditable = !turnAfterLastUserMessage?.payloads.some(
+    (payload) => payload.type === "card"
+  );
+
   // Bootstrap: load the model catalogue and conversation list, then open
   // the most recently updated conversation (or create a fresh one if this
   // account has none yet).
@@ -265,6 +277,64 @@ export default function ChatApp() {
     }
   }
 
+  async function editMessage(index: number, text: string) {
+    const message = text.trim();
+    if (!message || sending || conversationId === null) return;
+
+    setError(null);
+    setSending(true);
+    const previousTurns = turns;
+    setTurns((prev) => [
+      ...prev.slice(0, index),
+      { message: { role: "user", text: message }, payloads: [] },
+    ]);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: conversationId, message, edit: true }),
+      });
+      if (res.status === 401) {
+        setAuth("signed_out");
+        return;
+      }
+      if (res.status === 409) {
+        setTurns(previousTurns);
+        setError("Can't edit — a card was already created from this message.");
+        return;
+      }
+      if (!res.ok) {
+        let errorMessage = "Something went wrong sending that message. Please try again.";
+        try {
+          const errorBody = (await res.json()) as ChatErrorBody;
+          if (errorBody.detail?.bug_report_id) {
+            errorMessage = `Something went wrong — bug report #${errorBody.detail.bug_report_id} filed.`;
+          } else if (errorBody.detail?.error) {
+            errorMessage = errorBody.detail.error;
+          }
+        } catch {}
+        setTurns(previousTurns);
+        setError(errorMessage);
+        return;
+      }
+      const body = (await res.json()) as ChatResponseBody;
+      setTurns((prev) => [
+        ...prev,
+        { message: { role: "assistant", text: body.reply }, payloads: body.payloads },
+      ]);
+      const listRes = await fetch("/api/conversations");
+      if (listRes.ok) {
+        setConversations((await listRes.json()) as Conversation[]);
+      }
+    } catch {
+      setTurns(previousTurns);
+      setError("Something went wrong sending that message. Please try again.");
+    } finally {
+      setSending(false);
+    }
+  }
+
   if (auth === "checking") {
     return <p className="p-8 text-sm text-foreground/50">Loading...</p>;
   }
@@ -322,7 +392,12 @@ export default function ChatApp() {
           <div className="mx-auto flex w-full max-w-3xl flex-col space-y-4">
             {turns.map((turn, index) => (
               <div key={index}>
-                <MessageBubble message={turn.message} />
+                <MessageBubble
+                  message={turn.message}
+                  isLastUserMessage={index === lastUserTurnIndex}
+                  editable={lastUserMessageEditable}
+                  onSave={(text) => editMessage(index, text)}
+                />
                 {turn.payloads.map((payload, payloadIndex) =>
                   payload.type === "audio_options" ? (
                     <AudioOptionsCard

@@ -14,6 +14,117 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 34: Frontend inline edit UI for the last user message
+- Did:
+  - `frontend/app/components/MessageBubble.tsx` became a client component
+    (`"use client"`, needed for the new `useState`/`useEffect`/`useRef` hooks
+    it now owns) with new optional props: `isLastUserMessage`, `editable`,
+    `onSave`. Only a user-role bubble where `isLastUserMessage` is true shows
+    a `Pencil` (lucide-react) icon, positioned `absolute -top-2 -right-2`,
+    hidden until the bubble is hovered (`group`/`group-hover:opacity-100`,
+    same reveal-on-hover pattern `ConversationSidebar.tsx`'s row icons
+    already established in task 29). Clicking it (only when `editable`)
+    swaps the rendered markdown for an auto-resizing `<textarea>` pre-filled
+    with `message.text`, reusing the exact auto-resize effect and
+    Enter-submits/Shift+Enter-newlines/`isComposing`-safe convention the
+    composer (`ChatApp.tsx`) already uses — copied rather than extracted
+    into a shared hook, since the composer's version is entangled with
+    `input`/`textareaRef` state that lives in `ChatApp.tsx`, and a shared
+    hook for two call sites felt like premature abstraction. Escape also
+    cancels (composer has no Escape-to-cancel need since it isn't a
+    toggleable edit mode). Save/Cancel buttons below the textarea; Save is
+    disabled when the trimmed draft is empty.
+  - When `editable` is false, the pencil renders greyed out
+    (`text-foreground/30`, `cursor-default`, `onClick` omitted entirely
+    rather than a no-op handler) and hovering it shows a small floating
+    tooltip ("Can't edit — a card was already created from this message.")
+    positioned just below the button.
+  - `frontend/app/components/ChatApp.tsx`: computed `lastUserTurnIndex` by
+    scanning `turns` backward for the last `role === "user"` entry — safe to
+    key off `role` alone here (unlike the backend's history rows, per task
+    33's `_is_user_authored_message` gotcha) because `GET /api/chat/history`
+    already filters out tool-result carrier rows via `_display_text`
+    returning `None` for content with no text blocks (confirmed by reading
+    `backend/app/api/chat.py`'s `_build_history_entries` before assuming
+    this), so every `role: "user"` turn in the frontend's `turns` array is
+    guaranteed to be something Dylan actually typed. `lastUserMessageEditable`
+    is `true` unless the turn immediately after the last user turn has any
+    payload with `type === "card"` (`turns[lastUserTurnIndex + 1]`).
+  - New `editMessage(index, text)` handler, deliberately structured as a
+    near-duplicate of `sendMessage` rather than a shared refactor (the two
+    diverge enough — different endpoint body shape (`edit: true`), a
+    different optimistic-update target (`prev.slice(0, index)` instead of
+    append), and 409-specific handling — that forcing a shared function
+    would need several extra parameters to cover both, reading worse than
+    two small functions per this project's own stated conventions). Posts
+    `{conversation_id, message, edit: true}` to `/api/chat`. Optimistically
+    truncates `turns` to everything before the edited turn plus the new user
+    turn; on success appends the fresh assistant reply (mirroring
+    `sendMessage`'s append-after-response pattern) and re-fetches
+    `/api/conversations` (title/updated_at may have changed, same as
+    `sendMessage` already does). On a 409 or any other non-ok/network
+    failure, restores `turns` to its pre-edit snapshot and shows the
+    existing `Toast` via `setError` — chose to restore turns on *every*
+    failure path here (not just 409), unlike `sendMessage` which leaves its
+    optimistic turn in place on failure, because an edit's optimistic update
+    actively *removes* trailing turns (including a possibly-real
+    `create_anki_note` card payload still on the backend); leaving those
+    removed from view after a failed edit would show a state that lies about
+    what's actually persisted, which the plain append case doesn't risk.
+  - Wired `isLastUserMessage`/`editable`/`onSave={(text) =>
+    editMessage(index, text)}` onto every `<MessageBubble>` in the turns
+    map — `editable`/`isLastUserMessage` are harmless no-ops on every
+    non-last-user-turn bubble since `showPencil` in `MessageBubble` already
+    gates on `isUser && isLastUserMessage`.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors.
+  - `cd backend && uv run pytest` → 156 passed, unchanged (no backend files
+    touched by this task — ran anyway since this task pairs with task 33's
+    backend change per the PRD's own note).
+  - Deploy-and-verify (both apps, per this task's explicit Verify line —
+    task 33's backend change had never been deployed until now): `fly
+    deploy` from `backend/` succeeded (`fly status -a anki-ai-cards-backend`
+    → `1 total, 1 passing`; `curl https://anki-ai-cards-backend.fly.dev/
+    health` → `200`); `fly deploy` from `frontend/` succeeded (`fly status
+    -a anki-ai-cards-frontend` → machine `started`; `curl
+    https://anki-ai-cards-frontend.fly.dev/` → `200`). Both `fly logs
+    --no-tail` skims show only the same benign transient restart pattern
+    (SIGINT/reboot → health check briefly fails → passes seconds later)
+    already noted as normal in every prior deploy entry in this log — no new
+    errors.
+  - **Not verified in an actual browser** — per the task's own note, Dylan
+    should confirm: (a) hovering the last user-message bubble reveals a
+    pencil icon, clicking it swaps to an editable textarea pre-filled with
+    the original text, and Enter (or the Save button) resends it, replacing
+    that turn and everything after it (including any audio/card payloads
+    that had been attached) with a fresh assistant reply; (b) Shift+Enter
+    inserts a newline instead of saving, and typing Japanese with an IME
+    enabled doesn't send on the Enter that confirms kana→kanji conversion;
+    (c) Escape or the Cancel button discards the edit and reverts to the
+    original text; (d) after a message whose reply included a
+    `create_anki_note` call, the pencil renders greyed out and hovering it
+    shows the "Can't edit" tooltip instead of becoming editable.
+- Learned:
+  - Confirmed (by reading `backend/app/api/chat.py`'s `_build_history_entries`/
+    `_display_text` directly, not assumed) that the frontend's `turns` array
+    never contains tool-result carrier rows — only rows with real display
+    text survive into `GET /api/chat/history`'s response. This means any
+    future frontend code that needs "the last real user message" can safely
+    scan `turns` for `role === "user"` without needing an
+    `_is_user_authored_message`-style content-shape check — that gotcha from
+    task 33 is a backend-only concern (the backend scans raw Anthropic/Gemini
+    message rows, which *do* include tool-result carriers under `role:
+    "user"`; the frontend only ever sees the already-filtered display view).
+  - Tasks 33-34 (edit-and-resend) are now both complete and deployed.
+    Remaining tasks in the PRD are the image-support batch (35-40), starting
+    with task 35 (backend: `ImageAsset` table + upload endpoint +
+    `create_anki_note` picture support) — independent of edit-and-resend,
+    no shared code between the two features besides both living in
+    `chat.py`.
+
+---
+
 ## 2026-07-11 — Task 33: Backend edit-and-resend the last user message
 - Did:
   - `ChatRequest` (`backend/app/api/chat.py`) gained an optional `edit: bool

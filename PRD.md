@@ -566,7 +566,7 @@ task 20) for whichever app(s) each task touches.
   returns 409 and leaves history untouched; (c) editing when there is no
   prior user message at all returns a sensible error, not a crash.
 
-- [ ] **34. Frontend: inline edit UI for the last user message.** Depends on
+- [x] **34. Frontend: inline edit UI for the last user message.** Depends on
   task 33. `frontend/app/components/MessageBubble.tsx`: for the last
   user-role turn only (a new prop from `ChatApp.tsx`, e.g.
   `isLastUserMessage`), show a pencil icon on hover (top-right of the
