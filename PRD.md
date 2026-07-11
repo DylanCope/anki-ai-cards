@@ -397,7 +397,7 @@ this step in PROGRESS.md for every task in this range.
   reloading history, and confirming both payload types come back correctly
   shaped; deploy-and-verify per the note above (backend only).
 
-- [ ] **24. Frontend: consume persisted payloads on history load.** Depends
+- [x] **24. Frontend: consume persisted payloads on history load.** Depends
   on task 23. `frontend/app/lib/types.ts`: update `ChatHistoryEntry`/add
   whatever type matches task 23's new history response shape.
   `frontend/app/components/ChatApp.tsx`: the history-loading effect

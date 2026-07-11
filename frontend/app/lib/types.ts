@@ -22,6 +22,10 @@ export interface ChatHistoryEntry {
   text: string;
 }
 
+export interface ChatHistoryResponseEntry extends ChatHistoryEntry {
+  payloads: ChatPayload[];
+}
+
 export interface AudioOptionsPayload {
   type: "audio_options";
   text: string | null;

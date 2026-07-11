@@ -14,6 +14,62 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 24: Frontend — consume persisted payloads on history load
+- Did: task 23 (previous entry) changed `GET /api/chat/history`'s response
+  shape from flat `{role, text}` to `{role, text, payloads}` per entry, but
+  the frontend never picked it up — `ChatApp.tsx`'s history-loading effect
+  still hardcoded `payloads: []` for every loaded turn, so `AudioOptionsCard`/
+  `CardPayloadCard` payloads kept vanishing on reload even after the backend
+  fix landed.
+  - `frontend/app/lib/types.ts`: added `ChatHistoryResponseEntry` (`extends
+    ChatHistoryEntry` + `payloads: ChatPayload[]`) rather than adding
+    `payloads` directly onto `ChatHistoryEntry` itself — `ChatHistoryEntry`
+    (role+text only) is also the type of `ChatTurn.message` and gets
+    constructed in several places in `ChatApp.tsx` (e.g. `{ role: "user",
+    text: message }` in `sendMessage`) that have no payloads of their own to
+    supply; adding a required field there would have forced awkward `payloads:
+    []` on every one of those call sites instead of just at the one place that
+    actually needs it (parsing the API response). This keeps the existing
+    `ChatTurn`/`ChatHistoryEntry` shapes and all their call sites untouched.
+  - `frontend/app/components/ChatApp.tsx`: the history-loading effect now
+    parses the response as `ChatHistoryResponseEntry[]` and maps each entry to
+    `{ message: { role: entry.role, text: entry.text }, payloads:
+    entry.payloads }` instead of hardcoding `payloads: []`.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors.
+  - `cd backend && uv run pytest` → 137 passed (no backend code touched by
+    this task; ran anyway as a sanity check since it pairs with task 23's
+    backend shape change).
+  - Deploy-and-verify per AGENTS.md (frontend-only code change, but the note
+    for this task says both apps since it pairs with task 23's backend shape):
+    `fly deploy` from `frontend/` succeeded (same benign "not listening on
+    expected address" transient warning seen in every prior frontend deploy
+    entry — the actual startup log right after shows `Ready in 0ms` and the
+    proxy recovers); `fly status -a anki-ai-cards-frontend` shows the machine
+    `started`; `curl -s -o /dev/null -w '%{http_code}' https://anki-ai-cards-
+    frontend.fly.dev/` returned `200`. Backend was already deployed with
+    task 23's shape and confirmed still healthy: `fly status -a
+    anki-ai-cards-backend` shows `1 total, 1 passing`, `curl .../health`
+    returns `200` — no new backend deploy needed since no backend code
+    changed in this task.
+  - **Not verified in an actual browser** — per the task's own Verify clause,
+    Dylan should confirm by triggering an audio-options or card payload,
+    reloading the page, and seeing it still render. Task 23's PROGRESS entry
+    already confirmed the *backend* half of this end to end against real
+    infra (a fresh `GET /api/chat/history` call after a `generate_audio` tool
+    call returned the real `audio_options` payload); this task is the
+    frontend piece that actually renders it, which needs a browser to see.
+- Learned:
+  - When a backend response shape gains a new field that only matters in one
+    specific call site, prefer a narrower response-specific type (here,
+    `ChatHistoryResponseEntry`) over widening a shared type that's
+    constructed in many places with no natural value for the new field —
+    avoids sprinkling meaningless default values (`payloads: []`) across
+    unrelated code just to satisfy the type checker.
+
+---
+
 ## 2026-07-11 — Task 23: Backend — persist structured payloads across history reloads
 - Did: `backend/app/api/chat.py`'s `_extract_payloads` previously only ever
   ran over one turn's `new_messages` inside `post_chat`; `GET

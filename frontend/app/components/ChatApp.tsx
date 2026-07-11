@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   ChatErrorBody,
+  ChatHistoryResponseEntry,
   ChatResponseBody,
   ChatTurn,
   Conversation,
@@ -85,9 +86,14 @@ export default function ChatApp() {
           return;
         }
         if (!res.ok) throw new Error(`History request failed (${res.status})`);
-        const history = (await res.json()) as ChatTurn["message"][];
+        const history = (await res.json()) as ChatHistoryResponseEntry[];
         if (!cancelled) {
-          setTurns(history.map((message) => ({ message, payloads: [] })));
+          setTurns(
+            history.map((entry) => ({
+              message: { role: entry.role, text: entry.text },
+              payloads: entry.payloads,
+            }))
+          );
         }
       } catch {
         if (!cancelled) setError("Could not reach the server.");
