@@ -29,7 +29,7 @@ export default function ConversationSidebar({
           + New chat
         </button>
       </div>
-      <div className="flex-1 space-y-1 overflow-y-auto px-2 pb-3">
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-3">
         {conversations.map((conversation) => (
           <button
             key={conversation.id}

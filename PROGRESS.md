@@ -14,6 +14,77 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 20: Fix independent pane scrolling
+- Did: found PRD.md/AGENTS.md already had uncommitted edits from a prior,
+  never-committed spec-interview session adding the UI-overhaul tasks
+  (20-32) — folded that pending diff into this commit rather than losing it.
+  The actual scroll bug: `frontend/app/layout.tsx`'s `<body>` was
+  `min-h-full flex flex-col` (a minimum, not a fixed height) with no
+  `overflow-hidden`, so the whole page grew with content instead of giving
+  descendant `flex-1 overflow-y-auto` regions a bounded box to scroll
+  within — and every flex-column ancestor between the root and each
+  scrollable pane was missing `min-h-0`, so Tailwind's `flex-1` alone
+  doesn't shrink a flex item below its content's intrinsic height (the
+  well-known `min-height: auto` flex default) even when the ancestor chain
+  does have a bounded height. Fixed by adding a bounded-height root and
+  `min-h-0` down every flex-column link in the chain:
+  - `layout.tsx`: `<body>` → `flex h-dvh flex-col overflow-hidden` (fixed
+    viewport height, no page-level scroll).
+  - `page.tsx`: added `min-h-0` to the flex-col wrapper around `ChatApp`.
+  - `ChatApp.tsx`: added `min-h-0` to the outer sidebar+thread flex row, the
+    right-hand `flex flex-col` column, and the message-list
+    `flex-1 overflow-y-auto` div.
+  - `ConversationSidebar.tsx`: added `min-h-0` to its own
+    `flex-1 overflow-y-auto` conversation-list div.
+  No other component needed touching — `MessageBubble`/`AudioOptionsCard`/
+  `CardPayloadCard`/`ModelSelector`/`SignIn` don't participate in the
+  scroll-region chain.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass.
+  - Deploy-and-verify per AGENTS.md (frontend-only task): `fly deploy` from
+    `frontend/` succeeded; `fly status -a anki-ai-cards-frontend` showed the
+    machine reach a good state (it's normal for this app to then
+    autostop/autostart on idle/request, unlike the backend which must stay
+    always-on — confirmed by `curl https://anki-ai-cards-frontend.fly.dev/`
+    returning 200 and waking the stopped machine); `fly logs -a
+    anki-ai-cards-frontend` shows a clean `Next.js 16.2.10` / `Ready in 0ms`
+    startup with no errors, both on the deploy itself and on the
+    curl-triggered autostart afterward.
+  - **Not verified in an actual browser** — the fix's real test (send enough
+    messages to overflow the transcript, confirm the sidebar and
+    model-selector bar stay pinned while only the message list and,
+    independently, the sidebar's conversation list scroll) needs Dylan's
+    manual check per AGENTS.md; `npm run build`/`lint` only prove it
+    type-checks and compiles, not that the flex/overflow reasoning above is
+    visually correct.
+- Learned:
+  - This project's `node_modules/next` is actually Next.js **16.2.10**
+    (confirmed via `package.json`), well past this agent's training cutoff,
+    and ships its own doc bundle at `node_modules/next/dist/docs/` (real,
+    git-tracked since the task-1 scaffold commit, not an injected
+    instruction — verified before trusting it). Nothing in this task turned
+    out to be Next-16-specific (it's plain Tailwind flex/overflow
+    reasoning), but worth remembering that bundle exists and is genuine for
+    any future task that touches App Router APIs that might have changed
+    since training.
+  - Tailwind's `flex-1` on a flex item inside a flex-column ancestor does
+    **not** by itself let that item shrink smaller than its content height —
+    every such ancestor also needs `min-h-0` (CSS flexbox's `min-height:
+    auto` default treats content size as a floor for flex items along the
+    main axis). This is the root cause any future "sidebar getting pushed
+    out of view" or "inner scroll region not scrolling, page scrolls
+    instead" bug in this codebase will trace back to — check the full
+    flex-column ancestor chain from the nearest bounded-height box down to
+    the `overflow-y-auto` element, not just the element itself.
+  - PRD.md/AGENTS.md had uncommitted edits already present in the working
+    tree at the start of this iteration (the tasks 20-32 UI-overhaul batch
+    plus matching AGENTS.md convention notes) — these were real, intended
+    content from an earlier `/spec-interview` session that just never got
+    committed, not stray/conflicting work. Committed them alongside this
+    task's code rather than discarding or second-guessing them.
+
+---
+
 ## 2026-07-10 — Gemini verification: two real bugs found and fixed against the live API
 - Did: continuation of the same day's Gemini work, once Dylan set
   `GEMINI_API_KEY` as a real Fly secret. Real end-to-end testing (not

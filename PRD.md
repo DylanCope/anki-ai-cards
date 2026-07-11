@@ -321,13 +321,215 @@ consent, VNC login) remain Dylan's manual steps.
   record. If you exhaust reasonable attempts, do not mark this done — record
   what you tried and ruled out in PROGRESS.md under "Blocked" instead.
 
+### UI overhaul (tasks 20-32)
+
+Dylan's current frontend works but is rough: broken scroll regions, plain
+text messages, a single-line input, structured payloads that vanish on
+reload, and default/unstyled Tailwind look-and-feel. This batch of tasks
+fixes those explicit bugs, then layers on a design-system pass modeled on a
+reference app (`shadow-renshuu`, screenshots reviewed during the interview:
+dark theme, purple-600 accent, kanji branding mark, rounded-xl cards, Inter +
+Noto Sans JP fonts), plus conversation management and a manual workflow-spec
+editor. Ordered so bug fixes land first (style-agnostic), then the design
+system, then everything that consumes it.
+
+**Deploy-and-verify convention for tasks 20-32:** beyond each task's local
+`npm run build && npm run lint` (and `uv run pytest` for backend-touching
+tasks), also `fly deploy` the app(s) the task touched — `frontend/` for
+frontend-only tasks, `backend/` for backend-only tasks, both for tasks that
+touch both — then confirm `fly status -a anki-ai-cards-frontend` and/or
+`fly status -a anki-ai-cards-backend` shows the machine started/healthy and
+skim `fly logs -a <app>` for startup or runtime errors. This is in addition
+to, not a replacement for, the manual browser check Dylan still needs to do
+for visual/UX correctness — it just catches real deploy breakage (bad build,
+crash-on-boot, missing env var) that local checks can't, per AGENTS.md's
+"Autonomous deploy/debug access" (already-standing authorization to run `fly
+deploy`/`fly logs`/`fly status` against all three apps). Note the outcome of
+this step in PROGRESS.md for every task in this range.
+
+- [x] **20. Fix independent pane scrolling.** `frontend/app/layout.tsx`,
+  `frontend/app/page.tsx`, `frontend/app/components/ChatApp.tsx`: rework the
+  layout to a fixed-height flex tree (`h-dvh` on the outermost container) so
+  `ConversationSidebar` and the model-selector bar stay pinned and only the
+  message list (and, independently, the sidebar's conversation list) scrolls
+  via its own `overflow-y-auto` region — growing the composer or the
+  transcript must never push the sidebar out of view. Verify: `cd frontend
+  && npm run build && npm run lint` pass; deploy-and-verify per the note
+  above; note in PROGRESS.md that Dylan should confirm in a browser by
+  sending enough messages to overflow the transcript.
+
+- [ ] **21. Composer: auto-resizing textarea, Enter/Shift+Enter, IME-safe.**
+  `frontend/app/components/ChatApp.tsx`: replace the single-line `<input>`
+  with a `<textarea>` that grows with content up to a max height (then
+  scrolls internally), where Enter submits and Shift+Enter inserts a
+  newline. Must check `event.nativeEvent.isComposing` (and/or `keyCode ===
+  229`) and skip submission on Enter while an IME composition is in progress
+  — this matters because Dylan sometimes types Japanese directly into the
+  chat, and Enter is also used to confirm kana→kanji conversion. Verify: `cd
+  frontend && npm run build && npm run lint` pass; deploy-and-verify; note
+  in PROGRESS.md that Dylan should confirm the IME behavior himself (an IME
+  isn't something a headless build/lint step can exercise) by typing
+  Japanese with an IME enabled and confirming Enter-to-convert doesn't send.
+
+- [ ] **22. Markdown rendering for chat messages.** Add `react-markdown` +
+  `remark-gfm` to `frontend/package.json`; update
+  `frontend/app/components/MessageBubble.tsx` to render message text through
+  them instead of as plain text, with Tailwind styling for headings, lists,
+  links, inline code, code blocks, and tables that works in both light and
+  dark mode (fine to use plain utility classes for now — task 26 will
+  restyle everything to the new design system). Verify: `cd frontend && npm
+  run build && npm run lint` pass; deploy-and-verify; note in PROGRESS.md
+  that Dylan should eyeball a message containing a list/code block/table in
+  a browser.
+
+- [ ] **23. Backend: persist structured payloads across history reloads.**
+  `backend/app/api/chat.py`: `_extract_payloads` currently only ever runs
+  over a single turn's `new_messages` inside `post_chat` — `GET
+  /api/chat/history` calls `_display_text` only and never re-derives
+  payloads, so `AudioOptionsCard`/`CardPayloadCard` data is silently dropped
+  on reload. Refactor so payload extraction can run over the full stored
+  history (reuse the same tool_use/tool_result matching logic across all
+  rows, not just the newest ones), and change `get_chat_history`'s response
+  shape to return payloads alongside each turn instead of a flat
+  `{role, text}` list — e.g. `{role, text, payloads}` per entry. Verify: `cd
+  backend && uv run pytest backend/tests/test_chat.py` covering a
+  conversation with a `generate_audio` and a `create_anki_note` tool call,
+  reloading history, and confirming both payload types come back correctly
+  shaped; deploy-and-verify per the note above (backend only).
+
+- [ ] **24. Frontend: consume persisted payloads on history load.** Depends
+  on task 23. `frontend/app/lib/types.ts`: update `ChatHistoryEntry`/add
+  whatever type matches task 23's new history response shape.
+  `frontend/app/components/ChatApp.tsx`: the history-loading effect
+  (currently `setTurns(history.map((message) => ({ message, payloads: []
+  })))`) must populate `payloads` from the response instead of hardcoding an
+  empty array. Verify: `cd frontend && npm run build && npm run lint` pass;
+  deploy-and-verify (both apps, since this pairs with task 23's backend
+  shape); note in PROGRESS.md that Dylan should confirm by triggering an
+  audio-options or card payload, reloading the page, and seeing it still
+  render.
+
+- [ ] **25. Design-system foundation.** Add `lucide-react` to
+  `frontend/package.json`. `frontend/app/layout.tsx`: swap the Geist fonts
+  for Inter (general text) and Noto Sans JP (Japanese text, via
+  `next/font/google`), matching the reference app. `frontend/app/globals.css`:
+  define the new token set — purple-600 accent, gray-950/900 dark surfaces,
+  gray-100 dark-mode text, gray-200/800 borders, `rounded-xl` for cards and
+  `rounded-lg` for buttons/inputs as the standing convention going forward.
+  Add a persisted light/dark theme toggle: a small client-side
+  `ThemeProvider`/context that reads/writes `localStorage`, applies a `dark`
+  class on `<html>` (don't rely solely on `prefers-color-scheme` anymore —
+  Dylan wants an explicit, persisted toggle like the reference app's
+  sun/moon icon), and a toggle button component using a `lucide-react` icon.
+  This task only builds the foundation (tokens, fonts, toggle) — it does not
+  need to restyle every existing component yet (task 26 does). Verify: `cd
+  frontend && npm run build && npm run lint` pass; deploy-and-verify; note
+  in PROGRESS.md that Dylan should confirm the toggle flips themes and
+  survives a reload.
+
+- [ ] **26. Visual overhaul of the chat surface.** Depends on task 25.
+  Restyle `frontend/app/components/{MessageBubble,AudioOptionsCard,
+  CardPayloadCard,SignIn,ConversationSidebar,ModelSelector}.tsx` and
+  `frontend/app/components/ChatApp.tsx`'s header/composer chrome using the
+  task 25 token set: rounded-xl cards, purple-600 primary buttons as solid
+  pills, gray-950/900 dark surfaces. Add a small kanji/branding mark next to
+  the app name in the header, matching the reference screenshots' layout
+  (icon + bold app name + subtitle). Verify: `cd frontend && npm run build
+  && npm run lint` pass; deploy-and-verify; note in PROGRESS.md that this is
+  a primarily-visual change requiring Dylan's manual browser review across
+  both light and dark mode.
+
+- [ ] **27. Typing indicator + toast-style errors.** Depends on task 25 for
+  consistent styling. `frontend/app/components/ChatApp.tsx`: show an
+  animated "assistant is composing" indicator (e.g. bouncing dots) in the
+  message list while `sending` is true, instead of only disabling the
+  composer. Replace the current bare `<p className="text-red-500">{error}</p>`
+  with a small dismissible toast/banner component, styled with the new
+  tokens, that doesn't block or disable the composer while shown. Verify:
+  `cd frontend && npm run build && npm run lint` pass; deploy-and-verify;
+  note in PROGRESS.md that Dylan should trigger a failed request (e.g.
+  briefly stop the backend or use dev tools to force a non-200) to confirm
+  the toast appears and is dismissible.
+
+- [ ] **28. Backend: conversation rename + cascade delete.**
+  `backend/app/api/chat.py`: extend `UpdateConversationRequest` /
+  `update_conversation` (`PATCH /api/conversations/{id}`) to accept an
+  optional `title` alongside the existing `model` field. Add `DELETE
+  /api/conversations/{id}` that deletes the `Conversation` row and cascades
+  to delete all its `ConversationMessage` rows (hard delete — this is a
+  single-user personal app, no soft-delete/undo needed). Verify: `cd backend
+  && uv run pytest backend/tests/test_chat.py` covering rename and
+  delete-cascades-messages; deploy-and-verify per the note above (backend
+  only).
+
+- [ ] **29. Frontend: conversation rename + delete UI.** Depends on task 28.
+  `frontend/app/components/ConversationSidebar.tsx`: add an inline-rename
+  affordance (e.g. an edit icon that turns the title into an editable field
+  on click) and a delete icon with a confirm-before-destructive-action
+  step (a plain `window.confirm` is fine — this is a hard-to-reverse cascade
+  delete). `frontend/app/components/ChatApp.tsx`: wire both through new
+  handlers calling task 28's endpoints; if the currently-active conversation
+  is deleted, switch to another existing conversation or create a fresh one,
+  same as `startNewChat`. Verify: `cd frontend && npm run build && npm run
+  lint` pass; deploy-and-verify (both apps); note in PROGRESS.md that Dylan
+  should confirm rename/delete/delete-of-active-conversation in a browser.
+
+- [ ] **30. Mobile-responsive sidebar.** Depends on tasks 25 (icon) and 29
+  (avoid touching `ConversationSidebar.tsx` concurrently with unrelated
+  work). Below a Tailwind breakpoint (e.g. `md`), collapse
+  `ConversationSidebar` behind a hamburger/menu icon that opens it as an
+  overlay instead of an always-visible fixed-width column. Verify: `cd
+  frontend && npm run build && npm run lint` pass; deploy-and-verify; note
+  in PROGRESS.md that Dylan should confirm by resizing the browser or using
+  devtools' device toolbar, since this can't be exercised headlessly.
+
+- [ ] **31. Backend: workflow spec REST endpoints.** `backend/app/agent/
+  workflow_specs.py`: add a `delete_workflow_spec(name)` helper alongside
+  the existing `save_workflow_spec`/`load_workflow_spec`/
+  `list_workflow_specs` (none of which are exposed over HTTP today — only
+  the agent calls them as tools). Add a new router (e.g.
+  `backend/app/api/workflows.py`, registered in `backend/app/main.py`
+  alongside the existing routers) exposing `GET /api/workflow-specs` (list,
+  name + timestamps + full `spec` text), `GET /api/workflow-specs/{name}`,
+  `PUT /api/workflow-specs/{name}` (create-or-update the freeform `spec`
+  text — this is a plain-text editor over the same data the agent already
+  writes, not a structured field-mapping form, see the Out-of-scope
+  amendment below), and `DELETE /api/workflow-specs/{name}`, all behind
+  `require_auth` like the existing routers. Verify: `cd backend && uv run
+  pytest backend/tests/test_workflow_specs.py` (or a new
+  `test_workflows_api.py`) covering all four endpoints including the
+  create-or-update-by-name semantics and delete-then-404; deploy-and-verify
+  per the note above (backend only).
+
+- [ ] **32. Frontend: Workflows page.** Depends on tasks 31 and 25. New
+  route `frontend/app/workflows/page.tsx` listing saved workflow specs as
+  cards (name, updated_at, truncated preview) using the task 25 design
+  system, each opening into a plain `<textarea>` editor with Save/Delete, and
+  a "+ New workflow" control (name input + blank textarea) that calls task
+  31's `PUT` endpoint. Reachable via a small icon/link in the chat page's
+  header (next to the theme toggle). Verify: `cd frontend && npm run build
+  && npm run lint` pass; deploy-and-verify (both apps); note in PROGRESS.md
+  that Dylan should confirm creating, editing, and deleting a workflow spec
+  in a browser, and that the agent still sees it via `list_workflow_specs`
+  in a live chat.
+
 ## Out of scope
 
 - Any source type other than the one Google Doc (no generic connector
   framework).
 - Multi-user support or any auth beyond the single allowlisted email.
-- A no-code/UI workflow builder — flexibility comes from the agent's
-  reasoning over tools, not a visual configuration surface.
+- A no-code/UI *field-mapping* workflow builder — flexibility for *how a
+  workflow spec's content is derived* still comes from the agent's
+  reasoning over tools, not a visual configuration surface. Tasks 31/32's
+  Workflows page is narrower than this and explicitly in scope: a plain
+  freeform-text list/view/create/edit/delete UI over the exact same
+  `spec` string the agent already reads and writes via
+  `save_workflow_spec`/`load_workflow_spec` — no structured fields, no
+  field-mapping logic gets hardcoded anywhere.
+- Ruby/furigana-aware markdown rendering and copy-to-clipboard on messages —
+  considered during the UI-overhaul interview (tasks 20-32) but Dylan didn't
+  pick them; task 22's markdown support is plain `react-markdown`/
+  `remark-gfm` only.
 - The loop performing interactive OAuth consent or VNC logins — these remain
   one-time actions Dylan runs himself. (`fly deploy` and other fly commands
   are now in scope for the loop — see AGENTS.md's "Autonomous deploy/debug

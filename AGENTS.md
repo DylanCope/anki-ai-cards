@@ -7,6 +7,12 @@ PROGRESS.md are the only "memory" between iterations.
 
 - Backend tests: `cd backend && uv run pytest`
 - Frontend build/lint: `cd frontend && npm run build && npm run lint`
+- UI-overhaul tasks (PRD.md tasks 20-32): also `fly deploy` whichever app(s)
+  the task touched, then `fly status -a <app>` (healthy/started) and skim
+  `fly logs -a <app>` for startup/runtime errors — see PRD.md's
+  "Deploy-and-verify convention" note above that task list for the full
+  rationale. This doesn't replace Dylan's manual browser check for
+  visual/UX correctness, it's in addition to it.
 
 ## Conventions
 
@@ -18,6 +24,16 @@ PROGRESS.md are the only "memory" between iterations.
 - All outbound HTTP (ElevenLabs, AnkiConnect, Google Docs, Anthropic) goes
   through `httpx`; tests mock it with `respx` (or mock the `anthropic` SDK
   client directly) — never hit real services from a test.
+- Frontend deps as of the UI overhaul (PRD.md tasks 20-32): `react-markdown`
+  + `remark-gfm` (message rendering), `lucide-react` (icons), Inter + Noto
+  Sans JP fonts via `next/font/google` (replacing Geist), a persisted
+  `localStorage`-backed light/dark toggle (not just
+  `prefers-color-scheme`). Design tokens: purple-600 accent, gray-950/900
+  dark surfaces, `rounded-xl` cards, `rounded-lg` buttons/inputs.
+- Any keyboard handling on the chat composer must check
+  `event.nativeEvent.isComposing` before treating Enter as submit — Dylan
+  types Japanese directly into the chat sometimes, and Enter also confirms
+  IME kana→kanji conversion.
 - Secrets are env vars only, documented in `.env.example`, never committed.
   See PRD.md Requirements for the full list.
 

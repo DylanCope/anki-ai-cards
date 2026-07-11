@@ -204,7 +204,7 @@ export default function ChatApp() {
   }
 
   return (
-    <div className="flex w-full max-w-5xl flex-1">
+    <div className="flex min-h-0 w-full max-w-5xl flex-1">
       <ConversationSidebar
         conversations={conversations}
         activeId={conversationId}
@@ -212,7 +212,7 @@ export default function ChatApp() {
         onNewChat={startNewChat}
         disabled={sending}
       />
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         {activeConversation && (
           <div className="flex justify-end border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
             <ModelSelector
@@ -223,7 +223,7 @@ export default function ChatApp() {
             />
           </div>
         )}
-        <div className="flex-1 space-y-4 overflow-y-auto px-4 py-6">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-6">
           {turns.map((turn, index) => (
             <div key={index}>
               <MessageBubble message={turn.message} />
