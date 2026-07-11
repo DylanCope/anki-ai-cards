@@ -14,6 +14,78 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 29: Frontend conversation rename + delete UI
+- Did:
+  - `frontend/app/components/ConversationSidebar.tsx`: each conversation row
+    is now a flex row with the existing select button plus two icon buttons
+    (`Pencil`, `Trash2` from `lucide-react`) that are invisible until the row
+    is hovered (`opacity-0 group-hover:opacity-100`, row has `group`).
+    Clicking the pencil swaps that row for an inline `<input>` (autofocus,
+    seeded with the current title or `""` for an untitled conversation) plus
+    `Check`/`X` confirm/cancel icon buttons; Enter or the check button
+    commits (calls the new `onRename(id, title)` prop, only if the trimmed
+    value is non-empty — empty just cancels rather than sending a blank
+    title), Escape or the X button cancels, and blurring the input also
+    commits (so clicking elsewhere doesn't silently discard an edit). The
+    confirm/cancel buttons use `onMouseDown={(e) => e.preventDefault()}` so
+    their click fires before the input's `onBlur` would otherwise cancel/race
+    it. Trash click uses a plain `window.confirm("Delete \"<title>\"? This
+    cannot be undone.")` per the task's explicit allowance, then calls the
+    new `onDelete(id)` prop. Both new icon buttons respect the existing
+    `disabled` prop (piped from `sending`, same as the "+ New chat" button
+    already was) so they can't be clicked mid-request.
+  - `frontend/app/components/ChatApp.tsx`: two new handlers,
+    `renameConversation(id, title)` (PATCH `/api/conversations/{id}` with
+    `{title}`, same 401/error handling shape as the existing
+    `changeModel`, then merges the returned conversation into `conversations`
+    state) and `deleteConversation(id)` (DELETE `/api/conversations/{id}`,
+    then filters the deleted id out of `conversations` state; if the deleted
+    conversation was the active one, switches to the first remaining
+    conversation, or — if that was the last one — calls the existing
+    `startNewChat()` to create a fresh one, mirroring how the app already
+    guarantees there's always at least one conversation on initial load).
+    Both guard on `sending` the same way `startNewChat`/`changeModel` already
+    do. Wired as `onRename`/`onDelete` props on `<ConversationSidebar>`.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings.
+  - Deploy-and-verify per AGENTS.md (frontend-only task): `fly deploy` from
+    `frontend/` succeeded; `fly status -a anki-ai-cards-frontend` shows the
+    one machine `started` with no failing checks; `fly logs
+    -a anki-ai-cards-frontend` showed nothing since deploy (had to background
+    it since `fly logs` streams/tails forever rather than exiting); `curl
+    https://anki-ai-cards-frontend.fly.dev/` → `200`. (The deploy output's
+    "WARNING The app is not listening on the expected address... 0.0.0.0:3000"
+    line is the same benign warning seen on every prior frontend deploy in
+    this project's history — the machine still reaches `started` with
+    passing checks and the app is reachable, so this is not a regression.)
+  - **Not independently re-verified against real infra beyond the deploy
+    checks above** — this task only touches frontend UI wiring over task 28's
+    already-real-infra-verified endpoints (see that entry's PATCH/DELETE
+    curl trace against production), so there was no new backend behavior to
+    re-prove end to end here.
+- Learned:
+  - Manual browser check still needed (per AGENTS.md, UI appearance/UX can't
+    be verified by the loop): Dylan should confirm (a) hovering a
+    conversation row reveals the pencil/trash icons, (b) clicking pencil,
+    editing, and pressing Enter (or clicking the check) renames it and the
+    sidebar updates, (c) Escape/X cancels without saving, (d) clicking trash
+    shows the native confirm dialog and, on confirm, removes the row, (e)
+    deleting the *currently active* conversation correctly switches the chat
+    pane to another conversation (or a fresh blank one if it was the last
+    one left) instead of showing a stale/broken view.
+  - Reused the exact pattern `changeModel`/`startNewChat` already established
+    for auth-aware fetch handlers (401 → `setAuth("signed_out")`, non-ok →
+    thrown and caught into a `setError(...)` toast message) rather than
+    inventing a new error-handling shape — kept `ConversationSidebar`
+    stateless about network/auth concerns, same division of responsibility
+    as the rest of `ChatApp.tsx`.
+  - Task 30 (mobile-responsive sidebar) explicitly calls out avoiding
+    touching `ConversationSidebar.tsx` concurrently with this task — it's
+    fully done now, so task 30 is unblocked to edit that file next.
+
+---
+
 ## 2026-07-11 — Task 28: Backend conversation rename + cascade delete
 - Did: `backend/app/api/chat.py`.
   - `UpdateConversationRequest`: `model` changed from required `str` to

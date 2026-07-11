@@ -462,7 +462,7 @@ this step in PROGRESS.md for every task in this range.
   delete-cascades-messages; deploy-and-verify per the note above (backend
   only).
 
-- [ ] **29. Frontend: conversation rename + delete UI.** Depends on task 28.
+- [x] **29. Frontend: conversation rename + delete UI.** Depends on task 28.
   `frontend/app/components/ConversationSidebar.tsx`: add an inline-rename
   affordance (e.g. an edit icon that turns the title into an editable field
   on click) and a delete icon with a confirm-before-destructive-action
