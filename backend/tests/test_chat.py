@@ -320,6 +320,126 @@ def test_post_chat_extracts_card_payload(monkeypatch):
     ]
 
 
+def test_post_chat_edit_replaces_last_user_message_and_everything_after_it(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("first reply"))
+    first = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "first message"}
+    )
+    assert first.status_code == 200
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("edited reply"))
+    response = _authed_client().post(
+        "/api/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "edited message",
+            "edit": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "edited reply"
+
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == conversation_id)
+            .order_by(ConversationMessage.id)
+        ).all()
+    assert [json.loads(row.content) for row in rows if row.role == "user"] == ["edited message"]
+    assert len(rows) == 2
+    assert json.loads(rows[1].content) == [{"type": "text", "text": "edited reply"}]
+
+
+def test_post_chat_edit_rejects_when_a_card_was_already_created(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "create_anki_note",
+                        "input": {
+                            "deck_name": "Japanese",
+                            "model_name": "Cloze",
+                            "fields": {"Text": "{{c1::食べます}}"},
+                            "tags": ["lesson"],
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"note_id": 7}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Card created."}]},
+        ]
+        return {"history": new_history, "reply": "Card created."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    first = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "create it"}
+    )
+    assert first.status_code == 200
+
+    with Session(get_engine()) as session:
+        rows_before = session.exec(
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == conversation_id)
+            .order_by(ConversationMessage.id)
+        ).all()
+        contents_before = [(row.role, row.content) for row in rows_before]
+
+    response = _authed_client().post(
+        "/api/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "actually don't create it",
+            "edit": True,
+        },
+    )
+
+    assert response.status_code == 409
+
+    with Session(get_engine()) as session:
+        rows_after = session.exec(
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == conversation_id)
+            .order_by(ConversationMessage.id)
+        ).all()
+        contents_after = [(row.role, row.content) for row in rows_after]
+    assert contents_after == contents_before
+
+
+def test_post_chat_edit_with_no_prior_user_message_returns_a_clean_error(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("hi"))
+
+    response = _authed_client().post(
+        "/api/chat",
+        json={"conversation_id": conversation_id, "message": "edited message", "edit": True},
+    )
+
+    assert response.status_code == 400
+
+
 def test_post_chat_refreshes_expired_access_token(monkeypatch):
     _seed_token(expired=True)
     conversation_id = _new_conversation_id()

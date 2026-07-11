@@ -543,7 +543,7 @@ for images) lands before what depends on it. Tasks 35-39 apply the same
 deploy-and-verify convention as tasks 20-32 (see that section's note above
 task 20) for whichever app(s) each task touches.
 
-- [ ] **33. Backend: edit-and-resend the last user message.** `backend/app/
+- [x] **33. Backend: edit-and-resend the last user message.** `backend/app/
   api/chat.py`: extend `ChatRequest` with an optional `edit: bool = False`.
   When `True`, before running the turn: load the conversation's messages,
   find the last row with `role == "user"`; if any row after it (up to the

@@ -14,6 +14,70 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 33: Backend edit-and-resend the last user message
+- Did:
+  - `ChatRequest` (`backend/app/api/chat.py`) gained an optional `edit: bool
+    = False` field. When `True`, `post_chat` calls a new `_apply_edit`
+    helper before running the turn: it finds the last **user-authored**
+    message, checks nothing after it already created an Anki note, deletes
+    that row and everything after it, then falls through to the exact same
+    code path as a normal turn (`body.message` becomes the replacement
+    text). No forked persistence/payload-extraction logic, per the task's
+    ask.
+  - Added `_is_user_authored_message(row)`: a `role == "user"` DB row is
+    *not* necessarily something Dylan typed — the Anthropic/Gemini message
+    format also uses `role: "user"` for tool-result carrier messages (a
+    message whose content is a list of `tool_result` blocks, returned after
+    a `tool_use`). Scanning backward for "last row with role == user" alone
+    finds the *tool-result* row, not Dylan's actual last message, whenever
+    the last turn included any tool call — this bit the first draft of this
+    task and produced a false-negative on the 409 check (the create_anki_note
+    tool_use block sits *before* the tool_result row, so scanning from the
+    wrong anchor missed it entirely, returning 200 instead of 409 in
+    testing). Fixed by requiring the row's content to be a plain string, or
+    a list containing no `tool_result` blocks, before it counts as "the
+    last user message."
+  - Added `_has_create_anki_note_call(content)`, checking for a `tool_use`
+    block named `create_anki_note` in an assistant message's content — same
+    criterion `_payloads_for_message` already uses to build `"card"`
+    payloads (not literally refactored to share code, since the existing
+    function also needs `tool_results`/`clips_by_id` for full payload
+    construction, which isn't needed for this yes/no check).
+  - Gotcha #2: `session.commit()` inside `_apply_edit` (after deleting rows)
+    expires **every** ORM object still attached to that `Session`, not just
+    the ones just committed — including `conversation` (loaded earlier in
+    the same `with Session(...)` block in `post_chat`) and the surviving
+    `prior_rows` that get returned for later use. Left un-refreshed, reading
+    any attribute off them after the session closes raises
+    `sqlalchemy.orm.exc.DetachedInstanceError` (not caught by the chat
+    endpoint's `try/except Exception` around `run_turn`, since it happens
+    earlier — surfaced as a 500 with a bug report during manual
+    reproduction). Fixed with two explicit `session.refresh(...)` calls: one
+    over the remaining (non-deleted) `prior_rows` inside `_apply_edit`
+    before it returns, one over `conversation` right after `_apply_edit` is
+    called in `post_chat`.
+  - No frontend change yet — that's task 34, which builds the pencil-icon
+    edit UI on top of this endpoint.
+- Verified: `cd backend && uv run pytest` — 156 passed (up from 153). New
+  tests in `backend/tests/test_chat.py`:
+  `test_post_chat_edit_replaces_last_user_message_and_everything_after_it`
+  (edit succeeds, old trailing rows gone, exactly 2 rows remain), `test_
+  post_chat_edit_rejects_when_a_card_was_already_created` (409, history
+  untouched — this is the test that caught both gotchas above during
+  development), `test_post_chat_edit_with_no_prior_user_message_returns_a_
+  clean_error` (400 on a brand-new conversation). No deploy-and-verify step
+  for this task — that convention is scoped to PRD tasks 20-32 only; tasks
+  33+ don't carry it (confirmed by re-reading the task text, which has its
+  own `Verify:` line with no `fly deploy` mention).
+- Learned: when scanning persisted conversation history for "the last thing
+  the user said," never key off `role == "user"` alone — tool-result
+  carrier messages share that role. Any future code walking history
+  backward/forward looking for a human message should reuse
+  `_is_user_authored_message` (or the same content-shape check) rather than
+  re-deriving it.
+
+---
+
 ## 2026-07-11 — Task 32: Frontend Workflows page
 - Did:
   - This iteration started with substantial **uncommitted** frontend work

@@ -53,6 +53,7 @@ TITLE_MAX_LENGTH = 60
 class ChatRequest(BaseModel):
     conversation_id: int
     message: str
+    edit: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -244,6 +245,66 @@ def _build_history_entries(rows: list[ConversationMessage], engine) -> list[dict
     return entries
 
 
+def _has_create_anki_note_call(content) -> bool:
+    if isinstance(content, str):
+        return False
+    return any(
+        block.get("type") == "tool_use" and block.get("name") == "create_anki_note"
+        for block in content
+    )
+
+
+def _is_user_authored_message(row) -> bool:
+    """True for a real chat message Dylan typed, as opposed to a `role:
+    "user"` row that's actually just the tool-result carrier the
+    Anthropic/Gemini message format uses to return a tool's output — those
+    share the "user" role but aren't something to treat as "the last thing
+    Dylan said"."""
+
+    if row.role != "user":
+        return False
+    content = json.loads(row.content)
+    if isinstance(content, str):
+        return True
+    return not any(block.get("type") == "tool_result" for block in content)
+
+
+def _apply_edit(session: Session, conversation_id: int, prior_rows: list) -> list:
+    """Discard the last user message and everything after it, so the caller
+    can resubmit replacement text as if that turn never happened. Raises a
+    409 if a `create_anki_note` call already happened after that message —
+    rewriting history that already caused a real Anki side effect is not
+    allowed (the frontend is expected to prevent this via a disabled edit
+    affordance; this is the backend's own guard against it)."""
+
+    last_user_index = None
+    for index in range(len(prior_rows) - 1, -1, -1):
+        if _is_user_authored_message(prior_rows[index]):
+            last_user_index = index
+            break
+    if last_user_index is None:
+        raise HTTPException(status_code=400, detail="No prior message to edit")
+
+    for row in prior_rows[last_user_index + 1 :]:
+        if row.role == "assistant" and _has_create_anki_note_call(json.loads(row.content)):
+            raise HTTPException(
+                status_code=409,
+                detail="Can't edit — a card was already created from this message",
+            )
+
+    remaining_rows = prior_rows[:last_user_index]
+    for row in prior_rows[last_user_index:]:
+        session.delete(row)
+    session.commit()
+    # `commit()` expires every object still attached to this session (the
+    # default `expire_on_commit` behavior), so the rows we're keeping need a
+    # refresh now — otherwise reading their attributes after this session
+    # closes raises `DetachedInstanceError` instead of returning stale data.
+    for row in remaining_rows:
+        session.refresh(row)
+    return remaining_rows
+
+
 async def _get_access_token(email: str) -> str:
     """Return a fresh Google access token for `email`, refreshing it via
     `google_docs.refresh_access_token` first if it has expired."""
@@ -279,6 +340,9 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
             .where(ConversationMessage.conversation_id == body.conversation_id)
             .order_by(ConversationMessage.id)
         ).all()
+        if body.edit:
+            prior_rows = _apply_edit(session, body.conversation_id, prior_rows)
+            session.refresh(conversation)
         first_message = not prior_rows
     history = [{"role": row.role, "content": json.loads(row.content)} for row in prior_rows]
 
