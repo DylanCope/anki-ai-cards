@@ -427,7 +427,7 @@ this step in PROGRESS.md for every task in this range.
   in PROGRESS.md that Dylan should confirm the toggle flips themes and
   survives a reload.
 
-- [ ] **26. Visual overhaul of the chat surface.** Depends on task 25.
+- [x] **26. Visual overhaul of the chat surface.** Depends on task 25.
   Restyle `frontend/app/components/{MessageBubble,AudioOptionsCard,
   CardPayloadCard,SignIn,ConversationSidebar,ModelSelector}.tsx` and
   `frontend/app/components/ChatApp.tsx`'s header/composer chrome using the

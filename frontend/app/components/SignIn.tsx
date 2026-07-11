@@ -1,14 +1,17 @@
 export default function SignIn() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4">
-      <h1 className="text-xl font-semibold">anki-ai-cards</h1>
-      <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-400">
+      <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-accent font-jp text-2xl font-bold text-accent-foreground">
+        語
+      </div>
+      <h1 className="text-xl font-bold">anki-ai-cards</h1>
+      <p className="max-w-sm text-center text-sm text-foreground/60">
         Sign in with the Google account that has access to your lesson doc and
         Anki collection.
       </p>
       <a
         href="/auth/google/login"
-        className="rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background"
+        className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-accent-foreground"
       >
         Sign in with Google
       </a>

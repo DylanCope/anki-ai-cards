@@ -22,7 +22,7 @@ export default function ModelSelector({ models, selectedId, onSelect, disabled }
         value={selectedId}
         onChange={(event) => onSelect(event.target.value)}
         disabled={disabled || models.length === 0}
-        className="rounded-full border border-zinc-300 bg-transparent px-3 py-1 text-xs disabled:opacity-50 dark:border-zinc-700"
+        className="rounded-lg border border-border bg-transparent px-3 py-1 text-xs disabled:opacity-50"
       >
         <optgroup label="Claude (Anthropic)">
           {models
@@ -44,7 +44,7 @@ export default function ModelSelector({ models, selectedId, onSelect, disabled }
         </optgroup>
       </select>
       {selected && (
-        <p className="max-w-xs text-[11px] text-zinc-500 dark:text-zinc-400">
+        <p className="max-w-xs text-[11px] text-foreground/50">
           {selected.description}
         </p>
       )}

@@ -14,6 +14,98 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 26: Visual overhaul of the chat surface
+- Did: restyled every chat-surface component onto task 25's token set
+  (`bg-background`/`bg-surface`/`border-border`/`bg-accent`/
+  `text-accent-foreground`, plus `text-foreground/NN` opacity utilities for
+  secondary text) instead of the old hardcoded `zinc-*`/`gray-*`/
+  `bg-foreground`/`text-background` classes — grepped for `zinc-`/`gray-`
+  afterward across `app/components` + `page.tsx`/`layout.tsx` to confirm
+  nothing was missed.
+  - `page.tsx`: `bg-zinc-50 dark:bg-black` → `bg-background`.
+  - `MessageBubble.tsx`: user bubble → `bg-accent text-accent-foreground`;
+    assistant bubble → `bg-surface text-foreground border border-border`;
+    both bumped from `rounded-2xl` to `rounded-xl` per the task-25 card
+    convention (kept slightly different from the `rounded-lg`
+    buttons/inputs convention since these are chat bubbles, not literal
+    buttons — closer to "card" in spirit).
+  - `AudioOptionsCard.tsx` / `CardPayloadCard.tsx`: `rounded-lg` →
+    `rounded-xl` card containers on `border-border`/`bg-surface`; primary
+    "Pick" button → solid `rounded-full bg-accent` pill (per the task's own
+    "purple-600 primary buttons as solid pills" wording); secondary
+    "Request a change" button stayed `rounded-lg` (AGENTS.md's existing
+    buttons/inputs convention) with a `hover:bg-foreground/5` affordance it
+    didn't have before.
+  - `ConversationSidebar.tsx`: "+ New chat" → solid `bg-accent` pill (primary
+    action). Active conversation row uses a tinted `bg-accent/10 text-accent
+    dark:bg-accent/20` instead of a solid fill, since a solid accent fill on
+    every row width would be visually loud for a list — inactive rows get a
+    `hover:bg-foreground/5` affordance.
+  - `SignIn.tsx` / `ChatApp.tsx`: added the kanji/branding mark the task
+    asks for — a `rounded-lg`/`rounded-xl` `bg-accent` box containing 語
+    (`font-jp`, i.e. the Noto Sans JP variable from task 25), next to a bold
+    "anki-ai-cards" + a small subtitle line ("Japanese lessons → Anki
+    cards"), matching the reference screenshots' "icon + bold app name +
+    subtitle" layout. In `ChatApp.tsx` this replaced the old model-selector-
+    only header row — that row is now a full header bar: branding mark+name
+    on the left, `ModelSelector`+`ThemeToggle` on the right. Also moved
+    `ThemeToggle` outside the `activeConversation &&` guard (previously both
+    controls vanished together before the first conversation loaded; now the
+    toggle alone is always visible, `ModelSelector` still waits for
+    `activeConversation`).
+  - `ModelSelector.tsx` / `ThemeToggle.tsx`: swapped hardcoded
+    `zinc-*`/`gray-*` border/text colors for `border-border`/
+    `text-foreground/NN`, and `ModelSelector`'s `<select>` from `rounded-full`
+    to `rounded-lg` (it's an input, not a primary-action button, so it
+    belongs to the other half of the "pills vs rounded-lg" convention).
+  - `ChatApp.tsx` composer: textarea `rounded-2xl` → `rounded-lg` +
+    `bg-surface` (input convention); Send button → solid `rounded-full
+    bg-accent` pill (primary action, matches "New chat"/"Sign in"/"Pick").
+    Error message went from a bare `text-red-500` line to a small
+    `rounded-lg border border-red-500/30 bg-red-500/10` banner — still a
+    plain inline element, not the dismissible toast task 27 will build, but
+    now visually distinct from the transcript instead of a stray red string.
+  - Left task 27 (typing indicator, dismissible toast) and later tasks
+    entirely alone — this task only restyles, doesn't add new UI behavior.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors.
+  - Deploy-and-verify per AGENTS.md (frontend-only task): `fly deploy` from
+    `frontend/` succeeded (same benign "app is not listening on the expected
+    address" transient warning seen in every prior frontend deploy entry —
+    the log right after shows a clean `Next.js 16.2.10` / `Ready in 0ms`
+    startup and the proxy recovers); `fly status -a anki-ai-cards-frontend`
+    shows the machine `started`; `curl -s -o /dev/null -w '%{http_code}'
+    https://anki-ai-cards-frontend.fly.dev/` returned `200`; `fly logs -a
+    anki-ai-cards-frontend --no-tail` shows no runtime errors around the
+    rollout.
+  - **Not verified in an actual browser** — this is a primarily-visual
+    change per the task's own note; Dylan should do a manual pass across
+    both light and dark mode to confirm the purple-600 accent, rounded-xl
+    cards, gray-950/900 dark surfaces, and the new kanji branding mark in
+    the header all actually look right (color contrast, the `/NN` opacity
+    utilities on `text-foreground` rendering legibly in both themes, etc.) —
+    headless build/lint can't judge that.
+- Learned:
+  - Tailwind v4's `@theme inline` block (task 25) generates a full utility
+    family per `--color-*` token — not just the `bg-`/`text-` variants used
+    so far, but also `border-*` (`border-border`, `border-accent`) and
+    opacity-modifier syntax (`bg-accent/10`, `text-foreground/50`) work out
+    of the box with zero extra config. Confirmed via this task actually
+    using `border-border`/`bg-accent/10`/`text-foreground/NN` for the first
+    time in the codebase (grepped before this task — none of these
+    specific utilities appeared anywhere yet) and both `build`/`lint`
+    accepting them cleanly.
+  - `rounded-2xl` was the pre-task-25 pattern for both message bubbles and
+    the composer textarea/Send button; task 26 splits these into the
+    established two-tier convention (`rounded-xl` cards vs `rounded-lg`
+    buttons/inputs vs `rounded-full` primary-action pills) rather than
+    leaving `rounded-2xl` as a third, undocumented radius floating around —
+    worth keeping in mind for tasks 27-32 so no new `rounded-2xl`/arbitrary
+    radius sneaks back in.
+
+---
+
 ## 2026-07-11 — Task 25: Design-system foundation
 - Did: laid the tokens/fonts/theme-toggle groundwork the rest of the UI
   overhaul (tasks 26-32) builds on, without restyling any existing component

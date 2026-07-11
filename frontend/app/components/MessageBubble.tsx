@@ -52,10 +52,10 @@ export default function MessageBubble({ message }: { message: ChatHistoryEntry }
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
+        className={`max-w-[80%] rounded-xl px-4 py-2 text-sm ${
           isUser
-            ? "bg-foreground text-background"
-            : "bg-zinc-100 text-foreground dark:bg-zinc-800"
+            ? "bg-accent text-accent-foreground"
+            : "bg-surface text-foreground border border-border"
         }`}
       >
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>

@@ -214,7 +214,7 @@ export default function ChatApp() {
   }
 
   if (auth === "checking") {
-    return <p className="p-8 text-sm text-zinc-500">Loading...</p>;
+    return <p className="p-8 text-sm text-foreground/50">Loading...</p>;
   }
 
   if (auth === "signed_out") {
@@ -231,17 +231,28 @@ export default function ChatApp() {
         disabled={sending}
       />
       <div className="flex min-h-0 flex-1 flex-col">
-        {activeConversation && (
-          <div className="flex items-center justify-end gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-            <ModelSelector
-              models={models}
-              selectedId={activeConversation.model}
-              onSelect={changeModel}
-              disabled={sending}
-            />
+        <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent font-jp text-lg font-bold text-accent-foreground">
+              語
+            </div>
+            <div className="leading-tight">
+              <p className="text-sm font-bold text-foreground">anki-ai-cards</p>
+              <p className="text-xs text-foreground/50">Japanese lessons → Anki cards</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {activeConversation && (
+              <ModelSelector
+                models={models}
+                selectedId={activeConversation.model}
+                onSelect={changeModel}
+                disabled={sending}
+              />
+            )}
             <ThemeToggle />
           </div>
-        )}
+        </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-6">
           {turns.map((turn, index) => (
             <div key={index}>
@@ -265,7 +276,11 @@ export default function ChatApp() {
               )}
             </div>
           ))}
-          {error && <p className="text-sm text-red-500">{error}</p>}
+          {error && (
+            <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+              {error}
+            </p>
+          )}
           <div ref={bottomRef} />
         </div>
         <form
@@ -273,7 +288,7 @@ export default function ChatApp() {
             event.preventDefault();
             sendMessage(input);
           }}
-          className="flex gap-2 border-t border-zinc-200 p-4 dark:border-zinc-800"
+          className="flex gap-2 border-t border-border p-4"
         >
           <textarea
             ref={textareaRef}
@@ -291,12 +306,12 @@ export default function ChatApp() {
             disabled={sending}
             rows={1}
             style={{ maxHeight: MAX_TEXTAREA_HEIGHT_PX }}
-            className="flex-1 resize-none overflow-y-auto rounded-2xl border border-zinc-300 px-4 py-2 text-sm disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900"
+            className="flex-1 resize-none overflow-y-auto rounded-lg border border-border bg-surface px-4 py-2 text-sm disabled:opacity-50"
           />
           <button
             type="submit"
             disabled={sending || !input.trim()}
-            className="self-end rounded-full bg-foreground px-5 py-2 text-sm font-medium text-background disabled:opacity-50"
+            className="self-end rounded-full bg-accent px-5 py-2 text-sm font-medium text-accent-foreground disabled:opacity-50"
           >
             Send
           </button>
