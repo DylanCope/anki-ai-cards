@@ -14,6 +14,98 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 25: Design-system foundation
+- Did: laid the tokens/fonts/theme-toggle groundwork the rest of the UI
+  overhaul (tasks 26-32) builds on, without restyling any existing component
+  yet (that's task 26).
+  - `npm install lucide-react` (`frontend/package.json`).
+  - `frontend/app/layout.tsx`: swapped `Geist`/`Geist_Mono` for
+    `Inter`/`Noto_Sans_JP` (`next/font/google`, same `.variable` CSS-variable
+    pattern as before, not `.className`). Added `suppressHydrationWarning` on
+    `<html>` plus a `next/script` `beforeInteractive` inline script
+    (`THEME_INIT_SCRIPT`) that reads `localStorage`'s `anki-ai-cards-theme`
+    key (falling back to `prefers-color-scheme`) and toggles the `dark` class
+    on `<html>` *before* React hydrates — this is the standard
+    flash-of-wrong-theme fix; without `suppressHydrationWarning`, React would
+    warn because the script mutates `<html>`'s class between SSR and
+    hydration.
+  - `frontend/app/globals.css`: replaced the old two-variable
+    (`--background`/`--foreground`) + `@media (prefers-color-scheme)` setup
+    with a `:root`/`.dark` token pair (`--background`, `--foreground`,
+    `--surface`, `--border`, `--accent` purple-600 `#9333ea`,
+    `--accent-foreground`) and a Tailwind v4 `@custom-variant dark
+    (&:where(.dark, .dark *));` — **required** so existing `dark:` classes
+    throughout the codebase respond to the `.dark` class instead of only
+    `prefers-color-scheme` (Tailwind v4's default `dark:` behavior is
+    media-query-only; confirmed via `node_modules/tailwindcss` that
+    `@custom-variant` is the documented v4 mechanism for class-based dark
+    mode, not a config-file option like v3's `darkMode: "class"`). Also
+    dropped the now-unused `--font-mono`/Geist mono variable (grepped first —
+    nothing in `app/` referenced `font-mono`/`geist`).
+  - New `frontend/app/components/ThemeProvider.tsx`: a `ThemeContext`/
+    `useTheme()` pair, per the task's explicit ask for a "small client-side
+    ThemeProvider/context." Implemented via `useSyncExternalStore` reading
+    `document.documentElement.classList.contains("dark")` as the snapshot
+    (module-level `listeners` array + a `setTheme()` that mutates the class,
+    writes `localStorage`, then notifies) rather than mirroring it into a
+    `useState` synced by a `useEffect` — the latter is what I tried first and
+    it tripped `eslint`'s `react-hooks/set-state-in-effect` rule (Did/Learned
+    below). `getServerSnapshot()` returns a fixed `"dark"` default; the real
+    client value (already set correctly pre-hydration by the anti-flash
+    script) takes over via `useSyncExternalStore`'s own hydration handling,
+    with no console mismatch warning — this is exactly the case that hook is
+    for.
+  - New `frontend/app/components/ThemeToggle.tsx`: a `lucide-react`
+    `Sun`/`Moon` icon button calling `useTheme().toggleTheme`. Wired into
+    `frontend/app/components/ChatApp.tsx`'s existing model-selector header row
+    (next to `ModelSelector`) purely so it's reachable to verify — this task
+    doesn't restyle that row, task 26 does.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass. (First lint
+    attempt failed on the `useState`+`useEffect` version of `ThemeProvider`;
+    switched to `useSyncExternalStore` per above, which resolved it cleanly
+    rather than suppressing the rule.)
+  - Manual `npm run dev` + `curl localhost:3000` sanity check: page renders,
+    `<html>` carries the new Inter/Noto-Sans-JP font-variable classes, no
+    server errors.
+  - Deploy-and-verify per AGENTS.md (frontend-only task): `fly deploy` from
+    `frontend/` succeeded; `fly status -a anki-ai-cards-frontend` shows the
+    machine (it autostops on idle for this app, unlike the backend — expected
+    per task 20's entry); `curl -s -o /dev/null -w '%{http_code}'
+    https://anki-ai-cards-frontend.fly.dev/` returned `200`, which also woke
+    the stopped machine; `fly logs -a anki-ai-cards-frontend --no-tail` shows
+    a clean `Next.js 16.2.10` / `Ready in 0ms` startup, no errors (the one
+    `proxy` error line logged is the usual benign "waiting for machine to be
+    reachable" transient during the same restart, resolved 5s later — same
+    pattern noted in every prior frontend deploy entry, not a regression).
+  - **Not verified in an actual browser** — per the task's own note, Dylan
+    should confirm the toggle actually flips the visual theme and that the
+    choice survives a reload (`localStorage` persistence + the anti-flash
+    script both need a real browser to observe, not just headless
+    build/lint).
+- Learned:
+  - Tailwind v4's `dark:` variant defaults to `prefers-color-scheme` only —
+    unlike v3's `tailwind.config.js` `darkMode: "class"` option, v4 has no
+    config file by default here at all (this project's `postcss.config.mjs`
+    just loads `@tailwindcss/postcss`), so class-based dark mode requires an
+    explicit `@custom-variant dark (&:where(.dark, .dark *));` line in
+    `globals.css`. Every existing `dark:`-prefixed class in the codebase
+    (`MessageBubble`, `ChatApp`, etc.) started responding to the `.dark`
+    class the moment this line was added — no per-component changes needed
+    for this part.
+  - `react-hooks/set-state-in-effect` (this project's ESLint config flags it
+    as an error, not a warning) rejects the common "read a browser-only API
+    once on mount via `useEffect` + `setState`" pattern outright — the fix
+    isn't to suppress it but to use `useSyncExternalStore` when the value
+    genuinely comes from an external mutable source (DOM class, localStorage,
+    media query, etc.); it has a built-in server/client snapshot split that
+    avoids both the lint error and the hydration-mismatch console warning a
+    naive lazy `useState` initializer would otherwise cause. Worth reaching
+    for this hook first for any future "sync React state with `window`/
+    `document`/`localStorage`" need in this codebase rather than an effect.
+
+---
+
 ## 2026-07-11 — Task 24: Frontend — consume persisted payloads on history load
 - Did: task 23 (previous entry) changed `GET /api/chat/history`'s response
   shape from flat `{role, text}` to `{role, text, payloads}` per entry, but

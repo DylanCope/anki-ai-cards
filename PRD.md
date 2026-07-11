@@ -409,7 +409,7 @@ this step in PROGRESS.md for every task in this range.
   audio-options or card payload, reloading the page, and seeing it still
   render.
 
-- [ ] **25. Design-system foundation.** Add `lucide-react` to
+- [x] **25. Design-system foundation.** Add `lucide-react` to
   `frontend/package.json`. `frontend/app/layout.tsx`: swap the Geist fonts
   for Inter (general text) and Noto Sans JP (Japanese text, via
   `next/font/google`), matching the reference app. `frontend/app/globals.css`:

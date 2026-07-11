@@ -15,6 +15,7 @@ import CardPayloadCard from "@/app/components/CardPayloadCard";
 import ConversationSidebar from "@/app/components/ConversationSidebar";
 import ModelSelector from "@/app/components/ModelSelector";
 import SignIn from "@/app/components/SignIn";
+import ThemeToggle from "@/app/components/ThemeToggle";
 
 type AuthState = "checking" | "signed_out" | "signed_in";
 
@@ -231,13 +232,14 @@ export default function ChatApp() {
       />
       <div className="flex min-h-0 flex-1 flex-col">
         {activeConversation && (
-          <div className="flex justify-end border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <div className="flex items-center justify-end gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
             <ModelSelector
               models={models}
               selectedId={activeConversation.model}
               onSelect={changeModel}
               disabled={sending}
             />
+            <ThemeToggle />
           </div>
         )}
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-6">
