@@ -591,7 +591,7 @@ task 20) for whichever app(s) each task touches.
   plain last message resends correctly, and the pencil is disabled with a
   tooltip after a card-creating message.
 
-- [ ] **35. Backend: image storage + upload endpoint + `create_anki_note`
+- [x] **35. Backend: image storage + upload endpoint + `create_anki_note`
   picture support.** `backend/app/models.py`: add an `ImageAsset` table
   (`id`, `content_type`, `data: bytes`, `source: str` —
   `"upload"`/`"search"`/`"generate"`, `created_at`), same pattern as

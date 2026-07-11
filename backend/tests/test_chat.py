@@ -128,6 +128,61 @@ def test_post_chat_returns_reply_and_persists_history(monkeypatch):
         assert conversation.title == "hi there"
 
 
+def test_post_chat_with_image_id_appends_a_machine_readable_reference(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    captured_messages = []
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        captured_messages.append(message)
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        ]
+        return {"history": new_history, "reply": "ok"}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "use this on the card",
+            "image_id": 7,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_messages == [
+        "use this on the card\n\n(Attached image_id: 7 for use on a card.)"
+    ]
+
+
+def test_post_chat_without_image_id_leaves_message_unchanged(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    captured_messages = []
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        captured_messages.append(message)
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        ]
+        return {"history": new_history, "reply": "ok"}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "hi there"}
+    )
+
+    assert response.status_code == 200
+    assert captured_messages == ["hi there"]
+
+
 def test_post_chat_second_call_only_persists_new_messages_and_reuses_history(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()

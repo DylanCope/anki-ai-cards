@@ -54,6 +54,7 @@ class ChatRequest(BaseModel):
     conversation_id: int
     message: str
     edit: bool = False
+    image_id: int | None = None
 
 
 class ChatResponse(BaseModel):
@@ -346,10 +347,19 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
         first_message = not prior_rows
     history = [{"role": row.role, "content": json.loads(row.content)} for row in prior_rows]
 
+    effective_message = body.message
+    if body.image_id is not None:
+        effective_message = (
+            f"{body.message}\n\n(Attached image_id: {body.image_id} for use on a card.)"
+        )
+
     access_token = await _get_access_token(email)
     try:
         result = await agent_core.run_turn(
-            history, body.message, access_token=access_token, model_id=conversation.model
+            history,
+            effective_message,
+            access_token=access_token,
+            model_id=conversation.model,
         )
     except Exception as exc:
         detail = f"{traceback.format_exc()}\n\nUser message: {body.message}"

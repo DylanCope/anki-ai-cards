@@ -99,6 +99,21 @@ class AudioClip(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class ImageAsset(SQLModel, table=True):
+    """An image (uploaded, searched, or generated), persisted server-side so
+    a later create_anki_note call can attach it by id (`image_id`) — same
+    pattern as AudioClip. The agent never sees the raw bytes, only this id;
+    it's referenced via a plain text mention in the user's message (see
+    app.api.chat.post_chat's image_id handling), never sent to Claude as
+    multimodal input."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    content_type: str
+    data: bytes
+    source: str  # "upload" / "search" / "generate"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 def get_engine():
     database_path = os.environ["DATABASE_PATH"]
     return create_engine(f"sqlite:///{database_path}")

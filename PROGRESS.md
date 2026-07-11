@@ -14,6 +14,160 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 35: Backend image storage + upload endpoint + create_anki_note picture support
+- Did:
+  - `backend/app/models.py`: new `ImageAsset` table (`id`, `content_type`,
+    `data: bytes`, `source: str` — `"upload"`/`"search"`/`"generate"`,
+    `created_at`), same shape/pattern as the existing `AudioClip`. It's a
+    brand-new table, so no `ALTER TABLE` migration helper was needed (unlike
+    `conversation_id`/`model` in earlier tasks) — `SQLModel.metadata.
+    create_all()` in `init_db()` creates it automatically on next startup;
+    confirmed this against a fresh temp DB directly (see Verified).
+  - New `backend/app/api/images.py`: `POST /api/images` (multipart, `File`
+    via FastAPI's `UploadFile`, behind `require_auth`) validates
+    `file.content_type` starts with `image/` (400 otherwise), stores the
+    bytes as `ImageAsset(source="upload")`, returns `{"image_id": <id>}`.
+    Registered in `backend/app/main.py` as `images_router`.
+  - Added `python-multipart>=0.0.20` to `backend/pyproject.toml` — FastAPI's
+    `UploadFile`/multipart form parsing raises at import/request time without
+    it (`ModuleNotFoundError: No module named 'multipart'`, confirmed by
+    trying to import it before adding the dependency); it wasn't already
+    pulled in transitively since this project depends on plain `fastapi`,
+    not `fastapi[standard]`. `uv sync` picked up `python-multipart==0.0.32`.
+  - `backend/app/clients/ankiconnect.py`: `create_note` gained a `picture`
+    param symmetric to the existing `audio` one — same
+    `{"data": <base64>, "filename": ..., "fields": [...]}` shape, added to
+    `note["picture"] = [picture]` only when given (mirroring `audio`'s
+    already-established omit-when-absent pattern). Confirmed this exact
+    shape against AnkiConnect's actual `addNote` documentation (its example
+    request shows `audio`/`picture`/`video` all sharing the same
+    `data`-or-`url` + `filename` + `fields` object shape) before assuming it,
+    per the task's explicit caution — no live AnkiConnect call was made to
+    verify this (that would need the real Fly-hosted Anki instance and a
+    real note type with a picture field, out of scope for this task's
+    verification, which is unit-test + `POST /api/images` against
+    production only).
+  - `backend/app/agent/tools.py`: `create_anki_note`'s tool schema gained a
+    `picture` property (`{"image_id": <int>, "fields": [...]}`), directly
+    parallel to `audio`'s `{"clip_id": ..., "fields": [...]}`. The dispatcher
+    resolves `image_id` to an `ImageAsset` row (raises `ValueError(f"Unknown
+    image image_id: ...")` if missing, same convention as the existing
+    unknown-`clip_id` error), base64-encodes its `data`, and derives the
+    attachment filename's extension from `content_type` via
+    `mimetypes.guess_extension` (falling back to `.jpg` if unrecognized) —
+    audio's filename could hardcode `.mp3` since ElevenLabs only ever
+    produces mp3, but an uploaded image's actual format varies, so this
+    needed a real content-type-driven extension rather than one fixed
+    string.
+  - `backend/app/api/chat.py`: `ChatRequest` gained `image_id: int | None =
+    None`. When present, `post_chat` computes `effective_message =
+    f"{body.message}\n\n(Attached image_id: {body.image_id} for use on a
+    card.)"` and passes *that* into `agent_core.run_turn` instead of
+    `body.message` directly — exactly the PRD's suggested wording. Left the
+    failure-path persistence (the `except Exception` branch, which persists
+    a `ConversationMessage` row by hand) and `_title_from_message` both using
+    the raw `body.message`, not `effective_message` — a conversation title
+    or a bug-report's "User message" context line don't need the
+    machine-readable suffix cluttering them, and the *successful* path's
+    persisted user-role row comes from `run_turn`'s own returned history
+    (which does contain `effective_message`, since that's literally what was
+    passed in as `message` — confirmed by reading `agent/core.py`'s
+    `run_turn`, which does `messages: list[dict] = [*history, {"role":
+    "user", "content": message}]`), so on success the image reference *does*
+    end up visible in the persisted/displayed transcript, matching the PRD's
+    stated intent ("keeps `run_turn`'s message shape a plain string ...
+    while still giving the agent a concrete id to reference").
+  - No frontend change yet — composer upload UI is task 39, and the
+    `ImageOptionsCard` payload rendering for search/generate is task 38. This
+    task is backend-only infra, matching its own PRD wording.
+- Verified:
+  - `cd backend && uv run pytest` → 164 passed (up from 156). New/changed
+    test files:
+    - `backend/tests/test_images_api.py` (new): auth-required 401,
+      successful upload persists an `ImageAsset` row with the right
+      `data`/`content_type`/`source="upload"` and returns `{"image_id": ...}`,
+      non-image content type rejected with 400.
+    - `backend/tests/test_ankiconnect.py`: new
+      `test_create_note_with_picture_attachment` (mirrors the existing audio
+      one, asserts `note.picture` shape sent to AnkiConnect via `respx`);
+      extended the existing `test_create_note_without_audio_omits_the_field`
+      to also assert `"picture" not in note`.
+    - `backend/tests/test_agent.py`: new
+      `test_dispatch_create_anki_note_attaches_picked_image` (seeds a real
+      `ImageAsset` row via a temp-file DB, dispatches `create_anki_note` with
+      a `picture` input, asserts the exact base64/filename/fields shape
+      passed to a mocked `ankiconnect.create_note`) and
+      `test_dispatch_create_anki_note_rejects_unknown_image_id`. Also had to
+      update the two pre-existing `create_anki_note` dispatch tests
+      (`test_dispatch_create_anki_note`,
+      `test_dispatch_create_anki_note_attaches_picked_audio_clip`) to expect
+      the dispatcher's now-always-present `picture=None` kwarg in their
+      `assert_awaited_once_with(...)` calls — the dispatcher unconditionally
+      passes `picture=picture` (computed as `None` when no `picture` input is
+      given) to `ankiconnect.create_note`, so the old assertions (which only
+      listed `audio=None`) would otherwise fail on a kwarg-count mismatch.
+    - `backend/tests/test_chat.py`: new
+      `test_post_chat_with_image_id_appends_a_machine_readable_reference`
+      (mocked `run_turn` captures the `message` arg, asserts it equals
+      `"use this on the card\n\n(Attached image_id: 7 for use on a card.)"`)
+      and `test_post_chat_without_image_id_leaves_message_unchanged` (no
+      `image_id` in the request → captured message is the raw text,
+      unmodified).
+  - Manually confirmed `init_db()` creates the new `ImageAsset` table
+    correctly against a fresh temp SQLite file (no migration helper needed,
+    since it's a brand-new table, not a new column on an existing one) — ran
+    a small standalone script that calls `init_db()` then inserts/commits/
+    reads back an `ImageAsset` row.
+  - Deploy-and-verify (backend only — this task doesn't touch the frontend;
+    ran `fly deploy`/`fly status`/real-infra checks anyway, consistent with
+    tasks 28/31/33's practice of verifying real infra when a task adds a new
+    endpoint, even though tasks 33+ no longer carry the mandatory
+    deploy-and-verify convention that tasks 20-32 do): `fly deploy` from
+    `backend/` succeeded (same benign "app is not listening on the expected
+    address" transient warning seen in every prior backend deploy entry —
+    not a regression); `fly status -a anki-ai-cards-backend` → `1 total, 1
+    passing`; `curl https://anki-ai-cards-backend.fly.dev/health` → `200`.
+  - **Real end-to-end verification against production, not mocks**: fetched
+    the real `DEV_API_KEY` via `fly ssh console`, then against
+    `https://anki-ai-cards-backend.fly.dev` directly: `POST /api/images`
+    with a tiny real PNG file (`multipart/form-data`, `Authorization: Bearer
+    <DEV_API_KEY>`) → `200 {"image_id":1}`; a second `POST /api/images` with
+    a `text/plain` file → `400 {"detail":"Uploaded file must be an image"}`.
+    This is the first `ImageAsset` row ever created on the real production
+    DB — id 1, confirming the migration-free new-table path worked
+    end-to-end in production too, not just in the local sanity check above.
+  - Did **not** exercise `create_anki_note`'s new `picture` argument against
+    the real deployed AnkiConnect instance — that would need a real note
+    type with an actual picture/image field on Dylan's real Anki collection
+    to attach to, which isn't something this task's scope (or the smoke-test
+    script) sets up; the `respx`-mocked unit tests plus the AnkiConnect docs
+    cross-check are this task's stated verification bar, matching how task
+    19's audio fix was verified against the docs/response shape before
+    trusting it.
+- Learned:
+  - This project depends on plain `fastapi`, not `fastapi[standard]` —
+    `python-multipart` isn't pulled in transitively, so any future endpoint
+    needing `UploadFile`/form-data parsing needs to explicit-depend on it
+    (already done now for tasks 36-39, which reuse this same `ImageAsset`
+    table and don't need their own multipart handling — only `search_images`/
+    `generate_image`, task 36/37, write `ImageAsset` rows from HTTP-fetched/
+    generated bytes, not from an upload).
+  - AnkiConnect's `addNote` `audio`/`picture`/`video` note attachments all
+    share the exact same object shape (`data`-or-`url` + `filename` +
+    `fields`) per its own documentation — confirmed this instead of assuming
+    from task 19's audio precedent alone, since the PRD explicitly flagged
+    this as unverified. Any future third attachment type (video, out of
+    scope per the PRD's "Out of scope" section) would follow the identical
+    pattern.
+  - Tasks 36 (`search_images`) and 37 (`generate_image`) are now unblocked —
+    both just need to write `ImageAsset(source="search"|"generate")` rows and
+    return `{"image_ids": [...]}`, reusing the exact table/dispatcher
+    conventions this task established. Task 39 (composer upload UI) can call
+    `POST /api/images` and `ChatRequest.image_id` exactly as implemented
+    here.
+
+---
+
 ## 2026-07-11 — Task 34: Frontend inline edit UI for the last user message
 - Did:
   - `frontend/app/components/MessageBubble.tsx` became a client component

@@ -83,12 +83,16 @@ async def create_note(
     fields: dict[str, str],
     tags: list[str] | None = None,
     audio: dict[str, object] | None = None,
+    picture: dict[str, object] | None = None,
 ) -> int:
-    """`audio`, if given, is a single AnkiConnect audio-attachment object
-    (`{"data": <base64>, "filename": ..., "fields": [...]}`) — AnkiConnect
-    stores it in the collection's media folder and appends the resulting
-    `[sound:filename]` tag to each named field itself, so callers never need
-    a separate storeMediaFile step."""
+    """`audio`/`picture`, if given, are a single AnkiConnect media-attachment
+    object each (`{"data": <base64>, "filename": ..., "fields": [...]}`) —
+    AnkiConnect stores the media in the collection's media folder and appends
+    the resulting `[sound:filename]`/`<img src="filename">` reference to each
+    named field itself, so callers never need a separate storeMediaFile step.
+    `picture` uses the exact same shape as `audio`, per AnkiConnect's addNote
+    documentation (both accept `data`+`filename`+`fields`, alongside `url` as
+    an alternative to `data` which this client doesn't use)."""
 
     note: dict[str, object] = {
         "deckName": deck_name,
@@ -98,6 +102,8 @@ async def create_note(
     }
     if audio:
         note["audio"] = [audio]
+    if picture:
+        note["picture"] = [picture]
     return await invoke("addNote", note=note)
 
 

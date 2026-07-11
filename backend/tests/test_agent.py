@@ -158,6 +158,7 @@ async def test_dispatch_create_anki_note(monkeypatch):
         fields={"Text": "{{c1::食べる}}"},
         tags=["lesson"],
         audio=None,
+        picture=None,
     )
     assert result == {"note_id": 12345}
 
@@ -192,6 +193,7 @@ async def test_dispatch_create_anki_note_attaches_picked_audio_clip(db, monkeypa
             "filename": f"anki-ai-cards-{picked_clip_id}.mp3",
             "fields": ["Text Audio"],
         },
+        picture=None,
     )
     assert result == {"note_id": 12345}
 
@@ -206,6 +208,57 @@ async def test_dispatch_create_anki_note_rejects_unknown_audio_clip(db):
                 "model_name": "Cloze+",
                 "fields": {"Text": "{{c1::食べる}}"},
                 "audio": {"clip_id": 999, "fields": ["Text Audio"]},
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_attaches_picked_image(db, monkeypatch):
+    with Session(tools.get_engine()) as session:
+        image = tools.ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(image)
+        image_id = image.id
+
+    create_mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", create_mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze+",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "picture": {"image_id": image_id, "fields": ["Picture"]},
+        },
+    )
+
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        tags=None,
+        audio=None,
+        picture={
+            "data": base64.b64encode(b"pngbytes").decode("ascii"),
+            "filename": f"anki-ai-cards-{image_id}.png",
+            "fields": ["Picture"],
+        },
+    )
+    assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_rejects_unknown_image_id(db):
+    with pytest.raises(ValueError, match="Unknown image image_id"):
+        await tools.dispatch_tool(
+            "create_anki_note",
+            {
+                "deck_name": "Japanese",
+                "model_name": "Cloze+",
+                "fields": {"Text": "{{c1::食べる}}"},
+                "picture": {"image_id": 999, "fields": ["Picture"]},
             },
         )
 

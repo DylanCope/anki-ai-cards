@@ -11,12 +11,13 @@ the model's tool input.
 """
 
 import base64
+import mimetypes
 
 from sqlmodel import Session
 
 from app.agent import workflow_specs
 from app.clients import ankiconnect, elevenlabs, google_docs
-from app.models import AudioClip, get_engine
+from app.models import AudioClip, ImageAsset, get_engine
 
 TOOL_SCHEMAS: list[dict] = [
     {
@@ -135,6 +136,31 @@ TOOL_SCHEMAS: list[dict] = [
                     },
                     "required": ["clip_id", "fields"],
                 },
+                "picture": {
+                    "type": "object",
+                    "description": (
+                        "Attach a previously stored image (an image_id from an "
+                        "uploaded, searched, or generated image, after Dylan "
+                        "picked one) to this note. AnkiConnect stores the image "
+                        "in Anki's media collection and appends an <img> "
+                        "reference to each listed field itself."
+                    ),
+                    "properties": {
+                        "image_id": {
+                            "type": "integer",
+                            "description": "An image_id referencing a stored image.",
+                        },
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Field name(s) to attach the image to, e.g. the "
+                                "discovered image field for this note type."
+                            ),
+                        },
+                    },
+                    "required": ["image_id", "fields"],
+                },
             },
             "required": ["deck_name", "model_name", "fields"],
         },
@@ -247,12 +273,27 @@ async def dispatch_tool(
                 "filename": f"anki-ai-cards-{clip.id}.mp3",
                 "fields": audio_input["fields"],
             }
+        picture = None
+        picture_input = tool_input.get("picture")
+        if picture_input:
+            engine = get_engine()
+            with Session(engine) as session:
+                image = session.get(ImageAsset, picture_input["image_id"])
+            if image is None:
+                raise ValueError(f"Unknown image image_id: {picture_input['image_id']!r}")
+            extension = mimetypes.guess_extension(image.content_type) or ".jpg"
+            picture = {
+                "data": base64.b64encode(image.data).decode("ascii"),
+                "filename": f"anki-ai-cards-{image.id}{extension}",
+                "fields": picture_input["fields"],
+            }
         note_id = await ankiconnect.create_note(
             deck_name=tool_input["deck_name"],
             model_name=tool_input["model_name"],
             fields=tool_input["fields"],
             tags=tool_input.get("tags"),
             audio=audio,
+            picture=picture,
         )
         return {"note_id": note_id}
 
