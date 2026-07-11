@@ -14,6 +14,105 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 23: Backend — persist structured payloads across history reloads
+- Did: `backend/app/api/chat.py`'s `_extract_payloads` previously only ever
+  ran over one turn's `new_messages` inside `post_chat`; `GET
+  /api/chat/history` called `_display_text` only and never re-derived
+  payloads, so `AudioOptionsCard`/`CardPayloadCard` data silently vanished on
+  reload. Refactored the tool_use/tool_result matching logic into three
+  reusable pieces so it can run over either one turn or a whole conversation:
+  - `_build_tool_results(messages)` — scans *all* given messages (not just
+    the newest ones) for `tool_result` blocks and maps `tool_use_id` →
+    parsed result, since a `tool_use` and its `tool_result` always live in
+    different rows (`assistant` row N, `user` row N+1) and matching needs
+    the full set built before any payload extraction happens.
+  - `_collect_audio_clips(engine, tool_results)` — one batched `AudioClip`
+    query across every `clip_ids` result found, replacing the old per-call,
+    per-payload session query.
+  - `_payloads_for_message(message, tool_results, clips_by_id)` — pulls the
+    payloads out of a single message's `tool_use` blocks (the part that used
+    to be inline in `_extract_payloads`'s loop body).
+  - `_extract_payloads(messages, engine)` — unchanged external behavior
+    (still a flat list for `post_chat`'s response), now just composes the
+    three helpers above.
+  - New `_build_history_entries(rows, engine)` — the actual task 23 logic.
+    Builds one global `tool_results`/`clips_by_id` pair over the *entire*
+    conversation, then walks all rows in order accumulating a
+    `pending_payloads` list: every message's payloads get added to it, and
+    whenever a message has display text (`_display_text(...) is not None`)
+    an entry `{role, text, payloads: pending_payloads}` is emitted and
+    `pending_payloads` resets. This "carry forward to the next text-bearing
+    message" design was a deliberate choice over attaching payloads only to
+    the exact row containing the `tool_use` block: a `tool_use`-only
+    assistant row has no text of its own and would otherwise be silently
+    dropped (same filtering `_display_text` already did before this task),
+    so its payloads need to land somewhere — carrying them forward means
+    they surface on the turn's *final* assistant reply, which is exactly how
+    `POST /api/chat`'s response already bundles `reply` + `payloads`
+    together today. This also means the set of history *entries* returned is
+    identical to before (same text-bearing rows, same count) — only a new
+    `payloads` field was added per entry, so nothing about existing
+    entry-count assumptions changed.
+  - `get_chat_history` now just loads the rows and returns
+    `_build_history_entries(rows, engine)` — response shape changed from
+    flat `{role, text}` to `{role, text, payloads}` per entry, per the task.
+- Verified:
+  - `cd backend && uv run pytest backend/tests/test_chat.py` (and the full
+    `uv run pytest`) → 137 passed. Updated the two existing history-shape
+    assertions (`test_get_chat_history_returns_text_only_transcript`,
+    `test_post_chat_failure_still_persists_the_turn`) to include the new
+    `payloads: []` field, and added two new tests covering the actual task:
+    `test_get_chat_history_returns_payloads_alongside_the_turn_that_produced_them`
+    (a `generate_audio` tool call reloaded via `GET /api/chat/history`
+    correctly shows the `audio_options` payload attached to the assistant
+    reply that follows it) and
+    `test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_it`
+    (same for `create_anki_note`).
+  - Deploy-and-verify per AGENTS.md (backend-only task): `fly deploy` from
+    `backend/` succeeded (same benign "not listening on expected address"
+    transient warning noted in prior entries — not a real problem); `fly
+    status -a anki-ai-cards-backend` shows `1 total, 1 passing`; `curl
+    https://anki-ai-cards-backend.fly.dev/health` → `200`.
+  - **Real end-to-end verification against production, not mocks**: the
+    default model (Claude Opus 4.8) is still blocked by the same recurring
+    Anthropic low-credit-balance issue noted in several earlier entries
+    (confirmed again via a fresh `bug_report_id` and its traceback — not a
+    regression from this change, same `invalid_request_error` as before), so
+    tested with a Gemini model instead (`gemini-3.1-flash-lite`, known-working
+    per the 2026-07-10 Gemini entries). Created a conversation on that model
+    via the API, asked it to call `generate_audio` for "こんにちは", got a
+    real `audio_options` payload back from `POST /api/chat` (3 real base64
+    MP3 clips), then made a **separate** `GET /api/chat/history` call (a
+    fresh request, nothing cached from the POST) and confirmed the returned
+    history's second entry is `{"role": "assistant", "text": "...", "payloads":
+    [{"type": "audio_options", "text": "こんにちは", "clip_ids": [22, 23, 24],
+    "options": [...same 3 base64 clips...]}]}` — i.e. the exact bug this task
+    fixes (payloads vanishing on reload) is confirmed gone against real
+    infra, not just unit tests.
+- Learned:
+  - The Anthropic low-credit-balance issue (first seen 2026-07-04/05,
+    recurred 2026-07-10) is *still* ongoing as of this iteration — worth
+    reiterating for whoever picks up billing: any production verification
+    that needs the default model should expect this to keep blocking things
+    until Dylan adds credit, and should fall back to a Gemini model (already
+    proven reliable, including multi-turn tool use) to verify code paths
+    that aren't specifically about the Anthropic provider.
+  - Bash tool state does **not** persist shell variables across separate
+    tool calls (only cwd persists, per the tool's own docs) — `export
+    DEV_API_KEY=...` in one call and referencing `$DEV_API_KEY` in the next
+    silently resolves to empty rather than erroring loudly (curl just sent
+    an empty bearer token and got a generic "Not authenticated" 401, which
+    briefly looked like a real auth bug before noticing the variable was
+    empty). Fetch-and-use secrets like this within a single command/heredoc,
+    not split across multiple tool calls.
+  - Task 24 (frontend consumption of this new shape) is now unblocked —
+    `ChatApp.tsx`'s history-loading effect currently hardcodes `payloads: []`
+    for every loaded turn (`frontend/app/components/ChatApp.tsx`, the
+    `setTurns(history.map(...))` line) and needs to read the new `payloads`
+    field instead once that task is picked up.
+
+---
+
 ## 2026-07-11 — Task 22: Markdown rendering for chat messages
 - Did: added `react-markdown` + `remark-gfm` to `frontend/package.json`.
   Rewrote `frontend/app/components/MessageBubble.tsx` to render

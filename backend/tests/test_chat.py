@@ -394,8 +394,12 @@ def test_post_chat_failure_still_persists_the_turn(monkeypatch):
         "/api/chat/history", params={"conversation_id": conversation_id}
     ).json()
     assert history == [
-        {"role": "user", "text": "make a card"},
-        {"role": "assistant", "text": f"Something went wrong — bug report #{bug_report_id} filed."},
+        {"role": "user", "text": "make a card", "payloads": []},
+        {
+            "role": "assistant",
+            "text": f"Something went wrong — bug report #{bug_report_id} filed.",
+            "payloads": [],
+        },
     ]
 
     with Session(get_engine()) as session:
@@ -534,8 +538,144 @@ def test_get_chat_history_returns_text_only_transcript(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == [
-        {"role": "user", "text": "what note types do I have?"},
-        {"role": "assistant", "text": "You have Cloze."},
+        {"role": "user", "text": "what note types do I have?", "payloads": []},
+        {"role": "assistant", "text": "You have Cloze.", "payloads": []},
+    ]
+
+
+def test_get_chat_history_returns_payloads_alongside_the_turn_that_produced_them(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        clip = AudioClip(text="こんにちは", voice="male", audio=b"aaa")
+        session.add(clip)
+        session.commit()
+        session.refresh(clip)
+        clip_id = clip.id
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "generate_audio",
+                        "input": {"text": "こんにちは"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"clip_ids": [clip_id]}),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Here's an option."}],
+            },
+        ]
+        return {"history": new_history, "reply": "Here's an option."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    authed = _authed_client()
+    authed.post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "make audio"}
+    )
+
+    # Reload history in a fresh call the way a page refresh would — this must
+    # not depend on anything cached from the POST /api/chat request above.
+    response = authed.get("/api/chat/history", params={"conversation_id": conversation_id})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"role": "user", "text": "make audio", "payloads": []},
+        {
+            "role": "assistant",
+            "text": "Here's an option.",
+            "payloads": [
+                {
+                    "type": "audio_options",
+                    "text": "こんにちは",
+                    "clip_ids": [clip_id],
+                    "options": [base64.b64encode(b"aaa").decode("ascii")],
+                }
+            ],
+        },
+    ]
+
+
+def test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_it(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-2",
+                        "name": "create_anki_note",
+                        "input": {
+                            "deck_name": "Japanese",
+                            "model_name": "Cloze",
+                            "fields": {"Text": "{{c1::食べます}}"},
+                            "tags": ["lesson"],
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-2",
+                        "content": json.dumps({"note_id": 42}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Card created."}]},
+        ]
+        return {"history": new_history, "reply": "Card created."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    authed = _authed_client()
+    authed.post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "create it"}
+    )
+
+    response = authed.get("/api/chat/history", params={"conversation_id": conversation_id})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"role": "user", "text": "create it", "payloads": []},
+        {
+            "role": "assistant",
+            "text": "Card created.",
+            "payloads": [
+                {
+                    "type": "card",
+                    "deck_name": "Japanese",
+                    "model_name": "Cloze",
+                    "fields": {"Text": "{{c1::食べます}}"},
+                    "tags": ["lesson"],
+                    "note_id": 42,
+                }
+            ],
+        },
     ]
 
 

@@ -382,7 +382,7 @@ this step in PROGRESS.md for every task in this range.
   that Dylan should eyeball a message containing a list/code block/table in
   a browser.
 
-- [ ] **23. Backend: persist structured payloads across history reloads.**
+- [x] **23. Backend: persist structured payloads across history reloads.**
   `backend/app/api/chat.py`: `_extract_payloads` currently only ever runs
   over a single turn's `new_messages` inside `post_chat` — `GET
   /api/chat/history` calls `_display_text` only and never re-derives

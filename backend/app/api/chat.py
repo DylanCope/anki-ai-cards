@@ -127,13 +127,13 @@ def _display_text(content) -> str | None:
     return "\n".join(texts) if texts else None
 
 
-def _extract_payloads(new_messages: list[dict], engine) -> list[dict]:
-    """Pull frontend-renderable structured payloads (audio options, created
-    cards) out of this turn's tool calls, keyed by matching each tool_use
-    block to its tool_result by `tool_use_id`."""
+def _build_tool_results(messages: list[dict]) -> dict[str, object]:
+    """Map each `tool_use_id` to its parsed `tool_result` content, scanning
+    every message given (not just one turn's) so a tool_use/tool_result pair
+    can be matched regardless of which rows they landed in."""
 
     tool_results: dict[str, object] = {}
-    for message in new_messages:
+    for message in messages:
         if message["role"] != "user" or isinstance(message["content"], str):
             continue
         for block in message["content"]:
@@ -142,56 +142,105 @@ def _extract_payloads(new_messages: list[dict], engine) -> list[dict]:
                     tool_results[block["tool_use_id"]] = json.loads(block["content"])
                 except (TypeError, json.JSONDecodeError):
                     tool_results[block["tool_use_id"]] = block["content"]
+    return tool_results
+
+
+def _collect_audio_clips(engine, tool_results: dict[str, object]) -> dict[int, AudioClip]:
+    clip_ids: set[int] = set()
+    for result in tool_results.values():
+        if isinstance(result, dict):
+            clip_ids.update(result.get("clip_ids", []) or [])
+    if not clip_ids:
+        return {}
+    with Session(engine) as session:
+        return {
+            clip.id: clip
+            for clip in session.exec(
+                select(AudioClip).where(AudioClip.id.in_(clip_ids))
+            ).all()
+        }
+
+
+def _payloads_for_message(
+    message: dict, tool_results: dict[str, object], clips_by_id: dict[int, AudioClip]
+) -> list[dict]:
+    """Extract the structured payloads (audio options, created cards)
+    produced by the tool_use blocks in a single message."""
+
+    if message["role"] != "assistant" or isinstance(message["content"], str):
+        return []
 
     payloads: list[dict] = []
-    for message in new_messages:
-        if message["role"] != "assistant" or isinstance(message["content"], str):
+    for block in message["content"]:
+        if block.get("type") != "tool_use":
             continue
-        for block in message["content"]:
-            if block.get("type") != "tool_use":
-                continue
-            result = tool_results.get(block["id"])
-            tool_input = block["input"]
-            if block["name"] == "generate_audio":
-                clip_ids = (
-                    result.get("clip_ids", []) if isinstance(result, dict) else []
-                )
-                options = []
-                if clip_ids:
-                    with Session(engine) as session:
-                        clips_by_id = {
-                            clip.id: clip
-                            for clip in session.exec(
-                                select(AudioClip).where(AudioClip.id.in_(clip_ids))
-                            ).all()
-                        }
-                    options = [
-                        base64.b64encode(clips_by_id[cid].audio).decode("ascii")
-                        for cid in clip_ids
-                        if cid in clips_by_id
-                    ]
-                payloads.append(
-                    {
-                        "type": "audio_options",
-                        "text": tool_input.get("text"),
-                        "clip_ids": clip_ids,
-                        "options": options,
-                    }
-                )
-            elif block["name"] == "create_anki_note":
-                payloads.append(
-                    {
-                        "type": "card",
-                        "deck_name": tool_input.get("deck_name"),
-                        "model_name": tool_input.get("model_name"),
-                        "fields": tool_input.get("fields"),
-                        "tags": tool_input.get("tags"),
-                        "note_id": (result or {}).get("note_id")
-                        if isinstance(result, dict)
-                        else None,
-                    }
-                )
+        result = tool_results.get(block["id"])
+        tool_input = block["input"]
+        if block["name"] == "generate_audio":
+            clip_ids = result.get("clip_ids", []) if isinstance(result, dict) else []
+            options = [
+                base64.b64encode(clips_by_id[cid].audio).decode("ascii")
+                for cid in clip_ids
+                if cid in clips_by_id
+            ]
+            payloads.append(
+                {
+                    "type": "audio_options",
+                    "text": tool_input.get("text"),
+                    "clip_ids": clip_ids,
+                    "options": options,
+                }
+            )
+        elif block["name"] == "create_anki_note":
+            payloads.append(
+                {
+                    "type": "card",
+                    "deck_name": tool_input.get("deck_name"),
+                    "model_name": tool_input.get("model_name"),
+                    "fields": tool_input.get("fields"),
+                    "tags": tool_input.get("tags"),
+                    "note_id": (result or {}).get("note_id")
+                    if isinstance(result, dict)
+                    else None,
+                }
+            )
     return payloads
+
+
+def _extract_payloads(messages: list[dict], engine) -> list[dict]:
+    """Pull frontend-renderable structured payloads (audio options, created
+    cards) out of a batch of messages' tool calls, keyed by matching each
+    tool_use block to its tool_result by `tool_use_id`."""
+
+    tool_results = _build_tool_results(messages)
+    clips_by_id = _collect_audio_clips(engine, tool_results)
+    payloads: list[dict] = []
+    for message in messages:
+        payloads.extend(_payloads_for_message(message, tool_results, clips_by_id))
+    return payloads
+
+
+def _build_history_entries(rows: list[ConversationMessage], engine) -> list[dict]:
+    """Reconstruct a conversation's full transcript, with each text-bearing
+    message's payloads attached to it. A tool-use-only message has no display
+    text of its own (its payloads carry forward and attach to the next
+    text-bearing message, normally that turn's final assistant reply) — this
+    mirrors how `POST /api/chat` already bundles a turn's reply text together
+    with that turn's payloads in one response."""
+
+    messages = [{"role": row.role, "content": json.loads(row.content)} for row in rows]
+    tool_results = _build_tool_results(messages)
+    clips_by_id = _collect_audio_clips(engine, tool_results)
+
+    entries: list[dict] = []
+    pending_payloads: list[dict] = []
+    for message in messages:
+        pending_payloads.extend(_payloads_for_message(message, tool_results, clips_by_id))
+        text = _display_text(message["content"])
+        if text is not None:
+            entries.append({"role": message["role"], "text": text, "payloads": pending_payloads})
+            pending_payloads = []
+    return entries
 
 
 async def _get_access_token(email: str) -> str:
@@ -314,12 +363,7 @@ async def get_chat_history(
             .order_by(ConversationMessage.id)
         ).all()
 
-    transcript = []
-    for row in rows:
-        text = _display_text(json.loads(row.content))
-        if text is not None:
-            transcript.append({"role": row.role, "text": text})
-    return transcript
+    return _build_history_entries(rows, engine)
 
 
 @conversations_router.post("")
