@@ -474,7 +474,7 @@ this step in PROGRESS.md for every task in this range.
   lint` pass; deploy-and-verify (both apps); note in PROGRESS.md that Dylan
   should confirm rename/delete/delete-of-active-conversation in a browser.
 
-- [ ] **30. Mobile-responsive sidebar.** Depends on tasks 25 (icon) and 29
+- [x] **30. Mobile-responsive sidebar.** Depends on tasks 25 (icon) and 29
   (avoid touching `ConversationSidebar.tsx` concurrently with unrelated
   work). Below a Tailwind breakpoint (e.g. `md`), collapse
   `ConversationSidebar` behind a hamburger/menu icon that opens it as an

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Menu } from "lucide-react";
 import type {
   ChatErrorBody,
   ChatHistoryResponseEntry,
@@ -30,6 +31,7 @@ export default function ChatApp() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -132,6 +134,7 @@ export default function ChatApp() {
       setConversations((prev) => [created, ...prev]);
       setConversationId(created.id);
       setTurns([]);
+      setSidebarOpen(false);
     } catch {
       setError("Could not start a new chat.");
     }
@@ -141,6 +144,7 @@ export default function ChatApp() {
     if (sending || id === conversationId) return;
     setError(null);
     setConversationId(id);
+    setSidebarOpen(false);
   }
 
   async function renameConversation(id: number, title: string) {
@@ -278,10 +282,20 @@ export default function ChatApp() {
         onRename={renameConversation}
         onDelete={deleteConversation}
         disabled={sending}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open conversation list"
+              className="rounded-lg p-1.5 text-foreground/60 hover:bg-foreground/5 hover:text-foreground md:hidden"
+            >
+              <Menu size={20} />
+            </button>
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent font-jp text-lg font-bold text-accent-foreground">
               語
             </div>

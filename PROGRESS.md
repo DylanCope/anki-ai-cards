@@ -14,6 +14,73 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 30: Mobile-responsive sidebar
+- Did: found this task's code already implemented but uncommitted in the
+  working tree at the start of this iteration (`git status` showed
+  `ChatApp.tsx`/`ConversationSidebar.tsx` as modified, no matching commit) —
+  a prior iteration evidently wrote it but stopped before verifying/
+  committing. Read the diff carefully against the task's actual requirements
+  before trusting it, rather than assuming it was correct just because it
+  existed:
+  - `ConversationSidebar.tsx`: gained `open`/`onClose` props. The sidebar's
+    root wrapper changed from a plain static flex column to `fixed inset-y-0
+    left-0 z-40 ... transition-transform duration-200 ease-in-out
+    md:static md:z-auto md:w-56 md:translate-x-0`, sliding in from
+    `-translate-x-full` based on `open`. Below `md` it's a `w-64` overlay
+    (wider than the `md:w-56` static-column width, appropriate for a
+    touch-target overlay); a `fixed inset-0 z-30 bg-black/50 md:hidden`
+    backdrop (only rendered when `open`) closes it on click.
+  - `ChatApp.tsx`: added `sidebarOpen` state, a `Menu` (lucide-react)
+    hamburger button in the header (`md:hidden`, so it only exists below the
+    breakpoint) that opens the sidebar, and passed `open={sidebarOpen}
+    onClose={() => setSidebarOpen(false)}` through to `ConversationSidebar`.
+    Also reset `sidebarOpen` to `false` inside `startNewChat` and
+    `selectConversation` — selecting/creating a conversation on mobile
+    closes the overlay automatically instead of leaving it open over the
+    now-updated chat pane.
+  - Confirmed this fully satisfies the task: below `md`, the sidebar is
+    hidden by default behind a hamburger and opens as a slide-in overlay
+    with a dismissible backdrop; at `md` and above it reverts to the
+    existing always-visible fixed-width column (`md:static ...
+    md:translate-x-0` neutralizes all the mobile-only positioning). No
+    further code changes were needed.
+  - Left the unrelated `tmp/*.png` untracked files alone — they're
+    reference screenshots of the "Shadow Renshuu" app (the design-inspiration
+    app named in task 26/AGENTS.md, not this project's own UI), not part of
+    this task's work and not something this iteration created.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors.
+  - Deploy-and-verify per AGENTS.md (frontend-only task): `fly deploy` from
+    `frontend/` succeeded (same benign "app is not listening on the expected
+    address" transient warning seen in every prior frontend deploy entry —
+    not a regression, the actual Next.js process starts cleanly right after
+    per the logs); `fly status -a anki-ai-cards-frontend` shows the machine
+    `started`; `curl -s -o /dev/null -w '%{http_code}'
+    https://anki-ai-cards-frontend.fly.dev/` returned `200`; `fly logs -a
+    anki-ai-cards-frontend --no-tail` shows a clean `Next.js 16.2.10` /
+    `Ready in 0ms` startup with no runtime errors around the rollout.
+  - **Not verified in an actual browser** — per the task's own note, this
+    can't be exercised headlessly. Dylan should confirm by resizing the
+    browser window (or using devtools' device toolbar) below the `md`
+    breakpoint: the sidebar should be hidden by default with only a
+    hamburger icon visible in the header; tapping it should slide the
+    conversation list in as an overlay with a dimmed backdrop; tapping the
+    backdrop, selecting a conversation, or starting a new chat should close
+    it again; and above `md` it should look and behave exactly as before
+    (always-visible fixed column, no hamburger).
+- Learned:
+  - Worth normalizing on checking `git status`/`git diff` for uncommitted
+    working-tree changes at the very start of an iteration, before assuming
+    a clean starting point from `git log` alone — this session's changes
+    were real, correct, on-task work from an interrupted prior iteration
+    (most likely one that got cut off after implementing but before running
+    the verify/commit steps), not stray or conflicting state to discard.
+    Reviewing the diff against the task text first (rather than either
+    blindly trusting or blindly discarding it) was the right call here.
+
+---
+
 ## 2026-07-11 — Task 29: Frontend conversation rename + delete UI
 - Did:
   - `frontend/app/components/ConversationSidebar.tsx`: each conversation row
