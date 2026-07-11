@@ -371,7 +371,7 @@ this step in PROGRESS.md for every task in this range.
   isn't something a headless build/lint step can exercise) by typing
   Japanese with an IME enabled and confirming Enter-to-convert doesn't send.
 
-- [ ] **22. Markdown rendering for chat messages.** Add `react-markdown` +
+- [x] **22. Markdown rendering for chat messages.** Add `react-markdown` +
   `remark-gfm` to `frontend/package.json`; update
   `frontend/app/components/MessageBubble.tsx` to render message text through
   them instead of as plain text, with Tailwind styling for headings, lists,

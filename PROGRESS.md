@@ -14,6 +14,52 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 22: Markdown rendering for chat messages
+- Did: added `react-markdown` + `remark-gfm` to `frontend/package.json`.
+  Rewrote `frontend/app/components/MessageBubble.tsx` to render
+  `message.text` through `<ReactMarkdown remarkPlugins={[remarkGfm]}>`
+  instead of a plain `whitespace-pre-wrap` div. Deliberately did **not**
+  reach for the `@tailwindcss/typography` plugin's `prose` classes (not an
+  existing dependency and the PRD explicitly says "fine to use plain utility
+  classes for now" ahead of task 26's full design-system restyle) — instead
+  passed a `components` prop to `ReactMarkdown` with small inline
+  Tailwind-styled overrides for `p`/`ul`/`ol`/`li`/headings/`a`/`code`/`pre`/
+  `blockquote`/`table`/`th`/`td`, tuned for both light and dark mode using
+  `currentColor`-relative utilities (`border-current/20`, `bg-black/10`
+  `dark:bg-white/10`) so it inherits correctly from both bubble variants
+  (user bubble is inverted `bg-foreground`/`text-background`, assistant
+  bubble is `bg-zinc-100`/`dark:bg-zinc-800`). Distinguished inline code from
+  fenced code blocks via the `language-` class react-markdown/rehype puts on
+  block code's `<code>` (present only inside `<pre>`) — inline code gets the
+  pill-style background, block code defers styling to the `pre` wrapper so
+  it isn't double-boxed.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors.
+  - Deploy-and-verify per AGENTS.md (frontend-only task): `fly deploy` from
+    `frontend/` succeeded (same benign "not listening on expected address"
+    transient warning seen in tasks 20/21's entries, not a real problem —
+    the actual listening process starts fine per the logs below); `fly
+    status -a anki-ai-cards-frontend` shows the machine `started`; `curl -s
+    -o /dev/null -w '%{http_code}' https://anki-ai-cards-frontend.fly.dev/`
+    returned `200`; `fly logs -a anki-ai-cards-frontend` shows a clean
+    `Next.js 16.2.10` / `Ready in 0ms` startup with no errors after the
+    rollout.
+  - **Not verified in an actual browser** — per the task's own Verify
+    clause, Dylan should eyeball a message containing a list, inline/fenced
+    code, and a table (in both light and dark mode) to confirm the
+    rendering actually looks right; headless build/lint can't judge that.
+- Learned:
+  - No `@tailwindcss/typography` dependency exists in this repo yet, so
+    `prose`/`prose-invert` classes are not available — don't reach for them
+    in a JSX className until/unless that plugin is explicitly added; a
+    `components` prop with manual per-element Tailwind classes works fine
+    for `react-markdown` and matches the PRD's "plain utility classes" note
+    for this task (task 26 handles the full design-system pass).
+  - `frontend/AGENTS.md`'s "this is NOT the Next.js you know" note didn't
+    end up mattering here — no App Router/Next-specific API was touched,
+    just a client component's render logic and a plain npm dependency add.
+
 ## 2026-07-11 — Task 21: Composer auto-resizing textarea, Enter/Shift+Enter, IME-safe
 - Did: `frontend/app/components/ChatApp.tsx` — replaced the single-line
   `<input>` composer with a `<textarea rows={1}>`. Auto-resize is a small
