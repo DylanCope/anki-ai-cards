@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Noto_Sans_JP } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
@@ -15,8 +15,17 @@ const notoSansJP = Noto_Sans_JP({
 });
 
 export const metadata: Metadata = {
-  title: "anki-ai-cards",
-  description: "Turn Japanese-lesson corrections into Anki flashcards.",
+  title: "Anjo - Anki Assistant",
+  description: "Create Anki flashcards with ease.",
+};
+
+// Without this, mobile browsers fall back to a desktop-width virtual
+// viewport (~980px) and scale the page down to fit, then re-zoom/pan as
+// layout shifts happen (e.g. the history-load auto-scroll) — this pins the
+// viewport to the device's actual width at 1:1 scale.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 // Sets the `dark` class before hydration so the persisted theme choice

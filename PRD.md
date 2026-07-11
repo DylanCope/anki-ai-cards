@@ -55,6 +55,11 @@ anyone else at the callback. Store tokens in the `OAuthToken` table.
 - `DEV_API_KEY` (optional) — bearer-token bypass for session-cookie auth, used
   by `backend/scripts/smoke_test_chat.py` and the Ralph loop to call the API
   without a browser OAuth flow. Unset disables the bypass entirely.
+- `GOOGLE_CSE_API_KEY` / `GOOGLE_CSE_ID` — Google Custom Search JSON API,
+  used by the `search_images` tool (task 36) for image search. `GOOGLE_CSE_ID`
+  requires a one-time manual setup step in Google's Programmable Search
+  Engine console (configured for image search) — Dylan's manual step, same
+  category as the AnkiWeb VNC login; the loop only wires the env var through.
 
 **Anki hosting:** headless Anki + AnkiConnect via the `ankimcp/headless-anki`
 Docker image, deployed as its own Fly.io app with a persistent volume. Logged
@@ -67,9 +72,21 @@ existing AnkiWeb sync — no client reconfiguration.
 
 **The inner agent's tools:** `fetch_google_doc`, `list_anki_note_types`,
 `get_anki_note_type_fields`, `generate_audio`, `create_anki_note`,
-`sync_anki`, `save_workflow_spec`, `load_workflow_spec`, `list_workflow_specs`.
+`sync_anki`, `save_workflow_spec`, `load_workflow_spec`, `list_workflow_specs`,
+and, as of tasks 36-37, `search_images` and `generate_image` (each returning
+3 candidate image ids for Dylan to pick from, same choice-then-attach pattern
+`generate_audio` already established). `create_anki_note` accepts an optional
+`picture` argument symmetric to its existing `audio` argument (task 35).
 The agent — not hardcoded logic — decides field mapping, cloze structure,
 and when to ask Dylan a clarifying question.
+
+**Image support for cards (tasks 33-40):** three ways to attach an image to
+a card — upload (stored as an opaque `ImageAsset`, referenced by id only;
+the agent never sees the image's actual contents, mirroring how it never
+"hears" a generated audio clip), search-and-pick (`search_images`, Google
+Custom Search), and generate-and-pick (`generate_image`, Gemini). Also in
+this batch: editing and resending the most-recent user message, disabled
+once that message's turn has already created an Anki note.
 
 **Deployment:** Fly.io for both the backend/frontend app and the headless
 Anki app. The loop has standing authorization to run `fly deploy`/`fly
@@ -501,7 +518,7 @@ this step in PROGRESS.md for every task in this range.
   create-or-update-by-name semantics and delete-then-404; deploy-and-verify
   per the note above (backend only).
 
-- [ ] **32. Frontend: Workflows page.** Depends on tasks 31 and 25. New
+- [x] **32. Frontend: Workflows page.** Depends on tasks 31 and 25. New
   route `frontend/app/workflows/page.tsx` listing saved workflow specs as
   cards (name, updated_at, truncated preview) using the task 25 design
   system, each opening into a plain `<textarea>` editor with Save/Delete, and
@@ -512,6 +529,184 @@ this step in PROGRESS.md for every task in this range.
   that Dylan should confirm creating, editing, and deleting a workflow spec
   in a browser, and that the agent still sees it via `list_workflow_specs`
   in a live chat.
+
+### Edit-and-resend + image support for cards (tasks 33-40)
+
+Two independent features. Edit-and-resend (33-34) lets Dylan fix a typo or
+change his mind about his most recent message without retyping the whole
+conversation. Image support (35-39) adds three ways to attach an image to a
+card — upload, search-and-pick, and generate-and-pick — following the same
+"agent has tools, chooses live" pattern already used for audio, plus a new
+`ImageAsset` table and a `picture` argument on `create_anki_note` symmetric
+to the existing `audio` argument. Ordered so shared infra (33 for edit; 35
+for images) lands before what depends on it. Tasks 35-39 apply the same
+deploy-and-verify convention as tasks 20-32 (see that section's note above
+task 20) for whichever app(s) each task touches.
+
+- [ ] **33. Backend: edit-and-resend the last user message.** `backend/app/
+  api/chat.py`: extend `ChatRequest` with an optional `edit: bool = False`.
+  When `True`, before running the turn: load the conversation's messages,
+  find the last row with `role == "user"`; if any row after it (up to the
+  end of history) is an assistant message whose content contains a
+  `tool_use` block named `create_anki_note` (reuse the same detection
+  `_payloads_for_message` already uses to build `card` payloads), raise
+  `HTTPException(409, ...)` — the frontend is expected to prevent this case
+  via task 34's disabled state, but the backend must not silently allow
+  rewriting history that already caused a real Anki side effect. Otherwise,
+  delete that last user row and all rows after it, then proceed exactly like
+  a normal turn using `body.message` as the replacement text (same
+  `run_turn` call, persistence, and payload-extraction logic already in
+  `post_chat` — no forked code path beyond the pre-check and delete). Note:
+  any `AudioClip`/`ImageAsset` rows created by the discarded turn are simply
+  left orphaned in the DB (same as any other superseded turn) — no cleanup
+  needed, single-user low-volume SQLite. Verify: `cd backend && uv run
+  pytest backend/tests/test_chat.py` covering (a) editing a turn with no
+  card payload succeeds, replaces history, and returns a fresh reply; (b)
+  editing a turn whose assistant reply included a `create_anki_note` call
+  returns 409 and leaves history untouched; (c) editing when there is no
+  prior user message at all returns a sensible error, not a crash.
+
+- [ ] **34. Frontend: inline edit UI for the last user message.** Depends on
+  task 33. `frontend/app/components/MessageBubble.tsx`: for the last
+  user-role turn only (a new prop from `ChatApp.tsx`, e.g.
+  `isLastUserMessage`), show a pencil icon on hover (top-right of the
+  bubble). Clicking it swaps the bubble's rendered markdown for an editable
+  `<textarea>` pre-filled with the original text (reuse the composer's
+  auto-resize + `isComposing`-safe Enter-to-save convention from
+  `ChatApp.tsx`), with Save/Cancel controls. Determine editability
+  client-side from data already in `turns`: disabled (greyed pencil) if the
+  assistant turn immediately following this user message has any payload
+  with `type === "card"` — hovering a disabled pencil shows a small floating
+  tooltip near the cursor ("Can't edit — a card was already created from
+  this message"). Save calls `POST /api/chat` with `{conversation_id,
+  message: <edited text>, edit: true}` (task 33); on success, replace the
+  trailing turns (the old user turn plus everything after it, including any
+  audio/image-options payloads, which simply disappear) with the new user
+  turn and the fresh assistant reply, mirroring how `sendMessage` already
+  updates `turns`. On a 409 (should be unreachable given the disabled state,
+  but handle defensively), show the existing toast error instead of
+  crashing. Verify: `cd frontend && npm run build && npm run lint` pass;
+  deploy-and-verify (both apps, since this pairs with task 33's backend);
+  note in PROGRESS.md that Dylan should confirm in a browser: editing a
+  plain last message resends correctly, and the pencil is disabled with a
+  tooltip after a card-creating message.
+
+- [ ] **35. Backend: image storage + upload endpoint + `create_anki_note`
+  picture support.** `backend/app/models.py`: add an `ImageAsset` table
+  (`id`, `content_type`, `data: bytes`, `source: str` —
+  `"upload"`/`"search"`/`"generate"`, `created_at`), same pattern as
+  `AudioClip`. Add `POST /api/images` (multipart file upload, `require_auth`,
+  in a new `backend/app/api/images.py` router registered in `main.py`) that
+  stores the uploaded bytes as an `ImageAsset(source="upload")` and returns
+  `{"image_id": <id>}` — validate `content_type` starts with `image/`,
+  reject otherwise with 400. Extend `ChatRequest` (`backend/app/api/chat.py`)
+  with an optional `image_id: int | None`; when present, `post_chat` appends
+  a short machine-readable reference to the user's message before calling
+  `run_turn`, e.g. `f"{body.message}\n\n(Attached image_id: {body.image_id}
+  for use on a card.)"` — this keeps `run_turn`'s message shape a plain
+  string (no multimodal/vision plumbing, per the earlier scoping decision)
+  while still giving the agent a concrete id to reference. Extend
+  `backend/app/clients/ankiconnect.py`'s `create_note` and
+  `backend/app/agent/tools.py`'s `create_anki_note` tool schema + dispatcher
+  with a `picture` param symmetric to the existing `audio` param
+  (`{"image_id": <id>, "fields": [...]}` in the tool schema; resolves to an
+  `ImageAsset` row, base64-encodes it, and passes AnkiConnect's
+  `note["picture"] = [{"data": ..., "filename": ..., "fields": [...]}]` —
+  confirm this exact shape against AnkiConnect's actual `addNote`
+  documentation/response before assuming, same caution as task 19's audio
+  fix, since `picture` here is unverified against a real response). Verify:
+  `cd backend && uv run pytest` — new tests for `POST /api/images` (success
+  + non-image rejection), `create_anki_note` dispatch with a `picture` input
+  (mocked `respx`, asserting the AnkiConnect request body's `note.picture`
+  shape), and `ChatRequest.image_id` producing the expected appended
+  reference text in a mocked `run_turn` call.
+
+- [ ] **36. Backend: `search_images` tool via Google Custom Search.**
+  Depends on task 35. `backend/app/clients/google_image_search.py`:
+  `search_images(query: str, n: int = 3) -> list[bytes]` wrapping the Google
+  Custom Search JSON API with `searchType=image` (`GET https://
+  www.googleapis.com/customsearch/v1` with `key`, `cx`, `q`,
+  `searchType=image`, `num=n`), downloading each result's image bytes via
+  `httpx`. New env vars `GOOGLE_CSE_API_KEY` and `GOOGLE_CSE_ID`, documented
+  in `.env.example` and `AGENTS.md`'s Conventions (`GOOGLE_CSE_ID` needs the
+  one-time manual Programmable Search Engine setup noted in this file's
+  Requirements section — Dylan's step, don't attempt it). Add a
+  `search_images` tool to `TOOL_SCHEMAS`/`dispatch_tool` in `backend/app/
+  agent/tools.py`: takes `query` (and optional `n`, default 3), calls the
+  client, stores each result as an `ImageAsset(source="search")`, returns
+  `{"image_ids": [...]}`. Tests mock the Custom Search HTTP call and the
+  image-download calls with `respx`, covering success and a no-results case.
+  Verify: `cd backend && uv run pytest` passes; deploy-and-verify (backend
+  only).
+
+- [ ] **37. Backend: `generate_image` tool via Gemini.** Depends on task 35,
+  independent of task 36. `backend/app/clients/gemini_images.py`:
+  `generate_images(prompt: str, n: int = 3) -> list[bytes]` using the
+  existing `GEMINI_API_KEY` / `google-genai` SDK setup already established in
+  `backend/app/agent/providers/gemini_provider.py` (reuse its client
+  construction rather than duplicating auth handling), calling an
+  image-generation-capable Gemini model (confirm the current correct model
+  id against Google's live API/docs the same way `model_registry.py`'s
+  existing comments already did for chat models — don't assume a name from
+  training data) `n` times to produce `n` distinct images for one prompt,
+  mirroring `generate_audio_options`'s "call N times for N options" pattern.
+  Add a `generate_image` tool to `TOOL_SCHEMAS`/`dispatch_tool`: takes
+  `prompt` (and optional `n`, default 3), calls the client, stores each
+  result as an `ImageAsset(source="generate")`, returns `{"image_ids":
+  [...]}`. Tests mock the `google-genai` SDK client (same style as existing
+  Gemini provider tests), covering success and an API-error case. Verify:
+  `cd backend && uv run pytest` passes; deploy-and-verify (backend only).
+
+- [ ] **38. Frontend: `ImageOptionsCard` for search/generate results.**
+  Depends on tasks 36 and 37. `backend/app/api/chat.py`'s
+  `_payloads_for_message`: add handling for `search_images`/`generate_image`
+  tool_use blocks, emitting a payload shaped like `{"type": "image_options",
+  "query_or_prompt": ..., "image_ids": [...], "options": [<base64>, ...]}`
+  (fetch the actual bytes from `ImageAsset` the same way `_collect_audio_clips`
+  does for `AudioClip`, base64-encoded for inline `<img>` rendering) —
+  refactor `_collect_audio_clips` into a more general helper if that keeps
+  the duplication reasonable, but don't force a shared abstraction if the
+  audio/image cases diverge enough that it reads worse than two small
+  functions. `frontend/app/lib/types.ts`: add `ImageOptionsPayload` to the
+  `ChatPayload` union. New `frontend/app/components/ImageOptionsCard.tsx`
+  (mirrors `AudioOptionsCard.tsx`): renders each option as a thumbnail
+  `<img>` with a "Pick" button that sends `` `Use image option ${index + 1}
+  (image_id ${imageIds[index]}).` ``, same message-based hand-off pattern
+  audio already uses. Wire it into `ChatApp.tsx`'s payload rendering
+  alongside `AudioOptionsCard`/`CardPayloadCard`. Verify: `cd backend && uv
+  run pytest backend/tests/test_chat.py` (new payload shape, covering both
+  `search_images` and `generate_image` tool calls) and `cd frontend && npm
+  run build && npm run lint` pass; deploy-and-verify (both apps); note in
+  PROGRESS.md that Dylan should confirm rendering by asking the agent to
+  search or generate images for a card in a live chat.
+
+- [ ] **39. Frontend: composer image upload.** Depends on task 35
+  (independent of 36-38). `frontend/app/components/ChatApp.tsx`: add a
+  paperclip/image attach icon (`lucide-react`) next to the composer, opening
+  a hidden `<input type="file" accept="image/*">`. On file selection,
+  immediately `POST /api/images` (multipart) and hold the returned
+  `image_id` in state; show a small thumbnail preview with a remove ("x")
+  button in the composer bar above the textarea until the message is sent or
+  the attachment removed. `sendMessage` includes `image_id` in the `POST
+  /api/chat` body when one is attached, then clears it after sending (same
+  lifecycle as `input`). Disable the attach button while `sending`, same as
+  the textarea/send button. Verify: `cd frontend && npm run build && npm run
+  lint` pass; deploy-and-verify; note in PROGRESS.md that Dylan should
+  confirm uploading an image, seeing the preview, sending it, and asking the
+  agent to use it on a card, in a browser.
+
+- [ ] **40. Docs + verification checklist update for image support.**
+  Depends on tasks 35-39. Update `docs/manual_verification.md` (task 13's
+  checklist) with steps for all three image modes (upload, search-and-pick,
+  generate-and-pick) ending in a card that has a visible image field, and
+  confirm on a synced device. Confirm `.env.example` and `AGENTS.md`'s
+  Conventions section list `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_ID`, and the
+  Google Programmable Search Engine one-time manual setup step (Dylan's job,
+  not the loop's) alongside the existing external-service list. Verify: the
+  docs accurately reflect the built system (cross-check against tasks
+  33-39); no code changes expected, so `cd backend && uv run pytest` and `cd
+  frontend && npm run build && npm run lint` should still pass unchanged as
+  a regression check.
 
 ## Out of scope
 
@@ -545,3 +740,20 @@ this step in PROGRESS.md for every task in this range.
   from the automated `pytest` suite (the manual/loop-invoked smoke-test
   scripts are a deliberate exception — see AGENTS.md).
 - Streaming chat responses (SSE/WebSocket) — v1 is request/response.
+- Editing any user message other than the most recent one (tasks 33-34) —
+  no history branching or multiple simultaneous edit points; older messages
+  are read-only.
+- Automatically deleting/undoing an Anki note when the message that created
+  it is edited away (tasks 33-34) — Dylan handles that manually via chat,
+  same as the existing "request a change" flow on `CardPayloadCard`.
+- Vision/multimodal image input (tasks 35-39) — an uploaded image is stored
+  and referenced by id only; the agent never "sees" its contents, mirroring
+  how it never "hears" a generated audio clip. Considered during the
+  interview and explicitly deferred as a real scope increase to the core
+  chat loop, not a small addition.
+- More than one image per Anki note, video attachments, or a standalone
+  image gallery/library UI (tasks 35-39) — a single `picture` argument on
+  `create_anki_note` is all that's built.
+- Editing or replacing an image after it's been picked (tasks 35-39) — Dylan
+  can create a new card or ask the agent to change it via chat, same
+  "request a change" flow already used for card fields.

@@ -14,6 +14,88 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 32: Frontend Workflows page
+- Did:
+  - This iteration started with substantial **uncommitted** frontend work
+    already sitting in the working tree (not written by this iteration —
+    present at session start): `WorkflowsButton.tsx` and `AiSettingsButton.tsx`
+    (new), `ModelSelector.tsx` deleted, plus edits to `ChatApp.tsx`,
+    `SignIn.tsx`, `globals.css`, `layout.tsx`, `page.tsx`, `lib/types.ts`, and
+    an already-edited `PRD.md` containing tasks 33-40 (all consistent with
+    what's in this file now — presumably from an earlier interview/planning
+    session that never got committed). A `tmp/` directory held two reference
+    screenshots of the *other* app ("Shadow Renshuu") mentioned in PRD.md's
+    UI-overhaul section as the design-system reference — unrelated to this
+    repo's code, left untracked/uncommitted on purpose.
+  - `WorkflowsButton.tsx` already fully implemented task 32's functional
+    requirements — list of saved workflow specs as cards (name, updated_at,
+    truncated preview), click-to-edit `<textarea>` with Save/Delete, a "+ New
+    workflow" control (name input + textarea) calling task 31's `PUT
+    /api/workflow-specs/{name}`, delete via `DELETE`, all behind a header
+    icon (`Workflow` from `lucide-react`) opening a modal dialog — but it
+    **deviates from the PRD's literal wording**, which specified a dedicated
+    route (`frontend/app/workflows/page.tsx`) rather than a modal. Decision:
+    kept the modal. It satisfies every functional requirement in the task
+    text (cards, preview, editor, new/save/delete, reachable via a header
+    icon next to the theme toggle) and matches the modal pattern already
+    established by the sibling `AiSettingsButton.tsx` (a rename/restyle of
+    the old `ModelSelector.tsx` dropdown into the same modal idiom) — a
+    second, inconsistent "page navigates away from chat" pattern for the
+    same class of settings UI seemed like a worse outcome than the literal
+    route. Flagging this explicitly in case Dylan prefers a real route; easy
+    to split out later since it's an isolated component swap.
+  - Found and fixed the actual reason this was never committed:
+    `npm run lint` failed on `WorkflowsButton.tsx` — `setError(null)` was
+    called synchronously in the effect body (not inside the async callback),
+    tripping `react-hooks/set-state-in-effect`, plus an unused
+    `eslint-disable-next-line react-hooks/exhaustive-deps` comment on the
+    Escape-key effect (the current eslint-plugin-react-hooks version doesn't
+    require it here). Moved `setError(null)` inside the async IIFE
+    (guarded by the same `cancelled` flag) and removed the stale disable
+    comment.
+  - Did **not** touch the bundled-but-PRD-unrelated changes already present
+    (rebrand to "Anjo" branding/copy in `ChatApp.tsx`/`SignIn.tsx`/
+    `layout.tsx`, `AiSettingsButton.tsx` modal restyle of the model picker,
+    custom scrollbar styling + `color-scheme` in `globals.css`, a `viewport`
+    export in `layout.tsx` pinning mobile scale to 1) — they're entangled in
+    the same files as the Workflows wiring (e.g. `ChatApp.tsx`'s header JSX
+    imports and lays out both `AiSettingsButton` and `WorkflowsButton`
+    together) and splitting them into a separate commit risked leaving one
+    half in a broken intermediate state. They're included in this task's
+    commit as a practical necessity, not because they belong to task 32 —
+    noting this so a future PROGRESS reader doesn't assume the rebrand was
+    scoped work.
+- Verified:
+  - `cd frontend && npm run build` → succeeds. `npm run lint` → clean (0
+    errors/warnings) after the fix above.
+  - `cd backend && uv run pytest` → 153 passed, unchanged (no backend files
+    touched by this task) — confirms no regression from the frontend change.
+  - Confirmed `WorkflowsButton.tsx`'s fetch/PUT/DELETE calls match
+    `backend/app/api/workflows.py`'s actual response shape
+    (`{name, spec, created_at, updated_at}` on GET/PUT, `{deleted: true}` on
+    DELETE) by reading the task-31 router directly, not just assuming.
+  - Deploy-and-verify (frontend only, per the PRD's convention note): `fly
+    deploy` from `frontend/` succeeded; `fly status -a anki-ai-cards-frontend`
+    showed the machine cycling `stopped` → `started` (expected — this app is
+    allowed to scale to zero, unlike the backend, see AGENTS.md); `curl
+    https://anki-ai-cards-frontend.fly.dev/` → `200`, confirming the machine
+    wakes and serves correctly on the new image. `fly logs` didn't show
+    anything (nothing recent to stream, not an error).
+- Learned:
+  - Dylan should manually confirm in a browser: opening the Workflows modal
+    (icon next to the theme toggle) lists specs correctly, creating/editing/
+    deleting works, and that the agent still sees changes via
+    `list_workflow_specs` in a live chat — this is UI/UX correctness the loop
+    can't verify itself (per AGENTS.md).
+  - Dylan should also weigh in on the route-vs-modal deviation above if he
+    has a preference — the PRD text for task 32 literally says "New route
+    ... page.tsx" and this implementation doesn't do that.
+  - Future iterations: check `git status` at the very start, before reading
+    PRD.md's task list top-to-bottom — there may be real, unfinished,
+    uncommitted work already sitting in the tree (as there was this time)
+    that changes which task is actually "next" versus what a stale
+    PROGRESS.md history alone would suggest.
+
 ## 2026-07-11 — Task 31: Backend workflow spec REST endpoints
 - Did:
   - `backend/app/agent/workflow_specs.py`: added `delete_workflow_spec(name) ->

@@ -2,9 +2,9 @@ export default function SignIn() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4">
       <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-accent font-jp text-2xl font-bold text-accent-foreground">
-        語
+        暗助
       </div>
-      <h1 className="text-xl font-bold">anki-ai-cards</h1>
+      <h1 className="text-xl font-bold">Anjo</h1>
       <p className="max-w-sm text-center text-sm text-foreground/60">
         Sign in with the Google account that has access to your lesson doc and
         Anki collection.

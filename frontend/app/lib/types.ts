@@ -62,3 +62,10 @@ export interface ChatErrorDetail {
 export interface ChatErrorBody {
   detail: ChatErrorDetail;
 }
+
+export interface WorkflowSpec {
+  name: string;
+  spec: string;
+  created_at: string;
+  updated_at: string;
+}
