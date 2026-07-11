@@ -646,7 +646,7 @@ task 20) for whichever app(s) each task touches.
   Verify: `cd backend && uv run pytest` passes; deploy-and-verify (backend
   only).
 
-- [ ] **37. Backend: `generate_image` tool via Gemini.** Depends on task 35,
+- [x] **37. Backend: `generate_image` tool via Gemini.** Depends on task 35,
   independent of task 36. `backend/app/clients/gemini_images.py`:
   `generate_images(prompt: str, n: int = 3) -> list[bytes]` using the
   existing `GEMINI_API_KEY` / `google-genai` SDK setup already established in

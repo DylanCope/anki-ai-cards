@@ -14,6 +14,121 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 37: Backend `generate_image` tool via Gemini
+- Did:
+  - **Confirmed the current image-generation model id against Gemini's live
+    API before writing any code**, per the task's explicit caution (same
+    treatment `model_registry.py` already gave its chat models). Used `fly
+    ssh console -a anki-ai-cards-backend` to run `client.models.list()`
+    against the real deployed `GEMINI_API_KEY`, filtered for image-capable
+    models: found `gemini-2.5-flash-image`, `gemini-3-pro-image(-preview)`,
+    `gemini-3.1-flash-image(-preview)`, `gemini-3.1-flash-lite-image`
+    (all reached via `generateContent`, same action the rest of this
+    codebase already uses) plus the separate `imagen-4.0-*` family (reached
+    via a different `predict` action, not `generateContent`). Picked
+    **`gemini-3.1-flash-image`** — the current non-preview `generateContent`
+    model, mirroring `model_registry.py`'s existing preference for
+    confirmed-working non-preview ids. A real `generate_content` call
+    against this exact id returned `429 RESOURCE_EXHAUSTED` scoped
+    specifically to `gemini-3.1-flash-image` on the free tier (not a
+    404/model-not-found) — this *confirms* the model id is valid and live,
+    same "confirmed id, blocked by account tier" situation already
+    documented for the Gemini 3.x chat models in `model_registry.py`.
+  - New `backend/app/clients/gemini_images.py`: `generate_images(prompt,
+    n=3) -> list[bytes]`, calling `client.aio.models.generate_content` `n`
+    times (mirrors `elevenlabs.generate_audio_options`'s "call N times for N
+    options" pattern exactly, since Gemini's `generateContent` only returns
+    one image per call, no native "give me N options" parameter). Reuses
+    `genai.Client(api_key=os.environ["GEMINI_API_KEY"])` construction
+    identical to `gemini_provider.py`'s `_client()` (not imported/shared —
+    a 3-line function, sharing it across two small, independently-testable
+    modules felt like more machinery than it's worth). Passes
+    `response_modalities=[types.Modality.IMAGE]` in `GenerateContentConfig`
+    to request an image part specifically. `GeminiImageError` wraps both
+    `genai.errors.APIError` (using its `.code`/`.message` attributes, same
+    "surface the API's own error text" convention `elevenlabs.py`/
+    `google_image_search.py` already established) and the case where a
+    response has no `inline_data` image part at all (defensive — not
+    observed in practice, but nothing guarantees every response contains an
+    image).
+  - `backend/app/agent/tools.py`: added the `generate_image` tool schema
+    (mirrors `search_images`'s "choose-then-attach" wording almost verbatim:
+    "Returns image_ids (not the raw images)...") and a dispatcher branch
+    that's a near-exact copy of `search_images`'s (calls
+    `gemini_images.generate_images`, persists each result as
+    `ImageAsset(source="generate")`, reuses the same `_guess_image_content_type`
+    magic-byte sniffing already added for `search_images` — chose not to use
+    Gemini's own `inline_data.mime_type`, which is actually reliable here,
+    to keep `generate_images`' return type the literal PRD-specified
+    `list[bytes]`, symmetric with `search_images`'s signature; the sniffing
+    helper already exists and is proven correct from task 36). Returns
+    `{"image_ids": [...]}`.
+  - No `.env.example`/`AGENTS.md` doc changes needed — `GEMINI_API_KEY` was
+    already documented from the model_registry/gemini_provider work, and
+    this task doesn't introduce a new secret.
+- Verified:
+  - `cd backend && uv run pytest` → 178 passed (up from 171). New:
+    `backend/tests/test_gemini_images.py` (4 tests: N-calls-return-N-bytes
+    with `config.response_modalities`/`model`/`contents` assertions,
+    custom-`n` respected, `genai.errors.APIError` wrapped into
+    `GeminiImageError` with the API's message surfaced, no-image-in-response
+    raises `GeminiImageError`) and 3 new dispatch tests in `test_agent.py`
+    (`test_dispatch_generate_image{,_custom_n,_api_error_propagates}`,
+    same shape as task 36's `search_images` dispatch tests).
+  - Deploy-and-verify (backend only): `fly deploy` from `backend/` succeeded;
+    `fly status -a anki-ai-cards-backend` → `1 total, 1 passing`; `curl
+    .../health` → 200; `fly logs --no-tail` showed only the same benign
+    transient SIGINT/reboot restart pattern already noted as normal in every
+    prior backend deploy entry, followed by a clean `Application startup
+    complete.`
+  - **Real end-to-end verification against production, not mocks, working
+    around the still-open Anthropic billing blocker from task 36's entry**:
+    rather than using `smoke_test_chat.py` (which always creates a
+    Claude-model conversation and would just hit the same "credit balance
+    too low" 400 documented in task 36), created a conversation via `POST
+    /api/conversations` then `PATCH .../{id}` with `{"model":
+    "gemini-3.1-flash-lite"}` (a *chat* model, cheap/reliable, unrelated to
+    the *image* model this task adds) to route the whole turn through
+    Gemini instead of Anthropic. Sent a message explicitly asking the agent
+    to call `generate_image`. Got back a real reply: *"I apologize, but I am
+    currently unable to generate images due to a quota limit... wait about
+    40 seconds..."* — confirmed via `GET /api/bug-reports` that this did
+    **not** create a new bug report (still ends at id 22, the last Anthropic
+    billing failure from task 36) — meaning the whole path (agent → tool
+    dispatch → `gemini_images.generate_images` → real Gemini API → real 429
+    → `GeminiImageError` → surfaced as a normal `tool_result` with
+    `is_error`, not an unhandled exception) worked exactly as designed,
+    including the agent's own graceful handling of the tool error. This is
+    the strongest verification possible right now short of Dylan enabling
+    billing on the Gemini API key — the code path is proven correct end to
+    end; only the actual image bytes are blocked by account tier, same
+    category of blocker as task 36's Google Custom Search API enablement gap.
+- Learned:
+  - **PATCH-ing a conversation's `model` to a Gemini id before sending a chat
+    message is a reusable technique for testing real-infra agent behavior
+    when the Anthropic account is out of credit** (as it has been since at
+    least task 36) — `smoke_test_chat.py` doesn't expose a `--model` flag,
+    but nothing stops calling `PATCH /api/conversations/{id}` by hand first.
+    Worth remembering for any future task that needs a live-agent
+    verification while task 36's Anthropic billing blocker remains open.
+  - Gemini's image-capable models split into two families with different
+    APIs: the `gemini-*-image*` ids (reached via `generateContent`, same
+    action as every other Gemini call in this codebase, requested via
+    `response_modalities=[Modality.IMAGE]`) versus the separate `imagen-4.0-*`
+    family (reached via a `predict` action — a different SDK method
+    entirely, `client.models.generate_images`, not `generate_content`). This
+    task deliberately used the `generateContent` family to stay consistent
+    with `gemini_provider.py`'s existing plumbing rather than adding a
+    second, differently-shaped Gemini API integration.
+  - Both remaining blockers (Anthropic credit balance, Gemini free-tier
+    image quota) are pre-existing account/billing gaps outside this task's
+    or the loop's control — not something to keep re-discovering in future
+    tasks' PROGRESS entries. Only tasks 38-40 remain in the PRD; task 38
+    (frontend `ImageOptionsCard`) depends on both this task and task 36 and
+    is now fully unblocked.
+
+---
+
 ## 2026-07-11 — Task 36: Backend `search_images` tool via Google Custom Search
 - Did:
   - New `backend/app/clients/google_image_search.py`: `search_images(query,

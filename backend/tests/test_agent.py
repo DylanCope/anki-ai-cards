@@ -175,6 +175,42 @@ async def test_dispatch_search_images_no_results(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_generate_image(db, monkeypatch):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
+    mock = AsyncMock(return_value=[png_bytes, b"\xff\xd8\xffjpeg-bytes"])
+    monkeypatch.setattr(tools.gemini_images, "generate_images", mock)
+
+    result = await tools.dispatch_tool("generate_image", {"prompt": "a shiba inu"})
+
+    mock.assert_awaited_once_with("a shiba inu", n=3)
+    assert len(result["image_ids"]) == 2
+    with Session(tools.get_engine()) as session:
+        images = [session.get(tools.ImageAsset, iid) for iid in result["image_ids"]]
+    assert [img.data for img in images] == [png_bytes, b"\xff\xd8\xffjpeg-bytes"]
+    assert [img.content_type for img in images] == ["image/png", "image/jpeg"]
+    assert all(img.source == "generate" for img in images)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_image_custom_n(db, monkeypatch):
+    mock = AsyncMock(return_value=[b"\xff\xd8\xffjpeg-bytes"])
+    monkeypatch.setattr(tools.gemini_images, "generate_images", mock)
+
+    await tools.dispatch_tool("generate_image", {"prompt": "a shiba inu", "n": 1})
+
+    mock.assert_awaited_once_with("a shiba inu", n=1)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_image_api_error_propagates(db, monkeypatch):
+    mock = AsyncMock(side_effect=tools.gemini_images.GeminiImageError("boom"))
+    monkeypatch.setattr(tools.gemini_images, "generate_images", mock)
+
+    with pytest.raises(tools.gemini_images.GeminiImageError):
+        await tools.dispatch_tool("generate_image", {"prompt": "a shiba inu"})
+
+
+@pytest.mark.asyncio
 async def test_dispatch_create_anki_note(monkeypatch):
     mock = AsyncMock(return_value=12345)
     monkeypatch.setattr(tools.ankiconnect, "create_note", mock)

@@ -16,7 +16,7 @@ import mimetypes
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, elevenlabs, google_docs, google_image_search
+from app.clients import ankiconnect, elevenlabs, gemini_images, google_docs, google_image_search
 from app.models import AudioClip, ImageAsset, get_engine
 
 # Magic-byte prefixes for the image formats Google Image Search results (or
@@ -211,6 +211,31 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "generate_image",
+        "description": (
+            "Generate candidate images for a card from a text prompt via "
+            "Gemini, so Dylan can pick the best one — same choice-then-attach "
+            "pattern as generate_audio and search_images. Returns image_ids "
+            "(not the raw images); once Dylan picks one, pass its image_id "
+            "into create_anki_note's picture argument to attach it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "The image generation prompt.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of image options to generate.",
+                    "default": 3,
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
         "name": "sync_anki",
         "description": "Trigger an AnkiConnect sync so newly created notes reach AnkiWeb, and from there Dylan's phone/desktop.",
         "input_schema": {"type": "object", "properties": {}},
@@ -353,6 +378,24 @@ async def dispatch_tool(
                     content_type=_guess_image_content_type(data),
                     data=data,
                     source="search",
+                )
+                session.add(image)
+                session.commit()
+                session.refresh(image)
+                image_ids.append(image.id)
+        return {"image_ids": image_ids}
+
+    if name == "generate_image":
+        n = tool_input.get("n", 3)
+        images = await gemini_images.generate_images(tool_input["prompt"], n=n)
+        engine = get_engine()
+        image_ids = []
+        with Session(engine) as session:
+            for data in images:
+                image = ImageAsset(
+                    content_type=_guess_image_content_type(data),
+                    data=data,
+                    source="generate",
                 )
                 session.add(image)
                 session.commit()
