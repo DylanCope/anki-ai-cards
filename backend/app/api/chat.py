@@ -65,7 +65,8 @@ class CreateConversationRequest(BaseModel):
 
 
 class UpdateConversationRequest(BaseModel):
-    model: str
+    model: str | None = None
+    title: str | None = None
 
 
 def _conversation_to_dict(conversation: Conversation) -> dict:
@@ -401,19 +402,43 @@ async def update_conversation(
     body: UpdateConversationRequest,
     email: str = Depends(require_auth),
 ) -> dict:
-    try:
-        get_model(body.model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if body.model is not None:
+        try:
+            get_model(body.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     engine = get_engine()
     with Session(engine) as session:
         conversation = _get_conversation_or_404(session, conversation_id)
-        conversation.model = body.model
+        if body.model is not None:
+            conversation.model = body.model
+        if body.title is not None:
+            conversation.title = body.title
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
     return _conversation_to_dict(conversation)
+
+
+@conversations_router.delete("/{conversation_id}")
+async def delete_conversation(
+    conversation_id: int,
+    email: str = Depends(require_auth),
+) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        conversation = _get_conversation_or_404(session, conversation_id)
+        messages = session.exec(
+            select(ConversationMessage).where(
+                ConversationMessage.conversation_id == conversation_id
+            )
+        ).all()
+        for message in messages:
+            session.delete(message)
+        session.delete(conversation)
+        session.commit()
+    return {"deleted": True}
 
 
 @models_router.get("")

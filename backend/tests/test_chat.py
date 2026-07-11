@@ -757,6 +757,98 @@ def test_update_conversation_model_switches_which_provider_a_later_turn_uses(mon
     assert captured_model_ids == ["gemini-3.1-pro-preview"]
 
 
+def test_update_conversation_title_renames_without_touching_model(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    response = _authed_client().patch(
+        f"/api/conversations/{conversation_id}", json={"title": "My renamed chat"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "My renamed chat"
+    assert body["model"] == DEFAULT_MODEL_ID
+
+
+def test_update_conversation_title_404s_for_unknown_conversation():
+    _seed_token()
+    response = _authed_client().patch(
+        "/api/conversations/999", json={"title": "New title"}
+    )
+    assert response.status_code == 404
+
+
+def test_delete_conversation_requires_auth(client):
+    response = client.delete("/api/conversations/1")
+    assert response.status_code == 401
+
+
+def test_delete_conversation_404s_for_unknown_conversation():
+    _seed_token()
+    response = _authed_client().delete("/api/conversations/999")
+    assert response.status_code == 404
+
+
+def test_delete_conversation_cascades_to_delete_its_messages(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("hi"))
+    authed = _authed_client()
+    authed.post("/api/chat", json={"conversation_id": conversation_id, "message": "hello"})
+
+    with Session(get_engine()) as session:
+        assert (
+            len(
+                session.exec(
+                    select(ConversationMessage).where(
+                        ConversationMessage.conversation_id == conversation_id
+                    )
+                ).all()
+            )
+            > 0
+        )
+
+    response = authed.delete(f"/api/conversations/{conversation_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True}
+    with Session(get_engine()) as session:
+        assert session.get(Conversation, conversation_id) is None
+        assert (
+            session.exec(
+                select(ConversationMessage).where(
+                    ConversationMessage.conversation_id == conversation_id
+                )
+            ).all()
+            == []
+        )
+
+
+def test_delete_conversation_does_not_affect_other_conversations(monkeypatch):
+    _seed_token()
+    conversation_a = _new_conversation_id()
+    conversation_b = _new_conversation_id()
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("hi"))
+    authed = _authed_client()
+    authed.post("/api/chat", json={"conversation_id": conversation_b, "message": "hello"})
+
+    authed.delete(f"/api/conversations/{conversation_a}")
+
+    with Session(get_engine()) as session:
+        assert session.get(Conversation, conversation_b) is not None
+        assert (
+            len(
+                session.exec(
+                    select(ConversationMessage).where(
+                        ConversationMessage.conversation_id == conversation_b
+                    )
+                ).all()
+            )
+            > 0
+        )
+
+
 def test_list_models_requires_auth(client):
     response = client.get("/api/models")
     assert response.status_code == 401

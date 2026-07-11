@@ -14,6 +14,74 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 28: Backend conversation rename + cascade delete
+- Did: `backend/app/api/chat.py`.
+  - `UpdateConversationRequest`: `model` changed from required `str` to
+    optional `str | None = None`, and a new optional `title: str | None =
+    None` field added. `update_conversation` (`PATCH
+    /api/conversations/{id}`) now only validates/applies `model` when
+    provided (via `get_model`, same as before) and only applies `title` when
+    provided — so a rename-only request no longer needs to also resend the
+    current model, and vice versa. Both are independently optional; sending
+    neither is a no-op PATCH (not explicitly rejected — matches this
+    codebase's general looseness elsewhere, no need to invent new validation
+    the task didn't ask for).
+  - New `DELETE /api/conversations/{id}` (`delete_conversation`): 404s via
+    the existing `_get_conversation_or_404` helper, then hard-deletes every
+    `ConversationMessage` row with that `conversation_id` followed by the
+    `Conversation` row itself, in one session/commit. This project has no ORM
+    relationship/cascade configured between `Conversation` and
+    `ConversationMessage` (`conversation_id` is a plain FK column, not a
+    SQLModel `Relationship`), so the cascade has to be done manually — a bare
+    `session.delete(conversation)` alone would leave orphaned message rows
+    behind. Returns `{"deleted": true}`. No soft-delete/undo, per the task's
+    explicit note this is a single-user app.
+- Verified:
+  - `cd backend && uv run pytest` → 143 passed (up from 137). New tests in
+    `tests/test_chat.py`: `test_update_conversation_title_renames_without_
+    touching_model` (title-only PATCH leaves `model` at its default),
+    `test_update_conversation_title_404s_for_unknown_conversation`,
+    `test_delete_conversation_requires_auth`, `test_delete_conversation_404s_
+    for_unknown_conversation`, `test_delete_conversation_cascades_to_delete_
+    its_messages` (posts a real chat turn first to create
+    `ConversationMessage` rows, confirms they exist, deletes the
+    conversation, confirms both the conversation and all its messages are
+    gone), `test_delete_conversation_does_not_affect_other_conversations`
+    (two conversations, delete one, confirm the other's rows are untouched —
+    guards against a cascade that's scoped wrong, e.g. deleting by role or
+    globally instead of by `conversation_id`).
+  - Deploy-and-verify per AGENTS.md (backend-only task): `fly deploy` from
+    `backend/` succeeded (same benign transient health-check blip during the
+    machine restart seen in every prior backend deploy entry — one failed
+    check line in the logs immediately followed by a passing one a few
+    seconds later, not a real problem); `fly status -a anki-ai-cards-backend`
+    shows `1 total, 1 passing`; `curl https://anki-ai-cards-backend.fly.dev/
+    health` → `200`.
+  - **Real end-to-end verification against production, not mocks**: fetched
+    the real `DEV_API_KEY` via `fly ssh console`, then against
+    `https://anki-ai-cards-backend.fly.dev` directly: `POST
+    /api/conversations` (created id 10) → `PATCH .../10` with `{"title":
+    "Ralph task 28 smoke test"}` returned the conversation with the new title
+    and its `model` unchanged from the create default → `DELETE .../10`
+    returned `{"deleted": true}` with HTTP 200 → a follow-up `GET
+    /api/chat/history?conversation_id=10` on the same now-deleted id returned
+    404 "Conversation not found", confirming the delete actually took effect
+    on the real production DB, not just in a test DB.
+- Learned:
+  - `Conversation`/`ConversationMessage` have no SQLModel `Relationship`/
+    `cascade` configured anywhere in `app/models.py` — any future
+    delete-with-children feature in this codebase needs the same
+    manual-query-then-delete pattern used here, not an ORM cascade shortcut
+    that doesn't exist yet.
+  - Task 29 (frontend rename/delete UI) is now unblocked — it can call `PATCH
+    /api/conversations/{id}` with `{"title": ...}` and `DELETE
+    /api/conversations/{id}` exactly as implemented here. No response-shape
+    surprises: `PATCH` still returns the same `_conversation_to_dict` shape
+    as before (now possibly with an updated `title`), `DELETE` returns a
+    small `{"deleted": true}` object.
+
+---
+
 ## 2026-07-11 — Task 27: Typing indicator + toast-style errors
 - Did: two new small components, wired into `ChatApp.tsx`, no other files
   touched:

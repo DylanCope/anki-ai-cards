@@ -451,7 +451,7 @@ this step in PROGRESS.md for every task in this range.
   briefly stop the backend or use dev tools to force a non-200) to confirm
   the toast appears and is dismissible.
 
-- [ ] **28. Backend: conversation rename + cascade delete.**
+- [x] **28. Backend: conversation rename + cascade delete.**
   `backend/app/api/chat.py`: extend `UpdateConversationRequest` /
   `update_conversation` (`PATCH /api/conversations/{id}`) to accept an
   optional `title` alongside the existing `model` field. Add `DELETE
