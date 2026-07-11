@@ -13,6 +13,7 @@ import type {
 import MessageBubble from "@/app/components/MessageBubble";
 import AudioOptionsCard from "@/app/components/AudioOptionsCard";
 import CardPayloadCard from "@/app/components/CardPayloadCard";
+import ImageOptionsCard from "@/app/components/ImageOptionsCard";
 import ConversationSidebar from "@/app/components/ConversationSidebar";
 import AiSettingsButton from "@/app/components/AiSettingsButton";
 import WorkflowsButton from "@/app/components/WorkflowsButton";
@@ -398,23 +399,36 @@ export default function ChatApp() {
                   editable={lastUserMessageEditable}
                   onSave={(text) => editMessage(index, text)}
                 />
-                {turn.payloads.map((payload, payloadIndex) =>
-                  payload.type === "audio_options" ? (
-                    <AudioOptionsCard
-                      key={payloadIndex}
-                      payload={payload}
-                      onPick={sendMessage}
-                      disabled={sending}
-                    />
-                  ) : (
+                {turn.payloads.map((payload, payloadIndex) => {
+                  if (payload.type === "audio_options") {
+                    return (
+                      <AudioOptionsCard
+                        key={payloadIndex}
+                        payload={payload}
+                        onPick={sendMessage}
+                        disabled={sending}
+                      />
+                    );
+                  }
+                  if (payload.type === "image_options") {
+                    return (
+                      <ImageOptionsCard
+                        key={payloadIndex}
+                        payload={payload}
+                        onPick={sendMessage}
+                        disabled={sending}
+                      />
+                    );
+                  }
+                  return (
                     <CardPayloadCard
                       key={payloadIndex}
                       payload={payload}
                       onRequestChange={setInput}
                       disabled={sending}
                     />
-                  )
-                )}
+                  );
+                })}
               </div>
             ))}
             {sending && <TypingIndicator />}

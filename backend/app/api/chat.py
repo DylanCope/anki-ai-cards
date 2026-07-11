@@ -39,6 +39,7 @@ from app.models import (
     BugReport,
     Conversation,
     ConversationMessage,
+    ImageAsset,
     OAuthToken,
     get_engine,
 )
@@ -148,27 +149,39 @@ def _build_tool_results(messages: list[dict]) -> dict[str, object]:
     return tool_results
 
 
-def _collect_audio_clips(engine, tool_results: dict[str, object]) -> dict[int, AudioClip]:
-    clip_ids: set[int] = set()
+def _collect_assets(engine, tool_results: dict[str, object], model_cls, id_key: str) -> dict:
+    """Load every `model_cls` row referenced by `id_key` (e.g. `clip_ids`,
+    `image_ids`) across all tool_results, keyed by id."""
+
+    ids: set[int] = set()
     for result in tool_results.values():
         if isinstance(result, dict):
-            clip_ids.update(result.get("clip_ids", []) or [])
-    if not clip_ids:
+            ids.update(result.get(id_key, []) or [])
+    if not ids:
         return {}
     with Session(engine) as session:
         return {
-            clip.id: clip
-            for clip in session.exec(
-                select(AudioClip).where(AudioClip.id.in_(clip_ids))
-            ).all()
+            row.id: row
+            for row in session.exec(select(model_cls).where(model_cls.id.in_(ids))).all()
         }
 
 
+def _collect_audio_clips(engine, tool_results: dict[str, object]) -> dict[int, AudioClip]:
+    return _collect_assets(engine, tool_results, AudioClip, "clip_ids")
+
+
+def _collect_image_assets(engine, tool_results: dict[str, object]) -> dict[int, ImageAsset]:
+    return _collect_assets(engine, tool_results, ImageAsset, "image_ids")
+
+
 def _payloads_for_message(
-    message: dict, tool_results: dict[str, object], clips_by_id: dict[int, AudioClip]
+    message: dict,
+    tool_results: dict[str, object],
+    clips_by_id: dict[int, AudioClip],
+    images_by_id: dict[int, ImageAsset],
 ) -> list[dict]:
-    """Extract the structured payloads (audio options, created cards)
-    produced by the tool_use blocks in a single message."""
+    """Extract the structured payloads (audio options, image options, created
+    cards) produced by the tool_use blocks in a single message."""
 
     if message["role"] != "assistant" or isinstance(message["content"], str):
         return []
@@ -194,6 +207,22 @@ def _payloads_for_message(
                     "options": options,
                 }
             )
+        elif block["name"] in ("search_images", "generate_image"):
+            image_ids = result.get("image_ids", []) if isinstance(result, dict) else []
+            found = [images_by_id[iid] for iid in image_ids if iid in images_by_id]
+            payloads.append(
+                {
+                    "type": "image_options",
+                    "query_or_prompt": tool_input.get("query")
+                    if block["name"] == "search_images"
+                    else tool_input.get("prompt"),
+                    "image_ids": image_ids,
+                    "options": [
+                        base64.b64encode(image.data).decode("ascii") for image in found
+                    ],
+                    "content_types": [image.content_type for image in found],
+                }
+            )
         elif block["name"] == "create_anki_note":
             payloads.append(
                 {
@@ -217,9 +246,10 @@ def _extract_payloads(messages: list[dict], engine) -> list[dict]:
 
     tool_results = _build_tool_results(messages)
     clips_by_id = _collect_audio_clips(engine, tool_results)
+    images_by_id = _collect_image_assets(engine, tool_results)
     payloads: list[dict] = []
     for message in messages:
-        payloads.extend(_payloads_for_message(message, tool_results, clips_by_id))
+        payloads.extend(_payloads_for_message(message, tool_results, clips_by_id, images_by_id))
     return payloads
 
 
@@ -234,11 +264,14 @@ def _build_history_entries(rows: list[ConversationMessage], engine) -> list[dict
     messages = [{"role": row.role, "content": json.loads(row.content)} for row in rows]
     tool_results = _build_tool_results(messages)
     clips_by_id = _collect_audio_clips(engine, tool_results)
+    images_by_id = _collect_image_assets(engine, tool_results)
 
     entries: list[dict] = []
     pending_payloads: list[dict] = []
     for message in messages:
-        pending_payloads.extend(_payloads_for_message(message, tool_results, clips_by_id))
+        pending_payloads.extend(
+            _payloads_for_message(message, tool_results, clips_by_id, images_by_id)
+        )
         text = _display_text(message["content"])
         if text is not None:
             entries.append({"role": message["role"], "text": text, "payloads": pending_payloads})

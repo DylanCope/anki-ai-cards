@@ -42,7 +42,15 @@ export interface CardPayload {
   note_id: number | null;
 }
 
-export type ChatPayload = AudioOptionsPayload | CardPayload;
+export interface ImageOptionsPayload {
+  type: "image_options";
+  query_or_prompt: string | null;
+  image_ids: number[];
+  options: string[];
+  content_types: string[];
+}
+
+export type ChatPayload = AudioOptionsPayload | CardPayload | ImageOptionsPayload;
 
 export interface ChatTurn {
   message: ChatHistoryEntry;

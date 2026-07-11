@@ -17,6 +17,7 @@ from app.models import (
     BugReport,
     Conversation,
     ConversationMessage,
+    ImageAsset,
     OAuthToken,
     get_engine,
     init_db,
@@ -313,6 +314,128 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
                 base64.b64encode(b"aaa").decode("ascii"),
                 base64.b64encode(b"bbb").decode("ascii"),
             ],
+        }
+    ]
+
+
+def test_post_chat_extracts_image_options_payload_for_search_images(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        image_one = ImageAsset(content_type="image/jpeg", data=b"aaa", source="search")
+        image_two = ImageAsset(content_type="image/png", data=b"bbb", source="search")
+        session.add(image_one)
+        session.add(image_two)
+        session.commit()
+        session.refresh(image_one)
+        session.refresh(image_two)
+        image_ids = [image_one.id, image_two.id]
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "search_images",
+                        "input": {"query": "shiba inu"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"image_ids": image_ids}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Here are 2 options."}]},
+        ]
+        return {"history": new_history, "reply": "Here are 2 options."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "find an image"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {
+            "type": "image_options",
+            "query_or_prompt": "shiba inu",
+            "image_ids": image_ids,
+            "options": [
+                base64.b64encode(b"aaa").decode("ascii"),
+                base64.b64encode(b"bbb").decode("ascii"),
+            ],
+            "content_types": ["image/jpeg", "image/png"],
+        }
+    ]
+
+
+def test_post_chat_extracts_image_options_payload_for_generate_image(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        image = ImageAsset(content_type="image/png", data=b"ccc", source="generate")
+        session.add(image)
+        session.commit()
+        session.refresh(image)
+        image_ids = [image.id]
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "generate_image",
+                        "input": {"prompt": "a shiba inu wearing a hat"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"image_ids": image_ids}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Here's an option."}]},
+        ]
+        return {"history": new_history, "reply": "Here's an option."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "make an image"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {
+            "type": "image_options",
+            "query_or_prompt": "a shiba inu wearing a hat",
+            "image_ids": image_ids,
+            "options": [base64.b64encode(b"ccc").decode("ascii")],
+            "content_types": ["image/png"],
         }
     ]
 
@@ -782,6 +905,77 @@ def test_get_chat_history_returns_payloads_alongside_the_turn_that_produced_them
                     "text": "こんにちは",
                     "clip_ids": [clip_id],
                     "options": [base64.b64encode(b"aaa").decode("ascii")],
+                }
+            ],
+        },
+    ]
+
+
+def test_get_chat_history_returns_image_options_payload_alongside_the_turn_that_produced_it(
+    monkeypatch,
+):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        image = ImageAsset(content_type="image/jpeg", data=b"aaa", source="search")
+        session.add(image)
+        session.commit()
+        session.refresh(image)
+        image_id = image.id
+
+    async def run_turn(history, message, *, access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "search_images",
+                        "input": {"query": "shiba inu"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"image_ids": [image_id]}),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Here's an option."}],
+            },
+        ]
+        return {"history": new_history, "reply": "Here's an option."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    authed = _authed_client()
+    authed.post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "find an image"}
+    )
+
+    response = authed.get("/api/chat/history", params={"conversation_id": conversation_id})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"role": "user", "text": "find an image", "payloads": []},
+        {
+            "role": "assistant",
+            "text": "Here's an option.",
+            "payloads": [
+                {
+                    "type": "image_options",
+                    "query_or_prompt": "shiba inu",
+                    "image_ids": [image_id],
+                    "options": [base64.b64encode(b"aaa").decode("ascii")],
+                    "content_types": ["image/jpeg"],
                 }
             ],
         },

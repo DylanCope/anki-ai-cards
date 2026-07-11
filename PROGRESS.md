@@ -14,6 +14,112 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 38: Frontend `ImageOptionsCard` for search/generate results
+- Did:
+  - `backend/app/api/chat.py`: `_payloads_for_message` gained a branch for
+    `search_images`/`generate_image` tool_use blocks, emitting `{"type":
+    "image_options", "query_or_prompt": ..., "image_ids": [...], "options":
+    [<base64>, ...], "content_types": [...]}`. Added `content_types`
+    (deliberate, documented deviation from the PRD's literal payload shape,
+    which only listed `options`) because — unlike audio, which is always
+    ElevenLabs mp3 and can hardcode `audio/mpeg` client-side — images from
+    `search_images`/`generate_image` vary in real format (jpeg/png/gif/webp,
+    per task 36/37's own magic-byte sniffing), so the frontend needs each
+    option's actual content type to build a correct `data:` URI; omitting it
+    would silently mis-render non-JPEG images. `ImageAsset` rows already
+    carry `content_type` (task 35), so this was a one-line addition, not new
+    plumbing.
+  - Refactored `_collect_audio_clips` into a generic `_collect_assets(engine,
+    tool_results, model_cls, id_key)` helper (same "load every row referenced
+    by an id list across all tool_results" logic, parameterized by model
+    class and result-dict key) rather than writing a second near-duplicate
+    function — `_collect_audio_clips`/`_collect_image_assets` are now 2-line
+    wrappers over it. This is the "refactor into a shared helper if it stays
+    reasonable" case the task text explicitly allowed for, and it did stay
+    reasonable here since the two cases are structurally identical (unlike
+    `_payloads_for_message`'s per-tool payload-shaping logic, which stayed as
+    separate branches since audio/image/card payload shapes genuinely
+    diverge).
+  - Both `_extract_payloads` (used by `POST /api/chat`) and
+    `_build_history_entries` (used by `GET /api/chat/history`) now compute
+    `images_by_id` alongside the existing `clips_by_id` and thread it through
+    to `_payloads_for_message` — so image-options payloads persist across a
+    page reload exactly like audio-options/card payloads already do (task
+    23's persistence guarantee extended to the new payload type, not a
+    separate code path).
+  - `frontend/app/lib/types.ts`: added `ImageOptionsPayload` (mirrors
+    `AudioOptionsPayload`'s shape plus `content_types`) to the `ChatPayload`
+    union.
+  - New `frontend/app/components/ImageOptionsCard.tsx`: mirrors
+    `AudioOptionsCard.tsx`'s structure (header line naming the
+    query/prompt, one row per option, a "Pick" button per option). Renders
+    each option as an `<img>` thumbnail via `data:${content_type};base64,...`
+    (an inline `eslint-disable-next-line @next/next/no-img-element` comment
+    — `next/image` isn't a good fit for variable-format, variable-size
+    inline base64 data URIs, and no other component in this codebase uses
+    raw `<img>` yet so there was no existing precedent to follow either way).
+    "Pick" sends the exact PRD-specified message text: `` `Use image option
+    ${index + 1} (image_id ${imageIds[index]}).` ``, same hand-off pattern
+    `AudioOptionsCard` already uses via the `onPick` prop.
+  - `frontend/app/components/ChatApp.tsx`: the payload-rendering ternary
+    (previously a two-way `audio_options` vs. everything-else check, which
+    happened to work only because `card` was the only other payload type)
+    became an explicit three-way `if` chain over `payload.type`, since a
+    ternary can't cleanly express three branches — imported and wired
+    `ImageOptionsCard` alongside the existing `AudioOptionsCard`/
+    `CardPayloadCard`, using the same `onPick={sendMessage}`/`disabled=
+    {sending}` props `AudioOptionsCard` already gets.
+- Verified:
+  - `cd backend && uv run pytest` → 181 passed (up from 178). New:
+    `test_post_chat_extracts_image_options_payload_for_search_images`,
+    `test_post_chat_extracts_image_options_payload_for_generate_image`, and
+    `test_get_chat_history_returns_image_options_payload_alongside_the_turn_that_produced_it`
+    in `backend/tests/test_chat.py` (seeds real `ImageAsset` rows, mocks
+    `run_turn` to return a `search_images`/`generate_image` tool_use +
+    tool_result pair, asserts the exact payload shape including
+    `content_types`, both from the immediate `POST /api/chat` response and
+    from a fresh `GET /api/chat/history` reload — mirroring the existing
+    audio-options test pairs exactly).
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors (confirms the `eslint-disable` comment on the
+    `<img>` correctly silences `@next/next/no-img-element` without masking
+    any other lint issue).
+  - Deploy-and-verify (both apps, since this task touches both): `fly
+    deploy` from `backend/` succeeded (`fly status -a anki-ai-cards-backend`
+    → `1 total, 1 passing`; `curl .../health` → `200`); `fly deploy` from
+    `frontend/` succeeded (`fly status -a anki-ai-cards-frontend` → machine
+    `started`; `curl https://anki-ai-cards-frontend.fly.dev/` → `200`). Both
+    `fly logs --no-tail` skims show only the same benign transient
+    SIGINT/reboot restart pattern already noted as normal in every prior
+    deploy entry in this log, followed by a clean `Application startup
+    complete.` (backend) / `✓ Ready in 0ms` (frontend) — no new errors.
+  - **Not verified against real infra with an actual live agent call** — the
+    Anthropic billing blocker (credit balance too low, first hit in task
+    36's entry, still open as of this task) and the Gemini free-tier image
+    quota block (task 37's entry) both remain, so there's no way to trigger
+    a real `search_images`/`generate_image` tool call end to end right now
+    without Dylan resolving one of those account-level gaps. The unit tests
+    above cover the payload-shaping/persistence logic this task actually
+    adds; rendering the real `ImageOptionsCard` in a browser needs Dylan to
+    (a) resolve at least one of the two billing blockers, then (b) ask the
+    agent to search or generate images for a card in a live chat and
+    confirm thumbnails render correctly and picking one attaches the right
+    `image_id`.
+- Learned:
+  - The PRD's literal payload shape (`options: [<base64>, ...]` with no
+    per-image type info) works fine for audio because ElevenLabs only ever
+    produces one format — it does not generalize to images, which can be
+    jpeg/png/gif/webp per task 36/37's own content-type sniffing. Any future
+    payload carrying heterogeneous binary data should include a
+    content-type/format field per item rather than assuming a single global
+    MIME type the way `AudioOptionsCard` gets away with.
+  - Only tasks 39 (composer image upload) and 40 (docs) remain in the PRD.
+    Task 39 is independent of this task (depends only on task 35's `POST
+    /api/images` + `ChatRequest.image_id`, already deployed) and is now the
+    highest-priority remaining task.
+
+---
+
 ## 2026-07-11 — Task 37: Backend `generate_image` tool via Gemini
 - Did:
   - **Confirmed the current image-generation model id against Gemini's live

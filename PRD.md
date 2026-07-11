@@ -664,7 +664,7 @@ task 20) for whichever app(s) each task touches.
   Gemini provider tests), covering success and an API-error case. Verify:
   `cd backend && uv run pytest` passes; deploy-and-verify (backend only).
 
-- [ ] **38. Frontend: `ImageOptionsCard` for search/generate results.**
+- [x] **38. Frontend: `ImageOptionsCard` for search/generate results.**
   Depends on tasks 36 and 37. `backend/app/api/chat.py`'s
   `_payloads_for_message`: add handling for `search_images`/`generate_image`
   tool_use blocks, emitting a payload shaped like `{"type": "image_options",
