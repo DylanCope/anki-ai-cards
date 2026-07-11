@@ -36,6 +36,13 @@ PROGRESS.md are the only "memory" between iterations.
   IME kana→kanji conversion.
 - Secrets are env vars only, documented in `.env.example`, never committed.
   See PRD.md Requirements for the full list.
+- `GOOGLE_CSE_API_KEY` / `GOOGLE_CSE_ID` (Google Custom Search JSON API,
+  `app/clients/google_image_search.py`, the `search_images` tool) — like
+  `ANTHROPIC_API_KEY` et al., a plain env var/Fly secret the loop just wires
+  through. `GOOGLE_CSE_ID` additionally needs a one-time manual setup step in
+  Google's Programmable Search Engine console (configured for image search)
+  — Dylan's manual step, same category as the AnkiWeb VNC login; the loop
+  must never attempt this itself.
 
 ## Headless Anki deployment (manual steps for Dylan)
 

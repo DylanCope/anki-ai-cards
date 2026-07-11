@@ -60,6 +60,13 @@ anyone else at the callback. Store tokens in the `OAuthToken` table.
   requires a one-time manual setup step in Google's Programmable Search
   Engine console (configured for image search) — Dylan's manual step, same
   category as the AnkiWeb VNC login; the loop only wires the env var through.
+  **That console step alone isn't sufficient** — the Google Cloud project
+  backing `GOOGLE_CSE_API_KEY` also separately needs the "Custom Search JSON
+  API" enabled in Google Cloud Console (APIs & Services > Library), or every
+  call 403s with `"This project does not have the access to Custom Search
+  JSON API."` (confirmed against the real API during task 36 — both secrets
+  are already set on the deployed backend, but live search still fails on
+  this until the API is enabled) — also Dylan's manual step.
 
 **Anki hosting:** headless Anki + AnkiConnect via the `ankimcp/headless-anki`
 Docker image, deployed as its own Fly.io app with a persistent volume. Logged
@@ -621,7 +628,7 @@ task 20) for whichever app(s) each task touches.
   shape), and `ChatRequest.image_id` producing the expected appended
   reference text in a mocked `run_turn` call.
 
-- [ ] **36. Backend: `search_images` tool via Google Custom Search.**
+- [x] **36. Backend: `search_images` tool via Google Custom Search.**
   Depends on task 35. `backend/app/clients/google_image_search.py`:
   `search_images(query: str, n: int = 3) -> list[bytes]` wrapping the Google
   Custom Search JSON API with `searchType=image` (`GET https://

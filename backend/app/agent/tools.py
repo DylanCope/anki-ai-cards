@@ -16,8 +16,28 @@ import mimetypes
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, elevenlabs, google_docs
+from app.clients import ankiconnect, elevenlabs, google_docs, google_image_search
 from app.models import AudioClip, ImageAsset, get_engine
+
+# Magic-byte prefixes for the image formats Google Image Search results (or
+# an uploaded file) are realistically going to be. ImageAsset.content_type
+# is required, but google_image_search.search_images only returns raw bytes
+# (no per-result content-type is reliably available from the Custom Search
+# API response), so it's sniffed here instead of trusted from a header.
+_IMAGE_MAGIC_BYTES: list[tuple[bytes, str]] = [
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),
+]
+
+
+def _guess_image_content_type(data: bytes) -> str:
+    for magic, content_type in _IMAGE_MAGIC_BYTES:
+        if data.startswith(magic):
+            return content_type
+    return "image/jpeg"
 
 TOOL_SCHEMAS: list[dict] = [
     {
@@ -166,6 +186,31 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "search_images",
+        "description": (
+            "Search the web for candidate images matching a query (e.g. to "
+            "illustrate a card), so Dylan can pick the best one — same "
+            "choice-then-attach pattern as generate_audio. Returns "
+            "image_ids (not the raw images); once Dylan picks one, pass its "
+            "image_id into create_anki_note's picture argument to attach it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The image search query.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of image options to find.",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "sync_anki",
         "description": "Trigger an AnkiConnect sync so newly created notes reach AnkiWeb, and from there Dylan's phone/desktop.",
         "input_schema": {"type": "object", "properties": {}},
@@ -296,6 +341,24 @@ async def dispatch_tool(
             picture=picture,
         )
         return {"note_id": note_id}
+
+    if name == "search_images":
+        n = tool_input.get("n", 3)
+        images = await google_image_search.search_images(tool_input["query"], n=n)
+        engine = get_engine()
+        image_ids = []
+        with Session(engine) as session:
+            for data in images:
+                image = ImageAsset(
+                    content_type=_guess_image_content_type(data),
+                    data=data,
+                    source="search",
+                )
+                session.add(image)
+                session.commit()
+                session.refresh(image)
+                image_ids.append(image.id)
+        return {"image_ids": image_ids}
 
     if name == "sync_anki":
         await ankiconnect.sync()

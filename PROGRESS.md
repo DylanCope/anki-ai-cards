@@ -14,6 +14,92 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 36: Backend `search_images` tool via Google Custom Search
+- Did:
+  - New `backend/app/clients/google_image_search.py`: `search_images(query,
+    n=3) -> list[bytes]` — `GET https://www.googleapis.com/customsearch/v1`
+    with `key`/`cx`/`q`/`searchType=image`/`num`, then downloads each
+    result's `link` via a second `httpx` GET, returning raw image bytes in
+    order. Empty/missing `items` in the response (Google omits the key
+    entirely for zero results, doesn't return an empty list) returns `[]`
+    rather than erroring. `GoogleImageSearchError` wraps both the search
+    call's and any individual download's non-2xx response, surfacing the
+    API's own JSON `error.message` the same way `elevenlabs.py` surfaces
+    ElevenLabs' `detail.message`.
+  - `backend/app/agent/tools.py`: added the `search_images` tool schema
+    (mirrors `generate_audio`'s choose-then-attach wording: "Returns
+    image_ids (not the raw images)...") and dispatcher branch. Since
+    `search_images`' PRD-specified return type is `list[bytes]` (no
+    per-image content-type from the Custom Search API response — the `mime`
+    field Google sometimes includes on generic search results isn't
+    reliably present on image-search items), the dispatcher sniffs
+    `ImageAsset.content_type` from magic bytes via a small
+    `_guess_image_content_type` helper (JPEG/PNG/GIF/WEBP signatures,
+    defaulting to `image/jpeg`) rather than trusting an unreliable header.
+    Stores each result as `ImageAsset(source="search")`, returns
+    `{"image_ids": [...]}` — same "persist server-side, hand back ids only"
+    pattern `generate_audio` established, so the model never sees raw image
+    bytes.
+  - `.env.example` and `AGENTS.md`'s Conventions section: documented
+    `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_ID`.
+- Verified:
+  - `cd backend && uv run pytest` → 171 passed (up from 164). New:
+    `backend/tests/test_google_image_search.py` (4 tests: multi-result
+    download, empty-results case, search-API-error case, download-failure
+    case, all via `respx`) and 3 new dispatch tests in `test_agent.py`
+    (`test_dispatch_search_images{,_custom_n,_no_results}`, asserting
+    `ImageAsset` rows are persisted with sniffed content types and
+    `source="search"`).
+  - Deploy-and-verify (backend only): `fly deploy` from `backend/` succeeded
+    (same benign transient "not listening on the expected address" warning
+    every prior backend deploy has shown — not a regression); `fly status -a
+    anki-ai-cards-backend` → `1 total, 1 passing`; `curl .../health` → 200.
+  - **Attempted real end-to-end verification, found two separate blockers,
+    neither a code defect in this task:**
+    1. `smoke_test_chat.py` (asking the live agent to call `search_images`)
+       got a 500 — `GET /api/bug-reports/<id>` showed the real cause:
+       `anthropic.BadRequestError: ... "Your credit balance is too low to
+       access the Anthropic API."` This is an **Anthropic account billing
+       issue**, unrelated to this task's code, and blocks *all* live-agent
+       verification (any tool, not just this one) until Dylan tops up
+       Anthropic credits. Flagging prominently since it'll silently block
+       the "real infra" verification bar on every subsequent task touching
+       the agent until fixed.
+    2. Bypassed the agent/Anthropic entirely and called
+       `google_image_search.search_images` directly inside the deployed
+       container (`fly ssh console -a anki-ai-cards-backend -C "python -c
+       ..."`, using the real `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_ID` secrets —
+       both already set per `fly secrets list`, so Dylan has already done
+       the Programmable Search Engine console step). Got a real `403 "This
+       project does not have the access to Custom Search JSON API."` — this
+       confirms the client code is correct (real request built correctly,
+       real error correctly parsed/surfaced via `GoogleImageSearchError`)
+       but the Google Cloud **project** backing that API key additionally
+       needs the "Custom Search JSON API" enabled in Cloud Console (APIs &
+       Services > Library) — a separate manual step from configuring the
+       Programmable Search Engine itself, which Dylan hasn't done yet.
+       Documented this in PRD.md's Requirements section so it isn't lost.
+  - Given the task's actual stated Verify bar is `uv run pytest` +
+    deploy-and-verify (not a live-infra check, unlike tasks 14/15/19/35),
+    marking this task done — the two blockers above are pre-existing
+    external/account setup gaps (Anthropic billing, GCP API enablement), not
+    something this task's code can fix, and PRD.md's Requirements section
+    now documents the GCP API-enablement step so it's not lost. Once Dylan
+    enables the Custom Search JSON API and tops up Anthropic credits, a
+    quick manual re-run of `smoke_test_chat.py` with a search_images request
+    would be worth doing to confirm the full agent-to-Google path, but
+    that's not blocking this task.
+- Learned:
+  - Google's Custom Search JSON API returns *no* `items` key at all for a
+    zero-result query (not an empty `"items": []`) — `search_images` uses
+    `response.json().get("items", [])` specifically to handle both shapes
+    the same way.
+  - `fly ssh console -a <app> -C "python -c \"...\""` is a good way to
+    exercise a client function against real production secrets/network
+    without going through the full chat/Anthropic path — useful whenever
+    Anthropic itself is the blocker (as it was here) but a specific client
+    still needs its own real-infra check.
+
 ## 2026-07-11 — Task 35: Backend image storage + upload endpoint + create_anki_note picture support
 - Did:
   - `backend/app/models.py`: new `ImageAsset` table (`id`, `content_type`,
