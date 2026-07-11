@@ -14,6 +14,97 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-11 — Task 39: Frontend composer image upload
+- Did:
+  - `frontend/app/components/ChatApp.tsx`: added a `Paperclip` (lucide-react)
+    icon button next to the composer textarea, opening a hidden `<input
+    type="file" accept="image/*">` via a `fileInputRef`. On file selection
+    (`handleImageSelected`), immediately `POST /api/images` as
+    `multipart/form-data` (`FormData` with a `file` field, matching
+    `backend/app/api/images.py`'s `UploadFile` param name exactly — checked
+    this before writing the fetch call, since FastAPI's multipart field name
+    must match the handler's parameter name) and store the returned
+    `image_id` plus a local `URL.createObjectURL(file)` preview + the
+    filename in a new `pendingImage` state object. A small thumbnail preview
+    (`<img>` + filename + an `X` remove button) renders above the textarea,
+    inside the same `<form>`, whenever `pendingImage` is set — used a raw
+    `<img>` with an inline `eslint-disable-next-line @next/next/no-img-element`
+    comment for the same reason `ImageOptionsCard.tsx` (task 38) already
+    does: variable-size blob/base64 image sources aren't a good fit for
+    `next/image`, and that's already the established precedent in this
+    codebase for exactly this situation.
+  - `sendMessage`: reads `pendingImage?.imageId` into a local `imageId`
+    variable and calls `removePendingImage()` (which also revokes the
+    object URL to avoid leaking it) at the very top, in the same place
+    `setInput("")` already optimistically clears the composer — mirrors the
+    PRD's "same lifecycle as input" instruction exactly. The POST body
+    conditionally spreads `{ image_id: imageId }` only when `imageId !==
+    undefined`, so a normal text-only send's request body is byte-identical
+    to before this task (no `image_id: null` noise sent when nothing's
+    attached).
+  - Deliberately did **not** special-case `sendMessage`'s callers
+    (`AudioOptionsCard`/`ImageOptionsCard`'s `onPick`, `CardPayloadCard`'s
+    "request a change" flow via `setInput`) to exclude a pending image — the
+    PRD only specifies the plain composer-send path, and `sendMessage` is a
+    single shared function all of those already call. In practice this means
+    if Dylan attaches an image and then clicks a "Pick" button on an
+    audio/image-options card before sending, that attachment would ride along
+    on the pick message too — a narrow, low-probability edge case (attach
+    something, then use a *different* affordance to send *different* text
+    before dismissing the attachment) that the PRD's own wording doesn't ask
+    to be guarded against; not fixing preemptively per this project's
+    "don't add validation for scenarios that can't happen" convention, but
+    flagging here in case Dylan hits it and wants it scoped differently.
+  - Attach button (`disabled={sending || uploadingImage}`) follows the same
+    disable-while-busy convention as the textarea/send button, plus its own
+    `uploadingImage` state so it can't be clicked again mid-upload (the file
+    input itself has no "busy" concept, so this is enforced on the trigger
+    button instead).
+  - Upload failure (network error, non-2xx from `/api/images`, or a 401)
+    shows the existing `Toast` error and does not set `pendingImage` — no
+    new error-payload shape needed since `POST /api/images` already returns
+    a plain `{"detail": "..."}` 400 body (task 35) that this task doesn't
+    need to parse in detail, unlike `/api/chat`'s richer
+    `bug_report_id`/`error` shape.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass, no new
+    warnings or type errors (confirms the `eslint-disable` comment on the
+    preview `<img>` is scoped correctly, same as task 38's precedent).
+  - `cd backend && uv run pytest` → 181 passed, unchanged (no backend files
+    touched by this task — `POST /api/images` and `ChatRequest.image_id`
+    were both already implemented and tested in task 35).
+  - Deploy-and-verify (frontend only — this task touches no backend code):
+    `fly deploy` from `frontend/` succeeded; `fly status -a
+    anki-ai-cards-frontend` → machine `started`; `curl
+    https://anki-ai-cards-frontend.fly.dev/` → `200`. `fly logs --no-tail`
+    showed only the same benign SIGINT/reboot restart pattern already noted
+    as normal in every prior frontend deploy entry in this log, followed by
+    a clean `✓ Ready in 0ms` — no new errors.
+  - **Not verified in an actual browser** — per the task's own note, Dylan
+    should confirm: clicking the paperclip opens a file picker, selecting an
+    image immediately uploads it and shows a thumbnail preview with a
+    working "x" remove button above the textarea, sending a message with an
+    attachment clears the preview and the reply reflects the agent seeing
+    `(Attached image_id: N for use on a card.)` in context (task 35's
+    machine-readable suffix), and asking the agent to use that image on a
+    card works end to end. This still can't be fully closed-loop verified
+    against a live agent for the same reason task 38's entry documented (the
+    Anthropic billing blocker/Gemini free-tier quota block both remain
+    open as of this task) — but the upload-and-preview half of this task
+    (composer UI, `POST /api/images`) is independent of either blocker and
+    fully testable by Dylan right now.
+- Learned:
+  - Only task 40 (docs + verification checklist update for image support)
+    remains in the PRD — it's a docs-only task with no code changes
+    expected, so once it's done every checkbox in PRD.md should be checked.
+  - The two account-level blockers noted repeatedly across tasks 36-39
+    (Anthropic credit balance, Gemini free-tier image quota, plus the GCP
+    Custom Search API not being enabled yet per task 36) are all still open
+    as of this task and are Dylan's to resolve, not something further loop
+    iterations can fix from inside the repo.
+
+---
+
 ## 2026-07-11 — Task 38: Frontend `ImageOptionsCard` for search/generate results
 - Did:
   - `backend/app/api/chat.py`: `_payloads_for_message` gained a branch for

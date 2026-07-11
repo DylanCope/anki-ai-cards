@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Menu } from "lucide-react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Menu, Paperclip, X } from "lucide-react";
 import type {
   ChatErrorBody,
   ChatHistoryResponseEntry,
@@ -34,8 +34,15 @@ export default function ChatApp() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [pendingImage, setPendingImage] = useState<{
+    imageId: number;
+    previewUrl: string;
+    fileName: string;
+  } | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const MAX_TEXTAREA_HEIGHT_PX = 200;
 
@@ -227,10 +234,50 @@ export default function ChatApp() {
     }
   }
 
+  async function handleImageSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    setError(null);
+    setUploadingImage(true);
+    const previewUrl = URL.createObjectURL(file);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/images", { method: "POST", body: formData });
+      if (res.status === 401) {
+        URL.revokeObjectURL(previewUrl);
+        setAuth("signed_out");
+        return;
+      }
+      if (!res.ok) throw new Error(`Image upload failed (${res.status})`);
+      const body = (await res.json()) as { image_id: number };
+      setPendingImage((prev) => {
+        if (prev) URL.revokeObjectURL(prev.previewUrl);
+        return { imageId: body.image_id, previewUrl, fileName: file.name };
+      });
+    } catch {
+      URL.revokeObjectURL(previewUrl);
+      setError("Could not upload that image. Please try again.");
+    } finally {
+      setUploadingImage(false);
+    }
+  }
+
+  function removePendingImage() {
+    setPendingImage((prev) => {
+      if (prev) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+  }
+
   async function sendMessage(text: string) {
     const message = text.trim();
     if (!message || sending || conversationId === null) return;
 
+    const imageId = pendingImage?.imageId;
+    removePendingImage();
     setInput("");
     setError(null);
     setSending(true);
@@ -240,7 +287,11 @@ export default function ChatApp() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: conversationId, message }),
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          message,
+          ...(imageId !== undefined ? { image_id: imageId } : {}),
+        }),
       });
       if (res.status === 401) {
         setAuth("signed_out");
@@ -441,33 +492,72 @@ export default function ChatApp() {
               event.preventDefault();
               sendMessage(input);
             }}
-            className="mx-auto flex w-full max-w-3xl gap-2 p-4"
+            className="mx-auto flex w-full max-w-3xl flex-col gap-2 p-4"
           >
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" || event.shiftKey) return;
-                // Skip submission while an IME composition is in progress —
-                // Enter also confirms kana->kanji conversion.
-                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-                event.preventDefault();
-                sendMessage(input);
-              }}
-              placeholder="Message the agent..."
-              disabled={sending}
-              rows={1}
-              style={{ maxHeight: MAX_TEXTAREA_HEIGHT_PX }}
-              className="flex-1 resize-none overflow-y-auto rounded-lg border border-border bg-surface px-4 py-2 text-sm disabled:opacity-50"
-            />
-            <button
-              type="submit"
-              disabled={sending || !input.trim()}
-              className="self-end rounded-full bg-accent px-5 py-2 text-sm font-medium text-accent-foreground disabled:opacity-50"
-            >
-              Send
-            </button>
+            {pendingImage && (
+              <div className="flex items-center gap-2 self-start rounded-lg border border-border bg-surface p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={pendingImage.previewUrl}
+                  alt=""
+                  className="h-12 w-12 rounded object-cover"
+                />
+                <span className="max-w-[10rem] truncate text-xs text-foreground/60">
+                  {pendingImage.fileName}
+                </span>
+                <button
+                  type="button"
+                  onClick={removePendingImage}
+                  aria-label="Remove attached image"
+                  className="rounded-full p-1 text-foreground/50 hover:bg-foreground/10 hover:text-foreground"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageSelected}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={sending || uploadingImage}
+                aria-label="Attach an image"
+                className="self-end rounded-lg p-2 text-foreground/60 hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+              >
+                <Paperclip size={20} />
+              </button>
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.shiftKey) return;
+                  // Skip submission while an IME composition is in progress —
+                  // Enter also confirms kana->kanji conversion.
+                  if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                  event.preventDefault();
+                  sendMessage(input);
+                }}
+                placeholder="Message the agent..."
+                disabled={sending}
+                rows={1}
+                style={{ maxHeight: MAX_TEXTAREA_HEIGHT_PX }}
+                className="flex-1 resize-none overflow-y-auto rounded-lg border border-border bg-surface px-4 py-2 text-sm disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={sending || !input.trim()}
+                className="self-end rounded-full bg-accent px-5 py-2 text-sm font-medium text-accent-foreground disabled:opacity-50"
+              >
+                Send
+              </button>
+            </div>
           </form>
         </div>
       </div>

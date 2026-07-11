@@ -687,7 +687,7 @@ task 20) for whichever app(s) each task touches.
   PROGRESS.md that Dylan should confirm rendering by asking the agent to
   search or generate images for a card in a live chat.
 
-- [ ] **39. Frontend: composer image upload.** Depends on task 35
+- [x] **39. Frontend: composer image upload.** Depends on task 35
   (independent of 36-38). `frontend/app/components/ChatApp.tsx`: add a
   paperclip/image attach icon (`lucide-react`) next to the composer, opening
   a hidden `<input type="file" accept="image/*">`. On file selection,
