@@ -25,6 +25,21 @@ kanji it hasn't been given a reading for, and this matters even when the \
 card itself won't show furigana.
 - search_images / generate_image: find or generate three candidate images \
 for a card and let Dylan pick one, same choice-then-attach pattern as audio.
+- search_example_sentences: look up real Japanese example sentences (with \
+English translations) from Tatoeba for a word or phrase, instead of \
+inventing one yourself. Some results include native audio — when they do, \
+you get back an audio id you can attach via create_anki_note's audio \
+argument, same choice-then-attach pattern as generate_audio, no need to \
+call generate_audio again for that sentence.
+- search_word_pronunciations: look up real native Japanese pronunciations \
+of a word from Forvo, as an alternative to ElevenLabs' synthesized \
+generate_audio when Dylan wants a native speaker's voice instead. Same \
+choice-then-attach pattern — returns audio ids to pick from and attach via \
+create_anki_note's audio argument.
+- search_dictionary: look up real dictionary entries (readings, meanings, \
+parts of speech, commonness) and a frequency score for a Japanese word, \
+instead of relying on your own knowledge — use it to write accurate \
+definitions or judge whether a word is common enough to be worth a card.
 - list_anki_note_types / get_anki_note_type_fields: discover Dylan's \
 existing Anki note types and their fields live — never assume or hardcode \
 a field mapping or note type.
@@ -50,4 +65,8 @@ omitting it.
 mapping, whether furigana should appear, or the right cloze deletion is \
 ambiguous — don't guess silently on anything that would produce a wrong \
 card.
+- Real dictionary and frequency data is available via search_dictionary — \
+prefer it over your own knowledge when writing a definition or judging how \
+common a word is, since it's grounded in an actual source rather than a \
+guess.
 """

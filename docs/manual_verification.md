@@ -144,17 +144,14 @@ Do all three in one session; each ends with the agent using the resulting
 
 - [ ] Ask the agent to search for an image for a card, e.g. "Find an image
   for 猫 (cat)." This calls the `search_images` tool
-  (`backend/app/clients/google_image_search.py`, Google Custom Search).
+  (`backend/app/clients/wikimedia_image_search.py`, Wikimedia Commons — no
+  API key needed; this replaced an earlier Google Custom Search version,
+  see PRD.md task 41).
 - [ ] Confirm an **Image options** card renders in the chat
   (`frontend/app/components/ImageOptionsCard.tsx`) with 3 thumbnail results
-  and a **Pick** button under each.
-- [ ] **If this errors instead** — check whether it's the known account-level
-  blocker noted in PROGRESS.md (tasks 36/39): `GOOGLE_CSE_API_KEY`'s GCP
-  project needs the "Custom Search JSON API" enabled in Google Cloud Console
-  (APIs & Services > Library) in addition to the Programmable Search Engine
-  console setup — a 403 with `"This project does not have the access to
-  Custom Search JSON API"` means this step, not a code bug. This is Dylan's
-  manual step, not something a loop iteration can fix.
+  and a **Pick** button under each. Since Wikimedia Commons only covers
+  well-known/reference subjects, try a common word first if an obscure one
+  comes back empty.
 - [ ] Click **Pick** on one thumbnail. Confirm the agent acknowledges the
   choice and can proceed to create a note with that image.
 
@@ -183,7 +180,56 @@ Do all three in one session; each ends with the agent using the resulting
   the same note on your phone or desktop Anki app — confirm the image
   displays there too after the normal AnkiWeb sync.
 
-## 9. Reuse a workflow spec (second session)
+## 9. Real example sentences, native pronunciation, and dictionary data
+
+Exercises tasks 43-46 — three more tools that pull from real external
+sources (Tatoeba, Forvo, Jisho/`wordfreq`) instead of the model inventing
+content or trusting its own knowledge. No dedicated UI for any of these
+(results surface as plain chat text, except audio which follows the existing
+choice-then-attach pattern) — do all three in one session, each ending in a
+card created via the usual "propose → confirm → create" flow.
+
+### 9a. Example sentence from Tatoeba
+
+- [ ] Ask the agent for a real example sentence for a word, e.g. "Find an
+  example sentence for 猫." This calls `search_example_sentences`
+  (`backend/app/clients/tatoeba.py`). Confirm the reply shows a real
+  Japanese sentence with an English translation, not one the model
+  generated itself.
+- [ ] If the result includes native audio, ask the agent to use it on a card
+  — confirm it attaches via `create_anki_note`'s existing `audio` argument
+  (the same `clip_id` it would use for a `generate_audio`/`search_word_
+  pronunciations` pick) without needing to call `generate_audio` again.
+
+### 9b. Native pronunciation from Forvo
+
+- [ ] Ask the agent for a native pronunciation of a word, e.g. "Get a native
+  pronunciation of 猫 from Forvo instead of synthesizing one." This calls
+  `search_word_pronunciations` (`backend/app/clients/forvo.py`, requires the
+  `FORVO_API_KEY` Fly secret to be set — Dylan's manual signup step, see
+  AGENTS.md).
+- [ ] **If this errors** — check whether `FORVO_API_KEY` is actually set
+  (`fly secrets list -a anki-ai-cards-backend`); Forvo requires a real
+  account/key, this isn't something a loop iteration can fix.
+- [ ] Confirm the agent describes real pronunciation option(s) (e.g. speaker
+  attribution) and can attach one to a card via `create_anki_note`'s `audio`
+  argument, same choice-then-attach pattern as `generate_audio`.
+
+### 9c. Dictionary-informed definition
+
+- [ ] Ask the agent to look up a word in the dictionary before writing a
+  definition for it, e.g. "Look up 猫 and use that to write the card's
+  definition/notes field." This calls `search_dictionary`
+  (`backend/app/clients/dictionary.py`, Jisho + local `wordfreq`
+  computation, no API key needed).
+- [ ] Confirm the reply's readings/meanings/parts of speech match what
+  Jisho actually shows for that word (spot-check at jisho.org), and that it
+  mentions a frequency/commonness judgment (`wordfreq`'s Zipf score) rather
+  than a guess.
+- [ ] Confirm the resulting card's definition field reflects the looked-up
+  meaning rather than a generic paraphrase.
+
+## 10. Reuse a workflow spec (second session)
 
 - [ ] Start a **new** browser session (or just refresh after some time) and
   send an opening message. If you and the agent settled on a workflow
@@ -200,7 +246,9 @@ Do all three in one session; each ends with the agent using the resulting
 This doc was written by cross-checking PRD.md tasks 1-12 and the actual code
 in `backend/app/` and `frontend/app/` as of the task-13 commit, then extended
 for image support (section 8) by cross-checking tasks 33-39 as of the task-40
-commit. If a step above doesn't match what the running system actually does:
+commit, and again for Tatoeba/Forvo/dictionary support (section 9) by
+cross-checking tasks 43-46 as of the task-47 commit. If a step above doesn't
+match what the running system actually does:
 
 - If the **code** has moved on (e.g. a later change added a real
   `propose_card` tool or persisted payloads across reloads), this doc is

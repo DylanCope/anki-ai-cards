@@ -14,6 +14,52 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-12 — Task 47: docs — system prompt + verification checklist for the new tools
+- Did:
+  - `backend/app/agent/prompts.py`'s `SYSTEM_PROMPT`: added three new
+    bullets to the "Your tools:" list (`search_example_sentences`,
+    `search_word_pronunciations`, `search_dictionary`), following the same
+    style as the existing `search_images`/`generate_image` entries —
+    explaining each tool's choice-then-attach behavior where relevant
+    (Tatoeba/Forvo both return audio ids attachable via `create_anki_note`'s
+    existing `audio` argument, same pattern as `generate_audio`, no need to
+    call `generate_audio` again for a sentence/word that already has real
+    audio). Added a line to "General principles" telling the agent to
+    prefer `search_dictionary`'s real data over its own knowledge when
+    writing definitions or judging word commonness.
+  - `docs/manual_verification.md`: added a new "9. Real example sentences,
+    native pronunciation, and dictionary data" section (renumbering the old
+    "9. Reuse a workflow spec" to "10") with three subsections (9a Tatoeba
+    sentence + optional native audio, 9b Forvo pronunciation, 9c
+    Jisho/`wordfreq`-informed definition), each ending in a card-creation
+    step. Updated the closing "If something doesn't match" provenance note
+    to mention this section was cross-checked against tasks 43-46.
+  - Also fixed section 8b in the same doc, which was stale from task 41
+    (still referenced the old `google_image_search.py`/Google Custom Search
+    client and its known 403 blocker) — task 41's commit updated
+    `.env.example`/`AGENTS.md` but never touched this doc. Repointed it at
+    `wikimedia_image_search.py` and removed the now-irrelevant
+    `GOOGLE_CSE_API_KEY`/403 troubleshooting bullet, replacing it with a
+    one-line note that Commons only covers well-known/reference subjects.
+  - Confirmed `.env.example` and `AGENTS.md`'s Conventions section already
+    correctly document `FORVO_API_KEY` and its manual-signup step (added
+    back in task 45 — nothing further needed there).
+- Verified: `cd backend && uv run pytest` → 215 passed, no regressions (pure
+  docs/prompt-text change, no code paths touched). `cd frontend && npm run
+  build && npm run lint` → both pass, unchanged, confirming this task didn't
+  touch frontend code either (checked as the PRD's own regression-check
+  instruction for this task).
+- Learned:
+  - This was the last unchecked task in PRD.md — every task (1-47) is now
+    checked. Doc note above the closing summary.
+  - The prompt-wording effectiveness (whether the agent actually reaches
+    for these tools appropriately in a live conversation) isn't something
+    `pytest` verifies — that's a judgment call for Dylan's manual review
+    per `docs/manual_verification.md` section 9, same caveat as task 18's
+    prompt change.
+
+---
+
 ## 2026-07-12 — Task 46: `search_dictionary` tool via Jisho + wordfreq
 - Did:
   - New `backend/app/clients/dictionary.py`: `search_words(query, n=3) ->

@@ -881,7 +881,7 @@ choice-then-attach `clip_id` pattern.
   multi-result query and a no-results query. Verify: `cd backend && uv run
   pytest` passes; deploy-and-verify (backend only).
 
-- [ ] **47. Docs: system prompt + verification checklist for the new
+- [x] **47. Docs: system prompt + verification checklist for the new
   tools.** Depends on tasks 44-46. Update `backend/app/agent/prompts.py`'s
   `SYSTEM_PROMPT` "Your tools:" list to add `search_example_sentences`,
   `search_word_pronunciations`, and `search_dictionary` (following the
