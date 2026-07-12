@@ -815,7 +815,7 @@ choice-then-attach `clip_id` pattern.
   `generate_audio` path still stores `source="generate"`. Verify: `cd
   backend && uv run pytest` passes.
 
-- [ ] **44. Backend: `search_example_sentences` tool via Tatoeba.** Depends
+- [x] **44. Backend: `search_example_sentences` tool via Tatoeba.** Depends
   on task 43. `backend/app/clients/tatoeba.py`: `search_sentences(query:
   str, n: int = 5) -> list[dict]` against Tatoeba's public search API (`GET
   https://tatoeba.org/en/api_v0/search` — confirm the exact current

@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, elevenlabs, gemini_images, google_docs, wikimedia_image_search
+from app.clients import ankiconnect, elevenlabs, gemini_images, google_docs, tatoeba, wikimedia_image_search
 from app.models import AudioClip, ImageAsset, get_engine
 
 # Magic-byte prefixes for the image formats a Wikimedia Commons search
@@ -241,6 +241,34 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "search_example_sentences",
+        "description": (
+            "Search Tatoeba for real, native-written Japanese sentences with "
+            "an English translation, so a card's example sentence can come "
+            "from a real corpus instead of one the model invents. Returns "
+            "each match's Japanese text, English translation (when "
+            "available), and an audio_id when Tatoeba has native audio for "
+            "that sentence — pass a chosen audio_id into create_anki_note's "
+            "audio argument to attach it, same choice-then-attach pattern as "
+            "generate_audio."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The Japanese search query, e.g. a word or phrase to find example sentences for.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of example sentences to find.",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "sync_anki",
         "description": "Trigger an AnkiConnect sync so newly created notes reach AnkiWeb, and from there Dylan's phone/desktop.",
         "input_schema": {"type": "object", "properties": {}},
@@ -413,6 +441,34 @@ async def dispatch_tool(
                 session.refresh(image)
                 image_ids.append(image.id)
         return {"image_ids": image_ids}
+
+    if name == "search_example_sentences":
+        n = tool_input.get("n", 5)
+        sentences = await tatoeba.search_sentences(tool_input["query"], n=n)
+        engine = get_engine()
+        results = []
+        with Session(engine) as session:
+            for sentence in sentences:
+                audio_id = None
+                if sentence["audio"] is not None:
+                    clip = AudioClip(
+                        text=sentence["japanese"],
+                        voice=sentence["audio_author"] or "native",
+                        audio=sentence["audio"],
+                        source="tatoeba",
+                    )
+                    session.add(clip)
+                    session.commit()
+                    session.refresh(clip)
+                    audio_id = clip.id
+                results.append(
+                    {
+                        "japanese": sentence["japanese"],
+                        "english": sentence["english"],
+                        "audio_id": audio_id,
+                    }
+                )
+        return {"sentences": results}
 
     if name == "sync_anki":
         await ankiconnect.sync()

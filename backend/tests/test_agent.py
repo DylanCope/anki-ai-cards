@@ -177,6 +177,74 @@ async def test_dispatch_search_images_no_results(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_search_example_sentences(db, monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {
+                "japanese": "猫が好きです。",
+                "english": "I like cats.",
+                "audio": b"audio-bytes",
+                "audio_author": "kevin62",
+            },
+            {
+                "japanese": "猫は可愛い。",
+                "english": "Cats are cute.",
+                "audio": None,
+                "audio_author": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(tools.tatoeba, "search_sentences", mock)
+
+    result = await tools.dispatch_tool("search_example_sentences", {"query": "猫"})
+
+    mock.assert_awaited_once_with("猫", n=5)
+    assert len(result["sentences"]) == 2
+    first, second = result["sentences"]
+    assert first["japanese"] == "猫が好きです。"
+    assert first["english"] == "I like cats."
+    assert isinstance(first["audio_id"], int)
+    assert second["audio_id"] is None
+    with Session(tools.get_engine()) as session:
+        clip = session.get(tools.AudioClip, first["audio_id"])
+    assert clip.audio == b"audio-bytes"
+    assert clip.voice == "kevin62"
+    assert clip.source == "tatoeba"
+    assert clip.text == "猫が好きです。"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_example_sentences_custom_n(db, monkeypatch):
+    mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.tatoeba, "search_sentences", mock)
+
+    await tools.dispatch_tool("search_example_sentences", {"query": "猫", "n": 2})
+
+    mock.assert_awaited_once_with("猫", n=2)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_example_sentences_no_audio_author_falls_back_to_native(db, monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {
+                "japanese": "猫が好きです。",
+                "english": "I like cats.",
+                "audio": b"audio-bytes",
+                "audio_author": None,
+            }
+        ]
+    )
+    monkeypatch.setattr(tools.tatoeba, "search_sentences", mock)
+
+    result = await tools.dispatch_tool("search_example_sentences", {"query": "猫"})
+
+    with Session(tools.get_engine()) as session:
+        clip = session.get(tools.AudioClip, result["sentences"][0]["audio_id"])
+    assert clip.voice == "native"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_generate_image(db, monkeypatch):
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
     mock = AsyncMock(return_value=[png_bytes, b"\xff\xd8\xffjpeg-bytes"])

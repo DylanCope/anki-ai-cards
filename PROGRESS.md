@@ -14,6 +14,89 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-12 — Task 44: `search_example_sentences` tool via Tatoeba
+- Did:
+  - New `backend/app/clients/tatoeba.py`: `search_sentences(query, n=5) ->
+    list[dict]`, each shaped `{"japanese", "english", "audio", "audio_author"}`.
+    Confirmed the real current API directly (`api.tatoeba.org`'s published
+    OpenAPI spec at `https://api.tatoeba.org/openapi.json`) rather than
+    assuming from training data — the PRD's suggested endpoint
+    (`tatoeba.org/en/api_v0/search`) is the *old*, wiki-labeled-"deprecated"
+    API and 500s unconditionally now; the real current one is `GET
+    https://api.tatoeba.org/v1/sentences` with `lang=jpn&q=<query>&
+    trans:lang=eng&sort=relevance&limit=<n>` (both `lang` and `sort` are
+    required params per the spec — a bare `q`-only request 400s with
+    `"Required parameter \"sort\" missing"`). Response shape:
+    `{"data": [{"text", "translations": [{"text", "lang"}, ...], "audios":
+    [{"author", "download_url"}, ...]}], "paging": {...}}` — since
+    `trans:lang=eng` is set and `showtrans` defaults to `"matching"`,
+    `translations` only ever contains the (already-filtered) English
+    translation(s), so `translations[0]["text"]` is correct without extra
+    filtering. Downloads the first audio's bytes via `httpx` when `audios`
+    is non-empty.
+  - `backend/app/agent/tools.py`: added `search_example_sentences` to
+    `TOOL_SCHEMAS` (`query`, optional `n=5`) and its `dispatch_tool` branch —
+    calls the client, and for each sentence with audio bytes stores an
+    `AudioClip(source="tatoeba", voice=audio_author or "native", text=japanese,
+    audio=bytes)` and returns its id as `audio_id` (else `null`), returning
+    `{"sentences": [{"japanese", "english", "audio_id"}, ...]}` — same
+    choice-then-attach pattern `generate_audio`/`create_anki_note`'s `audio`
+    argument already established, per the PRD's wording.
+- Verified:
+  - `cd backend && uv run pytest` → 198 passed (up from 189). New
+    `tests/test_tatoeba.py` (respx-mocked): sentence with audio + translation,
+    sentence without audio, no-results, HTTP-error, audio-download-failure,
+    and a request-params assertion (confirms `lang`/`q`/`trans:lang`/`sort`/
+    `limit` are all sent correctly). New in `test_agent.py`:
+    `test_dispatch_search_example_sentences` (asserts both the returned
+    shape and that the audio sentence's `AudioClip` row has
+    `source="tatoeba"`, the right `voice`/`text`/`audio` bytes),
+    `test_dispatch_search_example_sentences_custom_n`, and
+    `test_dispatch_search_example_sentences_no_audio_author_falls_back_to_native`.
+  - Deploy-and-verify (backend only, this task's convention even though it's
+    outside the 20-32 range — same real-infra check the PRD's own Verify
+    line asks for): `fly deploy` from `backend/` succeeded, `fly status -a
+    anki-ai-cards-backend` shows `1 total, 1 passing`, `curl .../health`
+    returns 200. Ran `backend/scripts/smoke_test_chat.py` against the real
+    deployed backend asking the agent to call `search_example_sentences` for
+    "猫" — the agent correctly invoked the tool and reported back "the
+    Tatoeba search tool is currently experiencing technical issues and
+    returned a 500 error", handled gracefully (no crash, no `BugReport` row
+    — `dispatch_tool` exceptions surface as an ordinary `is_error`
+    tool_result inside `run_turn`'s per-tool `except Exception`, same as any
+    other tool failure, not an unhandled 500).
+- Learned:
+  - **Tatoeba's own production search backend is down as of 2026-07-12**,
+    independent of anything in this codebase: `GET
+    https://api.tatoeba.org/v1/sentences` 500s with `"Error from search
+    engine: connection to localhost:9312 failed (errno=111, msg=Connection
+    refused)"` for *every* query (confirmed directly via `curl`, including
+    `q`-less requests, repeated ~20s apart, still failing) — this is
+    Tatoeba's Manticore/Sphinx full-text index being unreachable
+    server-side, not a request-shape or auth problem on our end.
+    `GET /v1/sentences/{id}` (e.g. `/v1/sentences/1`), which has no
+    search-engine dependency, returns a normal 200 in the meantime — that's
+    how the response shape above was confirmed structurally (via the
+    OpenAPI schema) even though a live successful *search* response body was
+    never actually observed. If a future iteration (44's follow-ups, or
+    anyone debugging a "Tatoeba search always fails" report) hits the same
+    500, check `curl https://api.tatoeba.org/v1/sentences/1` first — if
+    that 200s but `/v1/sentences?...` 500s with the same
+    `connection to localhost:9312` message, it's this same outage still
+    ongoing, not a regression to chase in this repo.
+  - Confirmed the real, current API is `api.tatoeba.org`'s REST API (OpenAPI
+    at `https://api.tatoeba.org/openapi.json`), not the `tatoeba.org/en/
+    api_v0/*` endpoint the PRD's task text suggested as an example — that
+    older path's own wiki page (`en.wiki.tatoeba.org/articles/show/api-v0`)
+    is titled "Old API (deprecated)" and it also 500s unconditionally now
+    (tried first, ruled out before finding the real one).
+  - Task 45 (`search_word_pronunciations` via Forvo) is next and independent
+    of this task — both depend only on task 43's `AudioClip.source` field,
+    already done. Task 46 (`search_dictionary` via Jisho + wordfreq) remains
+    independent of both 44 and 45.
+
+---
+
 ## 2026-07-12 — Task 43: Generalize `AudioClip` with a `source` field
 - Did:
   - `backend/app/models.py`: added `source: str = Field(default="generate")`
