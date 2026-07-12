@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, elevenlabs, gemini_images, google_docs, tatoeba, wikimedia_image_search
+from app.clients import ankiconnect, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
 from app.models import AudioClip, ImageAsset, get_engine
 
 # Magic-byte prefixes for the image formats a Wikimedia Commons search
@@ -269,6 +269,32 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "search_word_pronunciations",
+        "description": (
+            "Search Forvo for real native-speaker recordings of a Japanese "
+            "word, sorted by vote/rating count, so a card's audio can come "
+            "from a real speaker instead of ElevenLabs TTS when Dylan wants "
+            "that. Returns clip_ids (not the raw audio) — once Dylan picks "
+            "one, pass its clip_id into create_anki_note's audio argument to "
+            "attach it, same choice-then-attach pattern as generate_audio."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "word": {
+                    "type": "string",
+                    "description": "The Japanese word to find pronunciations for.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of pronunciation options to find.",
+                    "default": 3,
+                },
+            },
+            "required": ["word"],
+        },
+    },
+    {
         "name": "sync_anki",
         "description": "Trigger an AnkiConnect sync so newly created notes reach AnkiWeb, and from there Dylan's phone/desktop.",
         "input_schema": {"type": "object", "properties": {}},
@@ -469,6 +495,25 @@ async def dispatch_tool(
                     }
                 )
         return {"sentences": results}
+
+    if name == "search_word_pronunciations":
+        n = tool_input.get("n", 3)
+        pronunciations = await forvo.search_pronunciations(tool_input["word"], n=n)
+        engine = get_engine()
+        clip_ids = []
+        with Session(engine) as session:
+            for pronunciation in pronunciations:
+                clip = AudioClip(
+                    text=tool_input["word"],
+                    voice=pronunciation["username"] or "native",
+                    audio=pronunciation["audio"],
+                    source="forvo",
+                )
+                session.add(clip)
+                session.commit()
+                session.refresh(clip)
+                clip_ids.append(clip.id)
+        return {"clip_ids": clip_ids}
 
     if name == "sync_anki":
         await ankiconnect.sync()

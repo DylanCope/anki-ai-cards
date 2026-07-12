@@ -838,7 +838,7 @@ choice-then-attach `clip_id` pattern.
   against Tatoeba returns real sentences (and at least one with audio) in
   production.
 
-- [ ] **45. Backend: `search_word_pronunciations` tool via Forvo.** Depends
+- [x] **45. Backend: `search_word_pronunciations` tool via Forvo.** Depends
   on task 43, independent of task 44. New env var `FORVO_API_KEY` (Dylan's
   manual signup step at Forvo's developer portal — document in
   `.env.example` and `AGENTS.md`'s Conventions, same category as

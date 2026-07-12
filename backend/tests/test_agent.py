@@ -245,6 +245,41 @@ async def test_dispatch_search_example_sentences_no_audio_author_falls_back_to_n
 
 
 @pytest.mark.asyncio
+async def test_dispatch_search_word_pronunciations(db, monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {"audio": b"audio-bytes-1", "username": "kevin62"},
+            {"audio": b"audio-bytes-2", "username": None},
+        ]
+    )
+    monkeypatch.setattr(tools.forvo, "search_pronunciations", mock)
+
+    result = await tools.dispatch_tool("search_word_pronunciations", {"word": "猫"})
+
+    mock.assert_awaited_once_with("猫", n=3)
+    assert len(result["clip_ids"]) == 2
+    with Session(tools.get_engine()) as session:
+        clips = [session.get(tools.AudioClip, cid) for cid in result["clip_ids"]]
+    assert [clip.audio for clip in clips] == [b"audio-bytes-1", b"audio-bytes-2"]
+    assert [clip.voice for clip in clips] == ["kevin62", "native"]
+    assert all(clip.source == "forvo" for clip in clips)
+    assert all(clip.text == "猫" for clip in clips)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_word_pronunciations_custom_n(db, monkeypatch):
+    mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.forvo, "search_pronunciations", mock)
+
+    result = await tools.dispatch_tool(
+        "search_word_pronunciations", {"word": "猫", "n": 1}
+    )
+
+    mock.assert_awaited_once_with("猫", n=1)
+    assert result == {"clip_ids": []}
+
+
+@pytest.mark.asyncio
 async def test_dispatch_generate_image(db, monkeypatch):
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
     mock = AsyncMock(return_value=[png_bytes, b"\xff\xd8\xffjpeg-bytes"])

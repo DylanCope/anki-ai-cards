@@ -14,6 +14,93 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-12 — Task 45: `search_word_pronunciations` tool via Forvo
+- Did:
+  - New `backend/app/clients/forvo.py`: `search_pronunciations(word, n=3) ->
+    list[dict]`, each shaped `{"audio": bytes, "username": str | None}` —
+    deliberately deviates from the PRD's literal `-> list[bytes]` type
+    annotation, since the PRD's own next sentence requires surfacing each
+    pronunciation's speaker username alongside its bytes (needed for
+    `AudioClip.voice`) — a plain `list[bytes]` can't carry that, so this
+    follows `tatoeba.search_sentences`'s `list[dict]` shape instead, same as
+    that task's precedent for treating the PRD's shape note as
+    aspirational/mirrored-in-spirit rather than literal when it conflicts
+    with an explicit requirement one sentence later.
+  - Confirmed Forvo's real request/response shape without a live API key
+    (Dylan hadn't signed up yet at research time, though — see below — a key
+    was already pushed as a Fly secret by the time of the deploy-and-verify
+    step): Forvo's own docs page
+    (`https://api.forvo.com/documentation/word-pronunciations/`) shows
+    example *request* URLs (path-based, not query-string:
+    `https://apifree.forvo.com/key/{key}/format/json/action/
+    word-pronunciations/word/{word}/...`) but never a full JSON response
+    body. Cross-checked three independent third-party API wrapper libraries
+    that parse real Forvo responses (`github.com/ryanj1234/pyforvo`,
+    `github.com/nosamanuel/pyforvo`, `github.com/mucsi96/forvo`'s
+    documentation.js-generated README) — all agree on the response shape
+    `{"items": [{"id", "word", "original", "addtime", "hits", "username",
+    "sex", "country", "code", "langname", "pathmp3", "pathogg", "rate",
+    "num_votes", "num_positive_votes"}, ...]}`. Used `order=rate-desc` (sorts
+    by Forvo's `rate` field, highest first) for "sorted by vote/rating count
+    descending" per the PRD wording, and `language=ja` hardcoded per the PRD.
+    Also found and noted in the client's docstring: Forvo's own
+    "General Information" docs say a `pathmp3` URL is only valid for 2 hours
+    after the call that returned it and that caching pronunciations isn't
+    allowed per their terms — not a concern for correctness here since this
+    client downloads immediately rather than returning/storing the URL, but
+    worth knowing if `AudioClip` rows are ever inspected much later.
+  - `backend/app/agent/tools.py`: added `search_word_pronunciations` to
+    `TOOL_SCHEMAS` (`word`, optional `n=3`) and its `dispatch_tool` branch —
+    calls the client, stores each result as `AudioClip(source="forvo",
+    voice=username or "native", text=word, audio=bytes)`, returns
+    `{"clip_ids": [...]}` — same choice-then-attach pattern
+    `generate_audio`/`search_example_sentences` already established.
+  - `.env.example` and `AGENTS.md`'s Conventions: documented `FORVO_API_KEY`
+    (manual signup at api.forvo.com, same category as `ELEVENLABS_API_KEY`)
+    and the path-based request shape.
+- Verified:
+  - `cd backend && uv run pytest` → 207 passed (up from 198). New
+    `tests/test_forvo.py` (respx-mocked, `FORVO_API_KEY` set via
+    `monkeypatch.setenv` through an autouse fixture): success (audio +
+    username), no-username-falls-back-to-None, no-results, HTTP-error,
+    API-level-error (`{"error": "..."}` body), audio-download-failure, and a
+    request-URL-shape assertion (`language/ja`, `order/rate-desc`,
+    `limit/{n}` all present in the path). New in `test_agent.py`:
+    `test_dispatch_search_word_pronunciations` (asserts both the returned
+    `clip_ids` and that each `AudioClip` row has `source="forvo"`, the right
+    `voice`/`text`/`audio`, and the `username or "native"` fallback) and
+    `test_dispatch_search_word_pronunciations_custom_n`.
+  - Deploy-and-verify (backend only): discovered `FORVO_API_KEY` was
+    **already** set as a real Fly secret on `anki-ai-cards-backend`
+    (`fly secrets list` showed it deployed) — Dylan had done the manual
+    signup step ahead of this task, unprompted. `fly deploy` from `backend/`
+    succeeded, `fly status -a anki-ai-cards-backend` showed `1 total, 1
+    passing`, `curl .../health` returned 200. Ran
+    `backend/scripts/smoke_test_chat.py` against the real deployed backend
+    asking the agent to call `search_word_pronunciations` for "猫" (cat) —
+    the agent correctly invoked the tool and reported back **3 real native
+    pronunciations with real Forvo speaker usernames** ("Nekomata", "Kyoko",
+    "Hiroshi") and their clip_ids (49-51); confirmed via `GET
+    /api/bug-reports` that no new bug report was filed by this call (the
+    most recent entries were older, unrelated OAuth-refresh/Anthropic-credit
+    errors from prior sessions) — a clean, unmocked, real-infra success.
+- Learned:
+  - Forvo's own documentation page for an action can show request examples
+    without ever showing a response body — when this happens, cross-checking
+    multiple independent open-source API wrapper libraries that parse real
+    responses (rather than picking one and trusting it) is a decent
+    substitute for a live authenticated test call, and is how this task
+    confirmed field names (`username`, `pathmp3`, `num_votes`, etc.) despite
+    not having a working `FORVO_API_KEY` at research time.
+  - When a PRD's literal type annotation for a client function (`-> list[
+    bytes]`) contradicts a concrete requirement stated in the same task
+    description (surfacing a per-result username), prefer the concrete
+    requirement and note the deviation explicitly in PROGRESS.md rather than
+    contorting the implementation to fit the annotation — same judgment call
+    task 44 made for Tatoeba's suggested-vs-actual endpoint.
+
+---
+
 ## 2026-07-12 — Task 44: `search_example_sentences` tool via Tatoeba
 - Did:
   - New `backend/app/clients/tatoeba.py`: `search_sentences(query, n=5) ->

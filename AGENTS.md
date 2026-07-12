@@ -42,6 +42,15 @@ PROGRESS.md are the only "memory" between iterations.
   client (task 36), which turned out to be closed to new Google Cloud
   customers as of 2025 (confirmed against the real API, see PRD.md task 41)
   — don't reintroduce a Google Custom Search dependency here.
+- The `search_word_pronunciations` tool (`app/clients/forvo.py`) calls
+  Forvo's word-pronunciations API, hardcoded to Japanese. Needs
+  `FORVO_API_KEY` — manual signup at https://api.forvo.com/, same category
+  as `ELEVENLABS_API_KEY` (Dylan's step, don't attempt it). Forvo's request
+  shape is path-based (`/key/{key}/format/json/action/word-pronunciations/
+  word/{word}/...`), not query-string — see that file's header comment for
+  how the exact field names (`username`, `pathmp3`, `num_votes`, etc.) were
+  confirmed, since Forvo's own docs page shows example request URLs but not
+  a full response body.
 
 ## Headless Anki deployment (manual steps for Dylan)
 
