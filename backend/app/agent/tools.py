@@ -331,7 +331,9 @@ async def dispatch_tool(
         clip_ids = []
         with Session(engine) as session:
             for option in options:
-                clip = AudioClip(text=tool_input["text"], voice=voice, audio=option)
+                clip = AudioClip(
+                    text=tool_input["text"], voice=voice, audio=option, source="generate"
+                )
                 session.add(clip)
                 session.commit()
                 session.refresh(clip)

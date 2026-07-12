@@ -116,6 +116,7 @@ async def test_dispatch_generate_audio(db, monkeypatch):
     assert [c.audio for c in clips] == [b"aaa", b"bbb", b"ccc"]
     assert all(c.text == "こんにちは" for c in clips)
     assert all(c.voice == tools.elevenlabs.DEFAULT_VOICE for c in clips)
+    assert all(c.source == "generate" for c in clips)
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import pytest
 from sqlmodel import Session, create_engine, select
 
 from app.models import (
+    AudioClip,
     Conversation,
     ConversationMessage,
     OAuthToken,
@@ -191,3 +192,56 @@ def test_oauth_token_roundtrip(engine) -> None:
         token = session.exec(select(OAuthToken)).one()
         assert token.email == "dylanr.cope@gmail.com"
         assert token.access_token == "access"
+
+
+def test_audio_clip_source_defaults_to_generate(engine) -> None:
+    with Session(engine) as session:
+        session.add(AudioClip(text="こんにちは", voice="male", audio=b"aaa"))
+        session.commit()
+
+    with Session(engine) as session:
+        clip = session.exec(select(AudioClip)).one()
+        assert clip.source == "generate"
+
+
+def test_audio_clip_source_can_be_set_explicitly(engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            AudioClip(text="こんにちは", voice="native", audio=b"aaa", source="tatoeba")
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        clip = session.exec(select(AudioClip)).one()
+        assert clip.source == "tatoeba"
+
+
+def test_init_db_migrates_a_pre_source_audioclip_database(tmp_path, monkeypatch) -> None:
+    # Simulate a database from before AudioClip.source existed: a real
+    # audioclip table with no `source` column. init_db() must add the
+    # column and backfill existing rows to 'generate' (the only origin that
+    # existed before this column was added) rather than erroring or leaving
+    # them without a source.
+    db_path = tmp_path / "pre_source_audioclip.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE audioclip ("
+            "id INTEGER PRIMARY KEY, text TEXT, voice TEXT, audio BLOB, created_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO audioclip (text, voice, audio, created_at) "
+            "VALUES ('こんにちは', 'male', X'6161', '2026-07-01T00:00:00')"
+        )
+        conn.commit()
+
+    engine = init_db()
+
+    with Session(engine) as session:
+        clip = session.exec(select(AudioClip)).one()
+        assert clip.source == "generate"
+
+    # Idempotent: running it again on an already-migrated database is a
+    # no-op, not an error.
+    init_db()

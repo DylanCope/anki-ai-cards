@@ -14,6 +14,67 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-12 — Task 43: Generalize `AudioClip` with a `source` field
+- Did:
+  - `backend/app/models.py`: added `source: str = Field(default="generate")`
+    to `AudioClip` (values `"generate"` / `"tatoeba"` / `"forvo"`), following
+    `ImageAsset.source`'s existing pattern exactly. Gave it a Python-level
+    default (unlike `ImageAsset.source`, which is a required field with no
+    default) specifically so the pre-existing test fixtures across
+    `test_chat.py`/`test_agent.py` that construct `AudioClip(...)` without a
+    `source` kwarg keep working unchanged — matches the PRD's own framing of
+    `"generate"` as the implicit prior behavior for every clip that existed
+    before this column did.
+  - New `_add_audioclip_source_column_if_missing(engine)` in `models.py`,
+    same idempotent-`ALTER TABLE` pattern as the three existing migration
+    helpers (`_add_conversation_id_column_if_missing`,
+    `_add_conversation_model_column_if_missing`,
+    `_add_conversation_message_image_id_column_if_missing`): `ALTER TABLE
+    audioclip ADD COLUMN source TEXT NOT NULL DEFAULT 'generate'`, wired
+    into `init_db()`. Existing ElevenLabs clips on the real production
+    database backfill to `'generate'` correctly, since that's the only
+    origin that existed before this task.
+  - `backend/app/agent/tools.py`: `generate_audio`'s dispatch now passes
+    `source="generate"` explicitly into the `AudioClip(...)` constructor
+    (previously relied on no `source` field existing at all) — explicit
+    rather than relying on the field's default, matching the PRD's wording
+    and making the intent visible at the call site for whoever reads it
+    while wiring up task 44/45's `source="tatoeba"`/`source="forvo"` calls
+    later.
+- Verified: `cd backend && uv run pytest` → 189 passed (up from 186, the
+  count after the previous entry's tasks 41/42 commit). New in
+  `test_models.py`: `test_audio_clip_source_defaults_to_generate`,
+  `test_audio_clip_source_can_be_set_explicitly`,
+  `test_init_db_migrates_a_pre_source_audioclip_database` (hand-creates a
+  legacy `audioclip` table with no `source` column, one real row, confirms
+  `init_db()` adds the column and backfills the existing row to
+  `'generate'`, and that re-running `init_db()` is idempotent — mirrors
+  `test_init_db_migrates_a_pre_model_selection_database`'s structure).
+  Extended the existing `test_dispatch_generate_audio` in `test_agent.py`
+  with `assert all(c.source == "generate" for c in clips)`. No frontend
+  changes, no deploy — this is a pure backend/DB-schema task with no HTTP
+  surface change, matching the task's own `Verify:` line (`uv run pytest`
+  only, no deploy-and-verify mentioned).
+- Learned:
+  - Tasks 44 (`search_example_sentences` via Tatoeba) and 45
+    (`search_word_pronunciations` via Forvo) both depend on this task and
+    are now unblocked — both will construct `AudioClip(..., source="tatoeba"
+    | "forvo", voice=<speaker/contributor username or "native">)` using the
+    exact field this task added. Task 46 (`search_dictionary` via Jisho +
+    wordfreq) is independent of this task and could be picked up in
+    parallel by a future iteration if ever running two iterations
+    concurrently (not how this loop actually runs, but worth noting the two
+    remaining backend tool tasks — 44/45 and 46 — don't share any code).
+  - `ImageAsset.source` (task 35) is a required field with no default,
+    while `AudioClip.source` (this task) has a default of `"generate"` —
+    deliberate asymmetry, not an inconsistency to "fix" later: `ImageAsset`
+    is a brand-new table with no pre-existing rows/callers to keep backward
+    compatible, so every constructor call was written with `source` in mind
+    from day one; `AudioClip` predates this column by many tasks and has
+    real pre-existing callers/fixtures that don't pass it.
+
+---
+
 ## 2026-07-12 — Tasks 41 & 42: Wikimedia image search swap + lazy Google token resolution (recovered from an interrupted iteration)
 - Did: this session found tasks 41 and 42 already fully implemented and
   locally verified (186 backend tests passing, frontend build/lint clean) in

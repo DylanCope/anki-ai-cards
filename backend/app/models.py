@@ -99,8 +99,15 @@ class AudioClip(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     text: str
+    # For "tatoeba"/"forvo" clips, holds the sentence's/pronunciation's
+    # contributor or speaker attribution (a Tatoeba username, a Forvo
+    # username) when available, or a fixed placeholder like "native" when
+    # not — kept as a required str rather than making it nullable, so no
+    # SQLite column-nullability migration is needed for the "generate" case,
+    # which already always has a real ElevenLabs voice name.
     voice: str
     audio: bytes
+    source: str = Field(default="generate")  # "generate" / "tatoeba" / "forvo"
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -178,6 +185,23 @@ def _add_conversation_message_image_id_column_if_missing(engine) -> None:
             conn.commit()
 
 
+def _add_audioclip_source_column_if_missing(engine) -> None:
+    """Same rationale as `_add_conversation_id_column_if_missing` — the
+    `source` column (added so an AudioClip can record whether it came from
+    ElevenLabs generation, Tatoeba, or Forvo — see app.agent.tools) needs its
+    own ALTER TABLE on an already-deployed `audioclip` table. Existing rows
+    (all pre-dating this column, so all ElevenLabs-generated) backfill to
+    'generate', preserving their actual origin."""
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(audioclip)")}
+        if "source" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE audioclip ADD COLUMN source TEXT NOT NULL DEFAULT 'generate'"
+            )
+            conn.commit()
+
+
 def _backfill_legacy_conversation(engine) -> None:
     """Any ConversationMessage row with no conversation_id predates the
     multi-conversation feature — group them all into one real Conversation
@@ -206,5 +230,6 @@ def init_db():
     _add_conversation_id_column_if_missing(engine)
     _add_conversation_model_column_if_missing(engine)
     _add_conversation_message_image_id_column_if_missing(engine)
+    _add_audioclip_source_column_if_missing(engine)
     _backfill_legacy_conversation(engine)
     return engine

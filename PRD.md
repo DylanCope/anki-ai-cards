@@ -795,7 +795,7 @@ frontend UI — results surface via the agent's chat replies same as
 `fetch_google_doc`, except audio which follows the existing
 choice-then-attach `clip_id` pattern.
 
-- [ ] **43. Backend: generalize `AudioClip` with a `source` field.**
+- [x] **43. Backend: generalize `AudioClip` with a `source` field.**
   Independent scaffolding task, unblocks tasks 44-45. `backend/app/
   models.py`: add `source: str` to `AudioClip` (values `"generate"` /
   `"tatoeba"` / `"forvo"`), following `ImageAsset.source`'s existing
