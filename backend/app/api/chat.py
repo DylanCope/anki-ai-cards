@@ -22,7 +22,9 @@ both to dicts before anything here inspects or persists them.
 """
 
 import base64
+import functools
 import json
+import re
 import traceback
 from datetime import datetime, timedelta, timezone
 
@@ -61,6 +63,11 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     payloads: list[dict]
+    # The image (if any) `body.image_id` attached to this turn's own user
+    # message — a dedicated field rather than folded into `payloads` since
+    # it belongs to the user's turn, not the assistant's reply `payloads`
+    # already denotes; see `post_chat`'s `image_id` handling.
+    attached_image: dict | None = None
 
 
 class CreateConversationRequest(BaseModel):
@@ -124,11 +131,20 @@ def _serialize_message(message: dict) -> dict:
     }
 
 
+#  The exact suffix `post_chat` appends to a message when `body.image_id` is
+# set (see its `effective_message` handling) — a machine-readable note for
+# the agent's benefit, not something Dylan should see on reload now that
+# the attached image itself renders as an inline `image_attachment` payload
+# (see `_payloads_for_message`). Only strips it for *display*; the
+# persisted/model-facing content keeps the note so later turns still have it.
+_IMAGE_ATTACHMENT_NOTE_RE = re.compile(r"\n\n\(Attached image_id: \d+ for use on a card\.\)$")
+
+
 def _display_text(content) -> str | None:
     if isinstance(content, str):
-        return content
+        return _IMAGE_ATTACHMENT_NOTE_RE.sub("", content)
     texts = [block["text"] for block in content if block.get("type") == "text"]
-    return "\n".join(texts) if texts else None
+    return _IMAGE_ATTACHMENT_NOTE_RE.sub("", "\n".join(texts)) if texts else None
 
 
 def _build_tool_results(messages: list[dict]) -> dict[str, object]:
@@ -170,8 +186,28 @@ def _collect_audio_clips(engine, tool_results: dict[str, object]) -> dict[int, A
     return _collect_assets(engine, tool_results, AudioClip, "clip_ids")
 
 
-def _collect_image_assets(engine, tool_results: dict[str, object]) -> dict[int, ImageAsset]:
-    return _collect_assets(engine, tool_results, ImageAsset, "image_ids")
+def _collect_image_assets(
+    engine, tool_results: dict[str, object], messages: list[dict]
+) -> dict[int, ImageAsset]:
+    """Same as `_collect_assets(..., ImageAsset, "image_ids")`, plus any
+    id(s) attached directly to a message via its `image_id` key (an upload
+    attached to that specific user message — see `_apply_edit`'s sibling,
+    `post_chat`'s `image_id` handling — as opposed to `image_ids` produced by
+    a `search_images`/`generate_image` tool call)."""
+
+    ids: set[int] = {
+        message["image_id"] for message in messages if message.get("image_id") is not None
+    }
+    for result in tool_results.values():
+        if isinstance(result, dict):
+            ids.update(result.get("image_ids", []) or [])
+    if not ids:
+        return {}
+    with Session(engine) as session:
+        return {
+            row.id: row
+            for row in session.exec(select(ImageAsset).where(ImageAsset.id.in_(ids))).all()
+        }
 
 
 def _payloads_for_message(
@@ -181,12 +217,26 @@ def _payloads_for_message(
     images_by_id: dict[int, ImageAsset],
 ) -> list[dict]:
     """Extract the structured payloads (audio options, image options, created
-    cards) produced by the tool_use blocks in a single message."""
-
-    if message["role"] != "assistant" or isinstance(message["content"], str):
-        return []
+    cards, an uploaded image attachment) produced by a single message — the
+    tool_use blocks of an assistant message, or the `image_id` a user
+    message carried (see `post_chat`'s `image_id` handling)."""
 
     payloads: list[dict] = []
+    image_id = message.get("image_id")
+    if image_id is not None and image_id in images_by_id:
+        image = images_by_id[image_id]
+        payloads.append(
+            {
+                "type": "image_attachment",
+                "image_id": image_id,
+                "data": base64.b64encode(image.data).decode("ascii"),
+                "content_type": image.content_type,
+            }
+        )
+
+    if message["role"] != "assistant" or isinstance(message["content"], str):
+        return payloads
+
     for block in message["content"]:
         if block.get("type") != "tool_use":
             continue
@@ -246,7 +296,7 @@ def _extract_payloads(messages: list[dict], engine) -> list[dict]:
 
     tool_results = _build_tool_results(messages)
     clips_by_id = _collect_audio_clips(engine, tool_results)
-    images_by_id = _collect_image_assets(engine, tool_results)
+    images_by_id = _collect_image_assets(engine, tool_results, messages)
     payloads: list[dict] = []
     for message in messages:
         payloads.extend(_payloads_for_message(message, tool_results, clips_by_id, images_by_id))
@@ -261,10 +311,13 @@ def _build_history_entries(rows: list[ConversationMessage], engine) -> list[dict
     mirrors how `POST /api/chat` already bundles a turn's reply text together
     with that turn's payloads in one response."""
 
-    messages = [{"role": row.role, "content": json.loads(row.content)} for row in rows]
+    messages = [
+        {"role": row.role, "content": json.loads(row.content), "image_id": row.image_id}
+        for row in rows
+    ]
     tool_results = _build_tool_results(messages)
     clips_by_id = _collect_audio_clips(engine, tool_results)
-    images_by_id = _collect_image_assets(engine, tool_results)
+    images_by_id = _collect_image_assets(engine, tool_results, messages)
 
     entries: list[dict] = []
     pending_payloads: list[dict] = []
@@ -341,7 +394,13 @@ def _apply_edit(session: Session, conversation_id: int, prior_rows: list) -> lis
 
 async def _get_access_token(email: str) -> str:
     """Return a fresh Google access token for `email`, refreshing it via
-    `google_docs.refresh_access_token` first if it has expired."""
+    `google_docs.refresh_access_token` first if it has expired.
+
+    Passed into `agent_core.run_turn` as a lazy `get_access_token` callable
+    rather than called eagerly here — only `fetch_google_doc` needs a Google
+    token, so a turn that never touches it shouldn't have to pay for (or can
+    fail on) a token refresh, and every other tool (including `search_images`)
+    would otherwise be blocked by an unrelated Google auth problem."""
 
     engine = get_engine()
     with Session(engine) as session:
@@ -387,20 +446,12 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
         )
 
     try:
-        access_token = await _get_access_token(email)
         result = await agent_core.run_turn(
             history,
             effective_message,
-            access_token=access_token,
+            get_access_token=functools.partial(_get_access_token, email),
             model_id=conversation.model,
         )
-    except HTTPException:
-        # _get_access_token raises this deliberately (e.g. 401 when there's
-        # no stored Google credential) — let it propagate as-is rather than
-        # burying a clean, already-meaningful status code inside the generic
-        # 500/bug-report path below, which is for genuinely unexpected
-        # failures only.
-        raise
     except Exception as exc:
         detail = f"{traceback.format_exc()}\n\nUser message: {body.message}"
         with Session(engine) as session:
@@ -444,13 +495,19 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
     serialized_history = [_serialize_message(message) for message in result["history"]]
     new_messages = serialized_history[len(prior_rows) :]
 
+    attached_image = None
     with Session(engine) as session:
-        for message in new_messages:
+        for index, message in enumerate(new_messages):
+            # Only the turn's own first message (Dylan's actual new user
+            # message, not a later tool-result carrier) can own the upload
+            # named by `body.image_id` — see `_collect_image_assets`'s
+            # message-level `image_id` handling.
             session.add(
                 ConversationMessage(
                     conversation_id=body.conversation_id,
                     role=message["role"],
                     content=json.dumps(message["content"]),
+                    image_id=body.image_id if index == 0 else None,
                 )
             )
         conversation = session.get(Conversation, body.conversation_id)
@@ -460,8 +517,20 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
         session.add(conversation)
         session.commit()
 
+        if body.image_id is not None:
+            image = session.get(ImageAsset, body.image_id)
+            if image is not None:
+                attached_image = {
+                    "type": "image_attachment",
+                    "image_id": image.id,
+                    "data": base64.b64encode(image.data).decode("ascii"),
+                    "content_type": image.content_type,
+                }
+
     return ChatResponse(
-        reply=result["reply"], payloads=_extract_payloads(new_messages, engine)
+        reply=result["reply"],
+        payloads=_extract_payloads(new_messages, engine),
+        attached_image=attached_image,
     )
 
 

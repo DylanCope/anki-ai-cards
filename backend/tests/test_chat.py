@@ -74,7 +74,7 @@ def _new_conversation_id() -> int:
 
 
 def _text_only_run_turn(reply_text: str):
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -134,7 +134,7 @@ def test_post_chat_with_image_id_appends_a_machine_readable_reference(monkeypatc
     conversation_id = _new_conversation_id()
     captured_messages = []
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         captured_messages.append(message)
         new_history = [
             *history,
@@ -165,7 +165,7 @@ def test_post_chat_without_image_id_leaves_message_unchanged(monkeypatch):
     conversation_id = _new_conversation_id()
     captured_messages = []
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         captured_messages.append(message)
         new_history = [
             *history,
@@ -184,12 +184,109 @@ def test_post_chat_without_image_id_leaves_message_unchanged(monkeypatch):
     assert captured_messages == ["hi there"]
 
 
+def test_post_chat_with_image_id_returns_and_persists_the_attachment(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        image = ImageAsset(content_type="image/png", data=b"upload-bytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(image)
+        image_id = image.id
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("ok"))
+
+    response = _authed_client().post(
+        "/api/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "use this on the card",
+            "image_id": image_id,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["attached_image"] == {
+        "type": "image_attachment",
+        "image_id": image_id,
+        "data": base64.b64encode(b"upload-bytes").decode("ascii"),
+        "content_type": "image/png",
+    }
+
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(ConversationMessage).order_by(ConversationMessage.id)
+        ).all()
+    assert rows[0].role == "user"
+    assert rows[0].image_id == image_id
+    # Only the turn's own new user message owns the attachment — not the
+    # assistant's reply persisted alongside it.
+    assert rows[1].image_id is None
+
+
+def test_post_chat_without_image_id_returns_no_attached_image(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("ok"))
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "hi there"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["attached_image"] is None
+
+
+def test_get_chat_history_returns_image_attachment_payload_on_the_user_turn_it_was_sent_with(
+    monkeypatch,
+):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        image = ImageAsset(content_type="image/png", data=b"upload-bytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(image)
+        image_id = image.id
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("Got it."))
+    authed = _authed_client()
+    authed.post(
+        "/api/chat",
+        json={
+            "conversation_id": conversation_id,
+            "message": "use this on the card",
+            "image_id": image_id,
+        },
+    )
+
+    response = authed.get("/api/chat/history", params={"conversation_id": conversation_id})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "role": "user",
+            "text": "use this on the card",
+            "payloads": [
+                {
+                    "type": "image_attachment",
+                    "image_id": image_id,
+                    "data": base64.b64encode(b"upload-bytes").decode("ascii"),
+                    "content_type": "image/png",
+                }
+            ],
+        },
+        {"role": "assistant", "text": "Got it.", "payloads": []},
+    ]
+
+
 def test_post_chat_second_call_only_persists_new_messages_and_reuses_history(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -227,7 +324,7 @@ def test_post_chat_keeps_separate_conversations_isolated(monkeypatch):
     conversation_b = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -268,7 +365,7 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
         session.refresh(clip_two)
         clip_ids = [clip_one.id, clip_two.id]
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -331,7 +428,7 @@ def test_post_chat_extracts_image_options_payload_for_search_images(monkeypatch)
         session.refresh(image_two)
         image_ids = [image_one.id, image_two.id]
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -392,7 +489,7 @@ def test_post_chat_extracts_image_options_payload_for_generate_image(monkeypatch
         session.refresh(image)
         image_ids = [image.id]
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -444,7 +541,7 @@ def test_post_chat_extracts_card_payload(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -536,7 +633,7 @@ def test_post_chat_edit_rejects_when_a_card_was_already_created(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -618,14 +715,40 @@ def test_post_chat_edit_with_no_prior_user_message_returns_a_clean_error(monkeyp
     assert response.status_code == 400
 
 
-def test_post_chat_refreshes_expired_access_token(monkeypatch):
+def test_post_chat_does_not_refresh_access_token_when_google_docs_not_used(monkeypatch):
+    # The fix this guards: access-token resolution used to run eagerly on
+    # every turn, so an unrelated dead/expired Google token could block
+    # tools (like search_images) that never touch Google Docs at all.
+    _seed_token(expired=True)
+    conversation_id = _new_conversation_id()
+    refresh_mock = AsyncMock(side_effect=AssertionError("should not be called"))
+    monkeypatch.setattr(chat_module.google_docs, "refresh_access_token", refresh_mock)
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("ok"))
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "hi"}
+    )
+
+    assert response.status_code == 200
+    refresh_mock.assert_not_awaited()
+
+
+def test_post_chat_refreshes_expired_access_token_when_google_docs_used(monkeypatch):
     _seed_token(expired=True)
     conversation_id = _new_conversation_id()
     refresh_mock = AsyncMock(
         return_value={"access_token": "at-refreshed", "expires_in": 3600}
     )
     monkeypatch.setattr(chat_module.google_docs, "refresh_access_token", refresh_mock)
-    monkeypatch.setattr(chat_module.agent_core, "run_turn", _text_only_run_turn("ok"))
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+        # Simulate the turn actually invoking fetch_google_doc, which is the
+        # only tool that needs a Google token.
+        token = await get_access_token()
+        assert token == "at-refreshed"
+        return {"history": [], "reply": "ok"}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
 
     response = _authed_client().post(
         "/api/chat", json={"conversation_id": conversation_id, "message": "hi"}
@@ -642,7 +765,7 @@ def test_post_chat_saves_bug_report_and_returns_500_without_traceback(monkeypatc
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
         raise httpx.HTTPStatusError(
             "Bad response", request=httpx.Request("POST", "http://x"), response=httpx.Response(500)
         )
@@ -676,7 +799,7 @@ def test_post_chat_failure_still_persists_the_turn(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -714,7 +837,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -723,7 +846,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
         "/api/chat", json={"conversation_id": conversation_id, "message": "first try"}
     )
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         captured_histories.append(history)
         return {
             "history": [
@@ -755,7 +878,7 @@ def test_list_and_get_bug_reports(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -796,7 +919,7 @@ def test_get_chat_history_returns_text_only_transcript(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -851,7 +974,7 @@ def test_get_chat_history_returns_payloads_alongside_the_turn_that_produced_them
         session.refresh(clip)
         clip_id = clip.id
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -923,7 +1046,7 @@ def test_get_chat_history_returns_image_options_payload_alongside_the_turn_that_
         session.refresh(image)
         image_id = image.id
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -986,7 +1109,7 @@ def test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1108,7 +1231,7 @@ def test_update_conversation_model_switches_which_provider_a_later_turn_uses(mon
     conversation_id = _new_conversation_id()
     captured_model_ids = []
 
-    async def run_turn(history, message, *, access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
         captured_model_ids.append(model_id)
         return {"history": [], "reply": "ok"}
 

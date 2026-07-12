@@ -60,7 +60,9 @@ async def test_dispatch_fetch_google_doc(monkeypatch):
     monkeypatch.setattr(tools.google_docs, "flatten_runs", flatten_mock)
 
     result = await tools.dispatch_tool(
-        "fetch_google_doc", {"document_id": "doc123"}, access_token="tok"
+        "fetch_google_doc",
+        {"document_id": "doc123"},
+        get_access_token=AsyncMock(return_value="tok"),
     )
 
     fetch_mock.assert_awaited_once_with("doc123", "tok")
@@ -140,7 +142,7 @@ async def test_dispatch_generate_audio_custom_voice(db, monkeypatch):
 async def test_dispatch_search_images(db, monkeypatch):
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
     mock = AsyncMock(return_value=[png_bytes, b"\xff\xd8\xffjpeg-bytes"])
-    monkeypatch.setattr(tools.google_image_search, "search_images", mock)
+    monkeypatch.setattr(tools.wikimedia_image_search, "search_images", mock)
 
     result = await tools.dispatch_tool("search_images", {"query": "shiba inu"})
 
@@ -156,7 +158,7 @@ async def test_dispatch_search_images(db, monkeypatch):
 @pytest.mark.asyncio
 async def test_dispatch_search_images_custom_n(db, monkeypatch):
     mock = AsyncMock(return_value=[b"\xff\xd8\xffjpeg-bytes"])
-    monkeypatch.setattr(tools.google_image_search, "search_images", mock)
+    monkeypatch.setattr(tools.wikimedia_image_search, "search_images", mock)
 
     await tools.dispatch_tool("search_images", {"query": "shiba inu", "n": 1})
 
@@ -166,7 +168,7 @@ async def test_dispatch_search_images_custom_n(db, monkeypatch):
 @pytest.mark.asyncio
 async def test_dispatch_search_images_no_results(db, monkeypatch):
     mock = AsyncMock(return_value=[])
-    monkeypatch.setattr(tools.google_image_search, "search_images", mock)
+    monkeypatch.setattr(tools.wikimedia_image_search, "search_images", mock)
 
     result = await tools.dispatch_tool("search_images", {"query": "asdfqwerzxcv"})
 
@@ -471,7 +473,12 @@ async def test_run_turn_passes_access_token_to_tools(db, monkeypatch):
     )
 
     with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "read the doc", access_token="tok-xyz", model_id="claude-opus-4-8")
+        await core.run_turn(
+            [],
+            "read the doc",
+            get_access_token=AsyncMock(return_value="tok-xyz"),
+            model_id="claude-opus-4-8",
+        )
 
     fetch_mock.assert_awaited_once_with("abc", "tok-xyz")
 

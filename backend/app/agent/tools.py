@@ -12,18 +12,20 @@ the model's tool input.
 
 import base64
 import mimetypes
+from collections.abc import Awaitable, Callable
 
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, elevenlabs, gemini_images, google_docs, google_image_search
+from app.clients import ankiconnect, elevenlabs, gemini_images, google_docs, wikimedia_image_search
 from app.models import AudioClip, ImageAsset, get_engine
 
-# Magic-byte prefixes for the image formats Google Image Search results (or
-# an uploaded file) are realistically going to be. ImageAsset.content_type
-# is required, but google_image_search.search_images only returns raw bytes
-# (no per-result content-type is reliably available from the Custom Search
-# API response), so it's sniffed here instead of trusted from a header.
+# Magic-byte prefixes for the image formats a Wikimedia Commons search
+# result (or an uploaded file) are realistically going to be.
+# ImageAsset.content_type is required, but wikimedia_image_search.search_images
+# only returns raw bytes (no per-result content-type is reliably available
+# from the Commons search API response), so it's sniffed here instead of
+# trusted from a header.
 _IMAGE_MAGIC_BYTES: list[tuple[bytes, str]] = [
     (b"\xff\xd8\xff", "image/jpeg"),
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -188,11 +190,14 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "name": "search_images",
         "description": (
-            "Search the web for candidate images matching a query (e.g. to "
-            "illustrate a card), so Dylan can pick the best one — same "
-            "choice-then-attach pattern as generate_audio. Returns "
-            "image_ids (not the raw images); once Dylan picks one, pass its "
-            "image_id into create_anki_note's picture argument to attach it."
+            "Search Wikimedia Commons for candidate images matching a query "
+            "(e.g. to illustrate a card), so Dylan can pick the best one — "
+            "same choice-then-attach pattern as generate_audio. Good for "
+            "well-known subjects (animals, places, historical/educational "
+            "topics); less reliable for niche or branded content — "
+            "generate_image may work better for those. Returns image_ids "
+            "(not the raw images); once Dylan picks one, pass its image_id "
+            "into create_anki_note's picture argument to attach it."
         ),
         "input_schema": {
             "type": "object",
@@ -244,10 +249,10 @@ TOOL_SCHEMAS: list[dict] = [
         "name": "save_workflow_spec",
         "description": (
             "Save (or update) a named, reusable workflow spec describing how "
-            "to handle a source — e.g. how the lesson doc is laid out, how "
-            "corrections are found, and how fields map onto the note type — "
-            "so a future session can offer to reuse it instead of starting "
-            "from scratch."
+            "to handle a recurring source or card format — e.g. how a "
+            "particular doc is laid out, how corrections are found, or how "
+            "fields map onto a note type — so a future session can offer to "
+            "reuse it instead of starting from scratch."
         ),
         "input_schema": {
             "type": "object",
@@ -287,14 +292,18 @@ TOOL_SCHEMAS: list[dict] = [
 
 
 async def dispatch_tool(
-    name: str, tool_input: dict, *, access_token: str | None = None
+    name: str,
+    tool_input: dict,
+    *,
+    get_access_token: Callable[[], Awaitable[str]] | None = None,
 ) -> object:
     """Execute a tool_use call against the underlying client and return a
     JSON-serializable result to send back as the tool_result content."""
 
     if name == "fetch_google_doc":
-        if not access_token:
-            raise ValueError("fetch_google_doc requires an access_token")
+        if get_access_token is None:
+            raise ValueError("fetch_google_doc requires get_access_token")
+        access_token = await get_access_token()
         doc_json = await google_docs.fetch_document(
             tool_input["document_id"], access_token
         )
@@ -369,7 +378,7 @@ async def dispatch_tool(
 
     if name == "search_images":
         n = tool_input.get("n", 3)
-        images = await google_image_search.search_images(tool_input["query"], n=n)
+        images = await wikimedia_image_search.search_images(tool_input["query"], n=n)
         engine = get_engine()
         image_ids = []
         with Session(engine) as session:

@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Pencil } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ChatHistoryEntry } from "@/app/lib/types";
+import type { ChatHistoryEntry, ImageAttachmentPayload } from "@/app/lib/types";
+import ImageLightbox from "@/app/components/ImageLightbox";
 
 const EDIT_TEXTAREA_MAX_HEIGHT_PX = 200;
 
@@ -58,6 +59,7 @@ interface Props {
   isLastUserMessage?: boolean;
   editable?: boolean;
   onSave?: (text: string) => void;
+  imageAttachment?: ImageAttachmentPayload;
 }
 
 export default function MessageBubble({
@@ -65,12 +67,17 @@ export default function MessageBubble({
   isLastUserMessage = false,
   editable = false,
   onSave,
+  imageAttachment,
 }: Props) {
   const isUser = message.role === "user";
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(message.text);
   const [showTooltip, setShowTooltip] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachmentSrc = imageAttachment
+    ? `data:${imageAttachment.content_type};base64,${imageAttachment.data}`
+    : null;
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -107,6 +114,27 @@ export default function MessageBubble({
             : "bg-surface text-foreground border border-border"
         }`}
       >
+        {attachmentSrc && (
+          <button
+            type="button"
+            onClick={() => setLightboxOpen(true)}
+            className={`block overflow-hidden rounded-lg ${message.text ? "mb-2" : ""}`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- variable-format base64 data URI, not a fit for next/image */}
+            <img
+              src={attachmentSrc}
+              alt="Attached"
+              className="h-40 w-40 object-cover transition-opacity hover:opacity-90"
+            />
+          </button>
+        )}
+        {lightboxOpen && attachmentSrc && (
+          <ImageLightbox
+            src={attachmentSrc}
+            alt="Attached image"
+            onClose={() => setLightboxOpen(false)}
+          />
+        )}
         {showPencil && !isEditing && (
           <div className="absolute -top-2 -right-2">
             <button

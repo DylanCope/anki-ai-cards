@@ -8,6 +8,7 @@ import type {
   ChatResponseBody,
   ChatTurn,
   Conversation,
+  ImageAttachmentPayload,
   ModelInfo,
 } from "@/app/lib/types";
 import MessageBubble from "@/app/components/MessageBubble";
@@ -311,10 +312,22 @@ export default function ChatApp() {
         return;
       }
       const body = (await res.json()) as ChatResponseBody;
-      setTurns((prev) => [
-        ...prev,
-        { message: { role: "assistant", text: body.reply }, payloads: body.payloads },
-      ]);
+      setTurns((prev) => {
+        // The just-sent user turn was appended optimistically above, before
+        // this attachment (if any) was known — attach it now so it renders
+        // with the message it belongs to, not the assistant's reply.
+        const withAttachment = body.attached_image
+          ? prev.map((turn, i) =>
+              i === prev.length - 1
+                ? { ...turn, payloads: [...turn.payloads, body.attached_image!] }
+                : turn
+            )
+          : prev;
+        return [
+          ...withAttachment,
+          { message: { role: "assistant", text: body.reply }, payloads: body.payloads },
+        ];
+      });
       // The turn may have set the conversation's title (from its first
       // message) and bumped its updated_at — refresh the list so the
       // sidebar reflects that without a full reload.
@@ -442,46 +455,56 @@ export default function ChatApp() {
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
           <div className="mx-auto flex w-full max-w-3xl flex-col space-y-4">
-            {turns.map((turn, index) => (
-              <div key={index}>
-                <MessageBubble
-                  message={turn.message}
-                  isLastUserMessage={index === lastUserTurnIndex}
-                  editable={lastUserMessageEditable}
-                  onSave={(text) => editMessage(index, text)}
-                />
-                {turn.payloads.map((payload, payloadIndex) => {
-                  if (payload.type === "audio_options") {
+            {turns.map((turn, index) => {
+              const imageAttachment = turn.payloads.find(
+                (payload): payload is ImageAttachmentPayload =>
+                  payload.type === "image_attachment"
+              );
+              return (
+                <div key={index}>
+                  <MessageBubble
+                    message={turn.message}
+                    isLastUserMessage={index === lastUserTurnIndex}
+                    editable={lastUserMessageEditable}
+                    onSave={(text) => editMessage(index, text)}
+                    imageAttachment={imageAttachment}
+                  />
+                  {turn.payloads.map((payload, payloadIndex) => {
+                    // Rendered inside MessageBubble above instead, alongside
+                    // the message it was attached to.
+                    if (payload.type === "image_attachment") return null;
+                    if (payload.type === "audio_options") {
+                      return (
+                        <AudioOptionsCard
+                          key={payloadIndex}
+                          payload={payload}
+                          onPick={sendMessage}
+                          disabled={sending}
+                        />
+                      );
+                    }
+                    if (payload.type === "image_options") {
+                      return (
+                        <ImageOptionsCard
+                          key={payloadIndex}
+                          payload={payload}
+                          onPick={sendMessage}
+                          disabled={sending}
+                        />
+                      );
+                    }
                     return (
-                      <AudioOptionsCard
+                      <CardPayloadCard
                         key={payloadIndex}
                         payload={payload}
-                        onPick={sendMessage}
+                        onRequestChange={setInput}
                         disabled={sending}
                       />
                     );
-                  }
-                  if (payload.type === "image_options") {
-                    return (
-                      <ImageOptionsCard
-                        key={payloadIndex}
-                        payload={payload}
-                        onPick={sendMessage}
-                        disabled={sending}
-                      />
-                    );
-                  }
-                  return (
-                    <CardPayloadCard
-                      key={payloadIndex}
-                      payload={payload}
-                      onRequestChange={setInput}
-                      disabled={sending}
-                    />
-                  );
-                })}
-              </div>
-            ))}
+                  })}
+                </div>
+              );
+            })}
             {sending && <TypingIndicator />}
             <div ref={bottomRef} />
           </div>

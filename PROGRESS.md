@@ -14,6 +14,128 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-12 — Tasks 41 & 42: Wikimedia image search swap + lazy Google token resolution (recovered from an interrupted iteration)
+- Did: this session found tasks 41 and 42 already fully implemented and
+  locally verified (186 backend tests passing, frontend build/lint clean) in
+  the working tree, but **never committed** — PRD.md already had both boxes
+  checked and tasks 43-47 already appended, yet `PROGRESS.md` had no entries
+  for either and `git log` showed nothing past task 40. Bug reports 27/28 on
+  the live backend (both dated earlier today, both Google
+  `invalid_grant`/400 errors from `oauth2.googleapis.com/token`) are
+  consistent with that prior iteration reproducing task 42's bug against
+  production before writing the fix. Rather than discard finished, tested
+  work, this session verified it end-to-end (see below) and committed it,
+  then moved on to its own task (43) separately.
+  - **Task 41** (`search_images`: Google Custom Search → Wikimedia Commons):
+    `backend/app/clients/google_image_search.py` deleted, replaced by
+    `backend/app/clients/wikimedia_image_search.py` (`search_images(query,
+    n=3) -> list[bytes]` against `commons.wikimedia.org/w/api.php`,
+    `generator=search&gsrnamespace=6` + `filetype:bitmap|drawing`). `tools.py`
+    dispatch and tool description updated to match (narrower-coverage
+    wording so the agent can choose `search_images` vs. `generate_image`
+    sensibly). `.env.example`/`AGENTS.md` no longer mention
+    `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_ID`. Tests: `test_wikimedia_image_search.py`
+    replaces `test_google_image_search.py`; `test_agent.py`'s dispatch tests
+    updated to patch the new client.
+  - **Task 42** (lazy Google token resolution): `agent_core.run_turn` and
+    `tools.dispatch_tool` now take `get_access_token: Callable[[],
+    Awaitable[str]] | None` instead of a pre-resolved `access_token: str`;
+    `dispatch_tool` only calls it inside the `fetch_google_doc` branch, so a
+    turn that never calls that tool never triggers `_get_access_token`'s
+    DB-lookup/refresh call. `post_chat` passes `functools.partial(
+    _get_access_token, email)`. Removed the now-dead `except HTTPException:
+    raise` in `post_chat` (nothing in that block raises `HTTPException`
+    anymore — a lazy-resolution failure now surfaces as a normal `is_error`
+    tool_result). Tests updated in `test_agent.py`/`test_chat.py` for the
+    callable-based signature.
+  - **Bonus, undocumented-as-a-task scope found bundled in the same diff**:
+    inline rendering of an uploaded image attachment in the chat transcript.
+    Previously an uploaded image (`ChatRequest.image_id`, task 35) was only
+    referenced by a machine-readable text suffix the agent could see —
+    Dylan himself had no visual confirmation of what he'd attached, before
+    or after a reload. Fix: `ConversationMessage` gained a nullable
+    `image_id` column (new `_add_conversation_message_image_id_column_if_missing`
+    migration helper, same idempotent-`ALTER TABLE` pattern as the existing
+    `conversation`/`model` column helpers) recording which upload (if any) a
+    given user message carried; `ChatResponse` gained `attached_image: dict
+    | None`; `_payloads_for_message`/`_collect_image_assets` now also treat a
+    message's own `image_id` as an image source (not just a tool's
+    `image_ids`), emitting a `{"type": "image_attachment", ...}` payload.
+    `_display_text` now strips the machine-readable `(Attached image_id: N
+    ...)` suffix before display (still kept in the persisted/model-facing
+    content) since the image itself now renders visually instead. Frontend:
+    new `ImageLightbox.tsx` (click-to-enlarge modal, Escape/backdrop-click to
+    close), `MessageBubble.tsx` renders a thumbnail + lightbox when
+    `imageAttachment` is passed, `ChatApp.tsx` reads `body.attached_image`
+    from the chat response and attaches it to the just-sent user turn (not
+    the assistant's reply) before appending. `types.ts` gained
+    `ImageAttachmentPayload`. This is real, tested functionality (see
+    Verified) that a future PROGRESS reader should treat as already covering
+    "make an uploaded image visible in the chat" — don't re-derive it as a
+    new task.
+  - Also bundled (harmless, unrelated to any specific task number):
+    `backend/app/agent/prompts.py`'s `SYSTEM_PROMPT` rewritten from a
+    numbered "Workflow: 1,2,3..." fixed pipeline into a "toolbox, not a
+    fixed pipeline" framing with a "Your tools:" bullet list — consistent
+    with Dylan's known preference for agent flexibility over hardcoded
+    pipelines (see the project's own auto-memory notes on this). A small
+    `SignIn.tsx` copy tweak (removed a now-stale "Google account that has
+    access to your lesson doc and Anki collection" sentence, since sources
+    are no longer doc-only per the same prompt rewrite).
+- Verified:
+  - `cd backend && uv run pytest` → 186 passed.
+  - `cd frontend && npm run build && npm run lint` → both pass, no new
+    warnings.
+  - Deploy-and-verify (both apps — task 41/42 are backend-only per their own
+    Verify lines, but the bundled image-attachment feature touches the
+    frontend too, so deployed both): `fly deploy` from `backend/` succeeded,
+    `fly status -a anki-ai-cards-backend` → `1 total, 1 passing`, `curl
+    .../health` → `200`. `fly deploy` from `frontend/` succeeded, `fly
+    status -a anki-ai-cards-frontend` → machine reachable (`curl
+    https://anki-ai-cards-frontend.fly.dev/` → `200`; scales to zero between
+    requests by design, unlike the backend). Both `fly logs --no-tail` skims
+    clean, no new errors.
+  - **Real end-to-end verification against production, not mocks:**
+    - Task 41: `fly ssh console -a anki-ai-cards-backend` running
+      `wikimedia_image_search.search_images("Mount Fuji", n=3)` directly
+      returned 3 real images (160514/64108/81500 bytes) — confirms the live
+      Commons API integration works end to end in production.
+    - Task 42: created a fresh conversation via `POST /api/conversations`,
+      `PATCH`ed its `model` to `gemini-3.1-flash-lite` (the Anthropic
+      billing blocker documented in tasks 36/37 is still open, so this is
+      the same PATCH-to-Gemini workaround task 37's entry established), sent
+      a plain "say hi, no tools needed" message — got a normal 200 reply,
+      and `GET /api/bug-reports` still ends at id 28 (no new bug report
+      filed). This is the actual regression test for the bug: bug reports 27
+      and 28 (both dated earlier today, both Google token 400s) show a
+      no-Google-Docs-tool turn *used to* fail before this fix was deployed;
+      after deploying it, an equivalent turn succeeds without touching
+      Google at all.
+- Learned:
+  - **When a fresh iteration finds uncommitted work already sitting in the
+    tree that isn't accounted for in `PROGRESS.md`, don't discard it** —
+    check whether it's genuinely complete (tests pass, matches what PRD.md's
+    checked boxes claim) before assuming it's broken or abandoned. This
+    session's uncommitted diff turned out to be finished, tested work from
+    an iteration that was interrupted before its final `git add -A && git
+    commit`/`PROGRESS.md` write step.
+  - The Anthropic account billing blocker (credit balance too low) is still
+    open as of this session — the PATCH-conversation-model-to-Gemini
+    workaround (first used in task 37) remains the way to get a real
+    live-agent verification done without it.
+  - Bug reports 27/28 (Google `invalid_grant`/400 on `oauth2.googleapis.com/
+    token`, both from earlier today) are now historical evidence of the
+    exact bug task 42 fixes, not a live problem — Dylan's Google OAuth
+    consent screen is still in Testing mode (7-day refresh-token expiry, per
+    task 42's original PRD text), so this specific *symptom* (an expired
+    refresh token existing at all) will recur periodically until that's
+    published/verified, but it will no longer block unrelated tools when it
+    does.
+  - Task 43 (generalize `AudioClip` with a `source` field) is the next
+    highest-priority unchecked task and is independent of this entry's work.
+
+---
+
 ## 2026-07-11 — Task 40: Docs + verification checklist update for image support
 - Did:
   - `docs/manual_verification.md`: added a new "8. Image support: upload,

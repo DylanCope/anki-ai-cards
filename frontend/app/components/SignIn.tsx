@@ -6,8 +6,7 @@ export default function SignIn() {
       </div>
       <h1 className="text-xl font-bold">Anjo</h1>
       <p className="max-w-sm text-center text-sm text-foreground/60">
-        Sign in with the Google account that has access to your lesson doc and
-        Anki collection.
+        Sign in with the Google account.
       </p>
       <a
         href="/auth/google/login"

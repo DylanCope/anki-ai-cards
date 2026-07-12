@@ -50,7 +50,18 @@ export interface ImageOptionsPayload {
   content_types: string[];
 }
 
-export type ChatPayload = AudioOptionsPayload | CardPayload | ImageOptionsPayload;
+export interface ImageAttachmentPayload {
+  type: "image_attachment";
+  image_id: number;
+  data: string;
+  content_type: string;
+}
+
+export type ChatPayload =
+  | AudioOptionsPayload
+  | CardPayload
+  | ImageOptionsPayload
+  | ImageAttachmentPayload;
 
 export interface ChatTurn {
   message: ChatHistoryEntry;
@@ -60,6 +71,7 @@ export interface ChatTurn {
 export interface ChatResponseBody {
   reply: string;
   payloads: ChatPayload[];
+  attached_image: ImageAttachmentPayload | null;
 }
 
 export interface ChatErrorDetail {

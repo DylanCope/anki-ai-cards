@@ -42,6 +42,11 @@ class ConversationMessage(SQLModel, table=True):
     )
     role: str
     content: str
+    # Set only on the one user message a given `POST /api/chat` call attached
+    # an upload to (via `ChatRequest.image_id`) — lets the chat transcript
+    # render that image inline with the message it was sent with, even after
+    # a page reload. See app.api.chat's image_id handling.
+    image_id: int | None = Field(default=None, foreign_key="imageasset.id")
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -154,6 +159,25 @@ def _add_conversation_model_column_if_missing(engine) -> None:
             conn.commit()
 
 
+def _add_conversation_message_image_id_column_if_missing(engine) -> None:
+    """Same rationale as `_add_conversation_id_column_if_missing` — the
+    `image_id` column (added so an uploaded image renders inline with the
+    message it was sent with, see app.api.chat) needs its own ALTER TABLE on
+    an already-deployed `conversationmessage` table. Existing rows backfill
+    to NULL, which just means older messages render exactly as they do
+    today (no attachment)."""
+
+    with engine.connect() as conn:
+        columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(conversationmessage)")
+        }
+        if "image_id" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conversationmessage ADD COLUMN image_id INTEGER"
+            )
+            conn.commit()
+
+
 def _backfill_legacy_conversation(engine) -> None:
     """Any ConversationMessage row with no conversation_id predates the
     multi-conversation feature — group them all into one real Conversation
@@ -181,5 +205,6 @@ def init_db():
     SQLModel.metadata.create_all(engine)
     _add_conversation_id_column_if_missing(engine)
     _add_conversation_model_column_if_missing(engine)
+    _add_conversation_message_image_id_column_if_missing(engine)
     _backfill_legacy_conversation(engine)
     return engine

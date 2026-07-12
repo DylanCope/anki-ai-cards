@@ -11,6 +11,7 @@ that's also what gets persisted and re-parsed by `app.api.chat`.
 """
 
 import json
+from collections.abc import Awaitable, Callable
 
 from app.agent import workflow_specs
 from app.agent.model_registry import get_model
@@ -54,17 +55,19 @@ async def run_turn(
     history: list[dict],
     message: str,
     *,
-    access_token: str | None = None,
+    get_access_token: Callable[[], Awaitable[str]] | None = None,
     model_id: str,
 ) -> dict:
     """Run one user turn to completion, returning the updated history and
     the assistant's final text reply.
 
-    `access_token` is the caller's Google OAuth access token, threaded
-    through to tools (like `fetch_google_doc`) that need it — it is never
-    read from the model's tool input. `model_id` selects which model (and
-    therefore which provider adapter) drives this turn — see
-    `app.agent.model_registry`.
+    `get_access_token` lazily resolves the caller's Google OAuth access
+    token (refreshing it if needed) — threaded through to tools (like
+    `fetch_google_doc`) that need it, and only called if one of them is
+    actually invoked this turn, so a turn that never touches Google Docs
+    never pays for (or can fail on) a token refresh. It is never read from
+    the model's tool input. `model_id` selects which model (and therefore
+    which provider adapter) drives this turn — see `app.agent.model_registry`.
     """
 
     provider_module = _PROVIDER_MODULES[get_model(model_id).provider]
@@ -93,7 +96,7 @@ async def run_turn(
                 continue
             try:
                 result = await dispatch_tool(
-                    block.name, block.input, access_token=access_token
+                    block.name, block.input, get_access_token=get_access_token
                 )
             except Exception as exc:
                 # Surface the failure back to the model as an error tool_result

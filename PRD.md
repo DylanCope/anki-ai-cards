@@ -55,18 +55,20 @@ anyone else at the callback. Store tokens in the `OAuthToken` table.
 - `DEV_API_KEY` (optional) — bearer-token bypass for session-cookie auth, used
   by `backend/scripts/smoke_test_chat.py` and the Ralph loop to call the API
   without a browser OAuth flow. Unset disables the bypass entirely.
-- `GOOGLE_CSE_API_KEY` / `GOOGLE_CSE_ID` — Google Custom Search JSON API,
-  used by the `search_images` tool (task 36) for image search. `GOOGLE_CSE_ID`
-  requires a one-time manual setup step in Google's Programmable Search
-  Engine console (configured for image search) — Dylan's manual step, same
-  category as the AnkiWeb VNC login; the loop only wires the env var through.
-  **That console step alone isn't sufficient** — the Google Cloud project
-  backing `GOOGLE_CSE_API_KEY` also separately needs the "Custom Search JSON
-  API" enabled in Google Cloud Console (APIs & Services > Library), or every
-  call 403s with `"This project does not have the access to Custom Search
-  JSON API."` (confirmed against the real API during task 36 — both secrets
-  are already set on the deployed backend, but live search still fails on
-  this until the API is enabled) — also Dylan's manual step.
+- No env var is needed for `search_images` (task 41) — it calls Wikimedia
+  Commons' public search API directly, which requires no API key/quota.
+  (An earlier version, task 36, used `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_ID`
+  against Google Custom Search JSON API; that API turned out to be closed to
+  new Google Cloud customers as of 2025 — confirmed 403 against the real API
+  across two separate GCP projects and three separate keys, all otherwise
+  correctly configured — and is being fully retired 2027-01-01. See task 41.)
+- `FORVO_API_KEY` — Forvo's word-pronunciation API, used by
+  `search_word_pronunciations` (task 45). Manual signup at Forvo's developer
+  portal (Dylan's step, not the loop's) — same category as
+  `ELEVENLABS_API_KEY`.
+- No env var is needed for `search_example_sentences` (task 44, Tatoeba's
+  public search API) or `search_dictionary` (task 46, Jisho.org's public API
+  plus the local `wordfreq` package) — both keyless.
 
 **Anki hosting:** headless Anki + AnkiConnect via the `ankimcp/headless-anki`
 Docker image, deployed as its own Fly.io app with a persistent volume. Logged
@@ -715,6 +717,188 @@ task 20) for whichever app(s) each task touches.
   frontend && npm run build && npm run lint` should still pass unchanged as
   a regression check.
 
+- [x] **41. Backend: swap `search_images` from Google Custom Search to
+  Wikimedia Commons.** Depends on task 36. Task 36's Google Custom Search
+  JSON API client turned out to be a dead end: Google closed it to new
+  Cloud customers as of 2025 (it's also being fully retired 2027-01-01), so
+  every request 403'd with `"This project does not have the access to
+  Custom Search JSON API"` regardless of project/billing/key state —
+  confirmed directly against the real API via `fly ssh console`, across two
+  separate GCP projects and three separate API keys, ruling out
+  configuration error. Vertex AI Search was considered as a replacement but
+  also ruled out: its image search requires "advanced website indexing",
+  which requires verifying ownership of every indexed domain via Google
+  Search Console — impossible for third-party sites like the ones the old
+  Programmable Search Engine covered (`*.unsplash.com/*`,
+  `*.pexels.com/*`, `*.pixabay.com/*`, `*.wikipedia.org/*`,
+  `*.irasutoya.com/*`). Replaced `backend/app/clients/google_image_search.py`
+  with `backend/app/clients/wikimedia_image_search.py`:
+  `search_images(query: str, n: int = 3) -> list[bytes]` against Wikimedia
+  Commons' public MediaWiki search API (`GET https://commons.wikimedia.org/
+  w/api.php` with `action=query&generator=search&gsrnamespace=6` (File:) +
+  `filetype:bitmap|drawing` to exclude audio/video/PDF, `prop=imageinfo&
+  iiprop=url`), downloading each result via `httpx` — no API key/quota
+  needed, per Dylan's call not to add another paid per-site API for the
+  other four sites. Updated `TOOL_SCHEMAS`/`dispatch_tool` in `backend/app/
+  agent/tools.py` to call the new client and describe the narrower coverage
+  (well-known/reference subjects, not niche or branded content) so the
+  agent can choose between `search_images` and `generate_image` sensibly.
+  Removed `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_ID` from `.env.example` and
+  `AGENTS.md` (no longer needed) — the same-named Fly secrets on the
+  deployed backend are now dead and can be unset. Tests: replaced
+  `test_google_image_search.py` with `test_wikimedia_image_search.py`
+  (mocked Commons search + image-download calls via `respx`, covering
+  success, no-results, HTTP error, API-level error, and download-failure
+  cases); updated `test_agent.py`'s `search_images` dispatch tests to patch
+  the new client. Verify: `cd backend && uv run pytest` passes;
+  deploy-and-verify (backend only) — confirm a real `search_images` call
+  against Wikimedia Commons returns real image results in production.
+
+- [x] **42. Backend: resolve the Google access token lazily, only when
+  `fetch_google_doc` is actually invoked.** Found while verifying task 41:
+  `backend/app/api/chat.py`'s `post_chat` used to call `_get_access_token`
+  (which refreshes the stored Google OAuth token if expired) unconditionally
+  on every turn, before running the agent at all — so a dead/expired Google
+  refresh token (e.g. `invalid_grant` after the OAuth consent screen's
+  Testing-mode 7-day refresh-token expiry) filed a bug report and blocked
+  *every* tool, including ones with nothing to do with Google Docs like
+  `search_images`. Changed `agent_core.run_turn` and `tools.dispatch_tool`
+  to take a `get_access_token: Callable[[], Awaitable[str]] | None` instead
+  of a plain `access_token: str`; `dispatch_tool` only calls it inside the
+  `fetch_google_doc` branch, so `_get_access_token`'s DB lookup/refresh
+  network call now only happens for a turn that actually calls that tool.
+  `post_chat` passes `functools.partial(_get_access_token, email)` rather
+  than an already-resolved token; removed the now-dead
+  `except HTTPException: raise` special case this made obsolete (nothing in
+  that `try` block raises `HTTPException` anymore — a lazy-resolution
+  failure now surfaces as a normal `is_error` tool_result the agent can
+  explain to Dylan, same as any other tool failure, via `run_turn`'s
+  existing per-tool `except Exception` handling). Tests: updated
+  `test_agent.py`'s `fetch_google_doc`/`run_turn` tests for the new
+  callable-based signature; replaced `test_chat.py`'s
+  `test_post_chat_refreshes_expired_access_token` with two tests — one
+  confirming no refresh call happens when the turn's fake `run_turn` never
+  calls `get_access_token` (the bug this fixes), one confirming a refresh
+  still happens correctly when it does. Verify: `cd backend && uv run
+  pytest` passes; deploy-and-verify (backend only).
+
+### Tatoeba/Forvo/dictionary tools (tasks 43-47)
+
+Three more tools for the inner agent, all in the same "real/native source
+beats an LLM guess" spirit as tasks 36/37's image tools: real example
+sentences and native audio from Tatoeba, real native pronunciation from
+Forvo, and real dictionary meanings/frequency from Jisho + `wordfreq`,
+instead of the agent inventing example sentences, relying solely on
+ElevenLabs TTS, or trusting its own definition/frequency knowledge. All
+three are Japanese-only for now (see Out of scope); no caching, no new
+frontend UI — results surface via the agent's chat replies same as
+`fetch_google_doc`, except audio which follows the existing
+choice-then-attach `clip_id` pattern.
+
+- [ ] **43. Backend: generalize `AudioClip` with a `source` field.**
+  Independent scaffolding task, unblocks tasks 44-45. `backend/app/
+  models.py`: add `source: str` to `AudioClip` (values `"generate"` /
+  `"tatoeba"` / `"forvo"`), following `ImageAsset.source`'s existing
+  pattern. `voice` stays a required `str` (not made nullable) — for
+  `"tatoeba"`/`"forvo"` clips it holds the sentence's/pronunciation's
+  contributor or speaker attribution (Tatoeba username, Forvo username)
+  when available, or a fixed placeholder like `"native"` when not, so no
+  SQLite column-nullability migration is needed. Add the column via this
+  project's existing no-migration-framework convention: an idempotent
+  `ALTER TABLE audioclip ADD COLUMN source TEXT NOT NULL DEFAULT 'generate'`
+  in `init_db()` (see the `conversation`/`conversationmessage` tables'
+  existing `ALTER TABLE` calls in `app/models.py` for the pattern), so
+  existing ElevenLabs clips backfill correctly. Update `tools.py`'s
+  `generate_audio` dispatch to pass `source="generate"` explicitly. Tests:
+  a new/updated `test_models.py` case confirming the column exists with the
+  right default for pre-existing rows, and that `dispatch_tool`'s
+  `generate_audio` path still stores `source="generate"`. Verify: `cd
+  backend && uv run pytest` passes.
+
+- [ ] **44. Backend: `search_example_sentences` tool via Tatoeba.** Depends
+  on task 43. `backend/app/clients/tatoeba.py`: `search_sentences(query:
+  str, n: int = 5) -> list[dict]` against Tatoeba's public search API (`GET
+  https://tatoeba.org/en/api_v0/search` — confirm the exact current
+  endpoint/response shape against the real API rather than assuming from
+  training data, the same way `gemini_images.py`'s model-id comment already
+  did for a different API), filtered to Japanese sentences with English
+  translations. Each result: `{"japanese": str, "english": str | None,
+  "audio_id": int | None}` — `audio_id` is an `AudioClip(source="tatoeba")`
+  id (`voice` set to the audio's Tatoeba contributor username if present,
+  else `"native"`), set only when Tatoeba has native audio for that
+  sentence, downloaded via `httpx`. Add a `search_example_sentences` tool to
+  `TOOL_SCHEMAS`/`dispatch_tool`: takes `query` (and optional `n`, default
+  5), returns `{"sentences": [...]}` with each sentence's `audio_id` (not
+  raw audio) so a chosen sentence's audio can be attached via
+  `create_anki_note`'s existing `audio` argument, same as
+  `generate_audio`/`clip_id`. No API key required. Tests mock the Tatoeba
+  HTTP call(s) with `respx`, covering: a sentence with audio, a sentence
+  without audio, and a no-results query. Verify: `cd backend && uv run
+  pytest` passes; deploy-and-verify (backend only) — confirm a real search
+  against Tatoeba returns real sentences (and at least one with audio) in
+  production.
+
+- [ ] **45. Backend: `search_word_pronunciations` tool via Forvo.** Depends
+  on task 43, independent of task 44. New env var `FORVO_API_KEY` (Dylan's
+  manual signup step at Forvo's developer portal — document in
+  `.env.example` and `AGENTS.md`'s Conventions, same category as
+  `ELEVENLABS_API_KEY`). `backend/app/clients/forvo.py`:
+  `search_pronunciations(word: str, n: int = 3) -> list[bytes]` (mirroring
+  `google_image_search`/`wikimedia_image_search`'s "return N raw options"
+  shape) against Forvo's `word-pronunciations` API action, hardcoded to
+  Japanese (`language=ja`), sorted by Forvo's vote/rating count descending,
+  downloading the top `n` audio files via `httpx`. Surface each
+  pronunciation's speaker username alongside its bytes so `dispatch_tool`
+  can set `AudioClip(source="forvo", voice=<speaker_username or "native">)`.
+  Add a `search_word_pronunciations` tool to `TOOL_SCHEMAS`/`dispatch_tool`:
+  takes `word` (and optional `n`, default 3), stores each result as an
+  `AudioClip(source="forvo")`, returns `{"clip_ids": [...]}` — same
+  choice-then-attach pattern as `generate_audio`. Tests mock the Forvo HTTP
+  call(s) with `respx` (`FORVO_API_KEY` set via `monkeypatch.setenv`),
+  covering success, no-results, and an API-error case. Verify: `cd backend
+  && uv run pytest` passes; deploy-and-verify (backend only) — confirm a
+  real lookup against Forvo returns real pronunciation audio in production,
+  once `FORVO_API_KEY` is set as a Fly secret (Dylan's manual step).
+
+- [ ] **46. Backend: `search_dictionary` tool via Jisho + wordfreq.**
+  Independent of tasks 44-45. Add `wordfreq` to `backend/pyproject.toml` via
+  `uv add wordfreq`. `backend/app/clients/dictionary.py`: `search_words(query:
+  str, n: int = 3) -> list[dict]` against Jisho.org's public search API
+  (`GET https://jisho.org/api/v1/search/words`), returning up to `n` entries
+  shaped `{"word": str, "readings": [str, ...], "meanings": [str, ...],
+  "parts_of_speech": [str, ...], "is_common": bool, "frequency": float}` —
+  `frequency` is `wordfreq.zipf_frequency(word, "ja")` (local computation, no
+  network call), computed per result using the entry's most common written
+  form. No API key required. Add a `search_dictionary` tool to
+  `TOOL_SCHEMAS`/`dispatch_tool`: takes `query` (and optional `n`, default
+  3), returns `{"results": [...]}` directly — unlike the audio/image tools,
+  this is data the agent reads and uses (e.g. to write an accurate
+  definition field, or judge whether a word's worth a card), not media to
+  pick-and-attach, so no ids/storage involved. Tests mock the Jisho HTTP
+  call with `respx` and stub/monkeypatch `wordfreq.zipf_frequency` (real
+  Japanese frequency computation is fine to leave un-mocked if it's fast and
+  deterministic locally — confirm during implementation), covering a
+  multi-result query and a no-results query. Verify: `cd backend && uv run
+  pytest` passes; deploy-and-verify (backend only).
+
+- [ ] **47. Docs: system prompt + verification checklist for the new
+  tools.** Depends on tasks 44-46. Update `backend/app/agent/prompts.py`'s
+  `SYSTEM_PROMPT` "Your tools:" list to add `search_example_sentences`,
+  `search_word_pronunciations`, and `search_dictionary` (following the
+  existing bullet style task 42's rewrite established — see
+  `search_images`/`generate_image`'s entries for the pattern), and mention
+  in "General principles" that dictionary/frequency data is now available
+  to inform definitions and word choice rather than relying on the model's
+  own knowledge. Update `docs/manual_verification.md` with steps covering
+  all three new tools, ending in cards that use a Tatoeba sentence, Forvo
+  audio, and a dictionary-informed definition respectively. Confirm
+  `.env.example` and `AGENTS.md`'s Conventions section list `FORVO_API_KEY`
+  and the Forvo signup manual step (cross-check against task 45, same role
+  task 40 played for tasks 36-39). Verify: the docs accurately reflect the
+  built system (cross-check against tasks 43-46); no code changes expected,
+  so `cd backend && uv run pytest` and `cd frontend && npm run build && npm
+  run lint` should still pass unchanged as a regression check.
+
 ## Out of scope
 
 - Any source type other than the one Google Doc (no generic connector
@@ -764,3 +948,23 @@ task 20) for whichever app(s) each task touches.
 - Editing or replacing an image after it's been picked (tasks 35-39) — Dylan
   can create a new card or ask the agent to change it via chat, same
   "request a change" flow already used for card fields.
+- Non-Japanese languages for Tatoeba/Forvo/dictionary lookups (tasks 43-47)
+  — `search_word_pronunciations` hardcodes Forvo's language filter to
+  Japanese; `search_example_sentences` and `search_dictionary` are scoped to
+  this app's actual (Japanese-study) use case, not a general-purpose
+  multi-language lookup surface.
+- Caching Tatoeba/Forvo/dictionary responses (tasks 43-47) — every call hits
+  the real API/local computation fresh; not expected to be a problem at
+  Dylan's single-user usage volume.
+- Persisting dictionary/frequency lookups to the DB (tasks 43-47) — only
+  audio gets stored (as `AudioClip`), since only audio needs an id for
+  `create_anki_note` to attach later; dictionary data is read and used by
+  the agent in the moment, not referenced by id afterward.
+- Any new frontend UI for these tools (tasks 43-47) — results surface via
+  the agent's chat replies, same as `fetch_google_doc`; no dedicated
+  sentence/pronunciation/dictionary picker component like
+  `ImageOptionsCard`.
+- A numeric frequency rank sourced from a bundled/licensed corpus list
+  (tasks 43-47) — `wordfreq`'s built-in Japanese data is used instead
+  specifically to avoid sourcing, licensing, and hosting a separate
+  frequency dataset ourselves.
