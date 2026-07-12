@@ -860,7 +860,7 @@ choice-then-attach `clip_id` pattern.
   real lookup against Forvo returns real pronunciation audio in production,
   once `FORVO_API_KEY` is set as a Fly secret (Dylan's manual step).
 
-- [ ] **46. Backend: `search_dictionary` tool via Jisho + wordfreq.**
+- [x] **46. Backend: `search_dictionary` tool via Jisho + wordfreq.**
   Independent of tasks 44-45. Add `wordfreq` to `backend/pyproject.toml` via
   `uv add wordfreq`. `backend/app/clients/dictionary.py`: `search_words(query:
   str, n: int = 3) -> list[dict]` against Jisho.org's public search API

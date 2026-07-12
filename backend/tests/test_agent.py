@@ -280,6 +280,50 @@ async def test_dispatch_search_word_pronunciations_custom_n(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_search_dictionary(monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {
+                "word": "猫",
+                "readings": ["ねこ"],
+                "meanings": ["cat"],
+                "parts_of_speech": ["Noun"],
+                "is_common": True,
+                "frequency": 5.05,
+            }
+        ]
+    )
+    monkeypatch.setattr(tools.dictionary, "search_words", mock)
+
+    result = await tools.dispatch_tool("search_dictionary", {"query": "猫"})
+
+    mock.assert_awaited_once_with("猫", n=3)
+    assert result == {
+        "results": [
+            {
+                "word": "猫",
+                "readings": ["ねこ"],
+                "meanings": ["cat"],
+                "parts_of_speech": ["Noun"],
+                "is_common": True,
+                "frequency": 5.05,
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_dictionary_custom_n(monkeypatch):
+    mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.dictionary, "search_words", mock)
+
+    result = await tools.dispatch_tool("search_dictionary", {"query": "猫", "n": 1})
+
+    mock.assert_awaited_once_with("猫", n=1)
+    assert result == {"results": []}
+
+
+@pytest.mark.asyncio
 async def test_dispatch_generate_image(db, monkeypatch):
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
     mock = AsyncMock(return_value=[png_bytes, b"\xff\xd8\xffjpeg-bytes"])

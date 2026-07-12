@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
+from app.clients import ankiconnect, dictionary, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
 from app.models import AudioClip, ImageAsset, get_engine
 
 # Magic-byte prefixes for the image formats a Wikimedia Commons search
@@ -295,6 +295,32 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "search_dictionary",
+        "description": (
+            "Look up a Japanese word in Jisho's dictionary, so definitions "
+            "come from a real dictionary rather than the model's own "
+            "knowledge. Returns each match's readings, English meanings, "
+            "parts of speech, whether it's a common word, and a frequency "
+            "score (wordfreq's zipf scale, roughly 0-8, higher is more "
+            "frequent) to help judge whether a word is worth a card."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The Japanese word or phrase to look up.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of dictionary entries to return.",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "sync_anki",
         "description": "Trigger an AnkiConnect sync so newly created notes reach AnkiWeb, and from there Dylan's phone/desktop.",
         "input_schema": {"type": "object", "properties": {}},
@@ -514,6 +540,10 @@ async def dispatch_tool(
                 session.refresh(clip)
                 clip_ids.append(clip.id)
         return {"clip_ids": clip_ids}
+
+    if name == "search_dictionary":
+        n = tool_input.get("n", 3)
+        return {"results": await dictionary.search_words(tool_input["query"], n=n)}
 
     if name == "sync_anki":
         await ankiconnect.sync()

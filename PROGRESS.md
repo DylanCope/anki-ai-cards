@@ -14,6 +14,88 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-12 — Task 46: `search_dictionary` tool via Jisho + wordfreq
+- Did:
+  - New `backend/app/clients/dictionary.py`: `search_words(query, n=3) ->
+    list[dict]` against Jisho.org's public search API
+    (`GET https://jisho.org/api/v1/search/words?keyword=...`). Confirmed the
+    real response shape directly (`curl -s -G ... --data-urlencode
+    "keyword=猫"`, this sandbox has outbound network access, unlike the
+    `pytest` suite which must stay fully mocked): `{"data": [{"slug",
+    "is_common", "japanese": [{"word", "reading"}, ...], "senses":
+    [{"english_definitions", "parts_of_speech", ...}, ...]}, ...]}`, `data:
+    []` for no matches. Also confirmed Jisho 400s on a raw (non-percent-
+    encoded) Japanese `keyword` — must go through httpx's normal `params=`
+    encoding, not a hand-built query string.
+  - `word` per result is `japanese[0]["word"]`, falling back to
+    `japanese[0]["reading"]` for entries with no distinct kanji form (e.g.
+    `です`) — Jisho's `japanese[0].word` is `None`/absent in that case, not
+    an empty string, so `or` rather than a plain truthy field access.
+    `readings` collects every `japanese[i]["reading"]`; `meanings` flattens
+    `english_definitions` across all `senses` (deliberately including
+    non-grammatical senses Jisho tags `"parts_of_speech": ["Wikipedia
+    definition"]` for — not filtered out, since it's still real dictionary
+    content); `parts_of_speech` is a deduped, sorted union across all senses
+    to avoid the same tag ("Noun") appearing once per sense.
+  - `frequency` is `wordfreq.zipf_frequency(word, "ja")` — **this needed two
+    more dependencies wordfreq doesn't declare as required, only as an
+    optional Japanese-tokenizer path**: `mecab-python3` (the `MeCab` Python
+    binding) and, critically, `ipadic` specifically — NOT `unidic-lite`,
+    which is the dictionary most other MeCab setups use. Tried
+    `unidic-lite` first (a natural guess, it's the dictionary the wider
+    Japanese-NLP-in-Python ecosystem usually reaches for); wordfreq's own
+    `wordfreq/mecab.py` hardcodes `import ipadic` specifically for
+    `lang == "ja"` (and `mecab_ko_dic` for Korean) — confirmed by reading
+    that file directly after `unidic-lite` alone left `zipf_frequency`
+    raising `ModuleNotFoundError: No module named 'ipadic'` even with
+    `mecab-python3` installed. `uv remove unidic-lite && uv add ipadic`
+    fixed it; both `mecab-python3` (prebuilt manylinux wheel, no compiler
+    needed) and `ipadic` (pure-Python package bundling ~51MB of dictionary
+    data, builds fine from sdist with no compiler either) install cleanly
+    under `backend/Dockerfile`'s plain `python:3.12-slim` + `uv sync
+    --frozen --no-dev` — confirmed via a real `fly deploy`, not just
+    assumed. Real (non-mocked) `zipf_frequency` calls turned out fast and
+    fully deterministic locally (~5.05 for 猫, 0.0 for a nonsense string),
+    so left un-mocked in tests per the PRD's explicit allowance rather than
+    stubbing it.
+  - `backend/app/agent/tools.py`: added `search_dictionary` to
+    `TOOL_SCHEMAS` (`query`, optional `n=3`) and its `dispatch_tool` branch —
+    calls the client and returns `{"results": [...]}` directly, no
+    id/storage plumbing (per the PRD, this is data the agent reads, not
+    media to pick-and-attach).
+- Verified:
+  - `cd backend && uv run pytest` → 215 passed (up from 207). New
+    `tests/test_dictionary.py` (respx-mocked): multi-result query (asserts
+    word/readings/meanings/parts_of_speech/is_common/frequency shape,
+    frequency-flattening-across-senses, parts-of-speech dedup), `n`
+    truncation, no-results, reading-only fallback (no kanji form), HTTP
+    error, and a request-params check (percent-encoded `keyword`). New in
+    `test_agent.py`: `test_dispatch_search_dictionary` and
+    `test_dispatch_search_dictionary_custom_n` (mocking
+    `tools.dictionary.search_words`, since this tool has no DB storage to
+    exercise unlike the audio/image tools).
+  - Deploy-and-verify (backend only): `fly deploy` from `backend/` succeeded
+    (image size 199MB, up from before wordfreq/ipadic's bundled data but
+    still small); `fly status -a anki-ai-cards-backend` showed `1 total, 1
+    passing`; `curl .../health` returned 200. Ran
+    `backend/scripts/smoke_test_chat.py` against the real deployed backend
+    asking the agent to look up 猫 via `search_dictionary` — it replied with
+    real Jisho readings/meanings (ねこ/ネコ, cat/feline/shamisen/geisha/...)
+    and a real frequency score (5.05, "Common word"), confirming the tool
+    works end to end in production, not just against mocks.
+- Learned:
+  - `wordfreq`'s PyPI metadata doesn't list `mecab-python3`/`ipadic` as
+    install-time dependencies at all (they're imported lazily only when a
+    caller actually requests Japanese/Korean tokenization) — a plain `uv add
+    wordfreq` looks complete until the first real `zipf_frequency(word,
+    "ja")` call. Any future task adding another `wordfreq` language
+    (Korean, etc.) should expect the same lazy-optional-dependency pattern
+    and check `wordfreq/mecab.py`'s hardcoded per-language dictionary import
+    directly rather than assuming from wordfreq's own declared deps.
+  - Next unchecked task is 47 (docs: system prompt + verification checklist
+    for tasks 44-46's new tools) — purely docs, no code changes expected,
+    should be quick and finishes this batch.
+
 ## 2026-07-12 — Task 45: `search_word_pronunciations` tool via Forvo
 - Did:
   - New `backend/app/clients/forvo.py`: `search_pronunciations(word, n=3) ->
