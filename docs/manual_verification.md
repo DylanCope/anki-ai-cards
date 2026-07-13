@@ -117,7 +117,119 @@ match" note at the bottom.
 - [ ] Confirm the new card appears, with the correct fields, furigana,
   translation, and that the audio plays.
 
-## 8. Reuse a workflow spec (second session)
+## 8. Image support: upload, search, and generate
+
+Exercises tasks 33-39 — three independent ways to attach an image to a card.
+Do all three in one session; each ends with the agent using the resulting
+`image_id` on a `create_anki_note` call's `picture` argument
+(`backend/app/agent/tools.py`).
+
+### 8a. Upload an image
+
+- [ ] Click the paperclip icon next to the composer
+  (`frontend/app/components/ChatApp.tsx`). Select an image file from your
+  device.
+- [ ] Confirm a thumbnail preview appears above the textarea immediately
+  (before you send anything) — this is `POST /api/images` uploading the file
+  and returning an `image_id` right away, not something deferred until send.
+- [ ] Click the preview's "x" — confirm it removes the preview and the next
+  message you send has no image attached (no `(Attached image_id: ...)` text
+  influencing the agent).
+- [ ] Re-attach an image, then send a message like "Use this image on the
+  card for `<some correction>`." Confirm the agent's reply references having
+  an image to work with, and that it proceeds to call `create_anki_note` with
+  a `picture` argument referencing that `image_id`.
+
+### 8b. Search for an image
+
+- [ ] Ask the agent to search for an image for a card, e.g. "Find an image
+  for 猫 (cat)." This calls the `search_images` tool
+  (`backend/app/clients/wikimedia_image_search.py`, Wikimedia Commons — no
+  API key needed; this replaced an earlier Google Custom Search version,
+  see PRD.md task 41).
+- [ ] Confirm an **Image options** card renders in the chat
+  (`frontend/app/components/ImageOptionsCard.tsx`) with 3 thumbnail results
+  and a **Pick** button under each. Since Wikimedia Commons only covers
+  well-known/reference subjects, try a common word first if an obscure one
+  comes back empty.
+- [ ] Click **Pick** on one thumbnail. Confirm the agent acknowledges the
+  choice and can proceed to create a note with that image.
+
+### 8c. Generate an image
+
+- [ ] Ask the agent to generate an image for a card, e.g. "Generate an image
+  of a cat for this card instead." This calls the `generate_image` tool
+  (`backend/app/clients/gemini_images.py`, Gemini).
+- [ ] Confirm the same **Image options** card UI renders, this time with 3
+  generated images.
+- [ ] **If this errors instead** — check whether it's the known Gemini
+  free-tier image-generation quota blocker noted in PROGRESS.md (tasks
+  37/39); that's Dylan's account to resolve (billing/quota), not a code bug.
+- [ ] Click **Pick** on one. Confirm the agent proceeds using it.
+
+### 8d. Confirm the image lands on a real card
+
+- [ ] For at least one of 8a-8c, let the agent finish creating the note (same
+  "propose → confirm → create" flow as section 4/6). The **Card added to
+  Anki** card should render as usual.
+- [ ] Open Anki via the VNC session (`fly proxy 5900 -a anki-ai-cards-anki`,
+  per AGENTS.md) and confirm the note has an actual image visible in the
+  field the agent put it in (not just a filename reference or a broken
+  image icon).
+- [ ] Sync (ask the agent, or trigger it manually per section 7), then check
+  the same note on your phone or desktop Anki app — confirm the image
+  displays there too after the normal AnkiWeb sync.
+
+## 9. Real example sentences, native pronunciation, and dictionary data
+
+Exercises tasks 43-46 — three more tools that pull from real external
+sources (Tatoeba, Forvo, Jisho/`wordfreq`) instead of the model inventing
+content or trusting its own knowledge. No dedicated UI for any of these
+(results surface as plain chat text, except audio which follows the existing
+choice-then-attach pattern) — do all three in one session, each ending in a
+card created via the usual "propose → confirm → create" flow.
+
+### 9a. Example sentence from Tatoeba
+
+- [ ] Ask the agent for a real example sentence for a word, e.g. "Find an
+  example sentence for 猫." This calls `search_example_sentences`
+  (`backend/app/clients/tatoeba.py`). Confirm the reply shows a real
+  Japanese sentence with an English translation, not one the model
+  generated itself.
+- [ ] If the result includes native audio, ask the agent to use it on a card
+  — confirm it attaches via `create_anki_note`'s existing `audio` argument
+  (the same `clip_id` it would use for a `generate_audio`/`search_word_
+  pronunciations` pick) without needing to call `generate_audio` again.
+
+### 9b. Native pronunciation from Forvo
+
+- [ ] Ask the agent for a native pronunciation of a word, e.g. "Get a native
+  pronunciation of 猫 from Forvo instead of synthesizing one." This calls
+  `search_word_pronunciations` (`backend/app/clients/forvo.py`, requires the
+  `FORVO_API_KEY` Fly secret to be set — Dylan's manual signup step, see
+  AGENTS.md).
+- [ ] **If this errors** — check whether `FORVO_API_KEY` is actually set
+  (`fly secrets list -a anki-ai-cards-backend`); Forvo requires a real
+  account/key, this isn't something a loop iteration can fix.
+- [ ] Confirm the agent describes real pronunciation option(s) (e.g. speaker
+  attribution) and can attach one to a card via `create_anki_note`'s `audio`
+  argument, same choice-then-attach pattern as `generate_audio`.
+
+### 9c. Dictionary-informed definition
+
+- [ ] Ask the agent to look up a word in the dictionary before writing a
+  definition for it, e.g. "Look up 猫 and use that to write the card's
+  definition/notes field." This calls `search_dictionary`
+  (`backend/app/clients/dictionary.py`, Jisho + local `wordfreq`
+  computation, no API key needed).
+- [ ] Confirm the reply's readings/meanings/parts of speech match what
+  Jisho actually shows for that word (spot-check at jisho.org), and that it
+  mentions a frequency/commonness judgment (`wordfreq`'s Zipf score) rather
+  than a guess.
+- [ ] Confirm the resulting card's definition field reflects the looked-up
+  meaning rather than a generic paraphrase.
+
+## 10. Reuse a workflow spec (second session)
 
 - [ ] Start a **new** browser session (or just refresh after some time) and
   send an opening message. If you and the agent settled on a workflow
@@ -132,8 +244,11 @@ match" note at the bottom.
 ## If something doesn't match
 
 This doc was written by cross-checking PRD.md tasks 1-12 and the actual code
-in `backend/app/` and `frontend/app/` as of the task-13 commit. If a step
-above doesn't match what the running system actually does:
+in `backend/app/` and `frontend/app/` as of the task-13 commit, then extended
+for image support (section 8) by cross-checking tasks 33-39 as of the task-40
+commit, and again for Tatoeba/Forvo/dictionary support (section 9) by
+cross-checking tasks 43-46 as of the task-47 commit. If a step above doesn't
+match what the running system actually does:
 
 - If the **code** has moved on (e.g. a later change added a real
   `propose_card` tool or persisted payloads across reloads), this doc is

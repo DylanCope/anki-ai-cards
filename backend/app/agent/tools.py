@@ -11,9 +11,35 @@ the model's tool input.
 """
 
 import base64
+import mimetypes
+from collections.abc import Awaitable, Callable
+
+from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, elevenlabs, google_docs
+from app.clients import ankiconnect, dictionary, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
+from app.models import AudioClip, ImageAsset, get_engine
+
+# Magic-byte prefixes for the image formats a Wikimedia Commons search
+# result (or an uploaded file) are realistically going to be.
+# ImageAsset.content_type is required, but wikimedia_image_search.search_images
+# only returns raw bytes (no per-result content-type is reliably available
+# from the Commons search API response), so it's sniffed here instead of
+# trusted from a header.
+_IMAGE_MAGIC_BYTES: list[tuple[bytes, str]] = [
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),
+]
+
+
+def _guess_image_content_type(data: bytes) -> str:
+    for magic, content_type in _IMAGE_MAGIC_BYTES:
+        if data.startswith(magic):
+            return content_type
+    return "image/jpeg"
 
 TOOL_SCHEMAS: list[dict] = [
     {
@@ -57,7 +83,15 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "generate_audio",
-        "description": "Generate audio options for a piece of Japanese text via ElevenLabs, so Dylan can pick the best-sounding take.",
+        "description": (
+            "Generate audio options for a piece of Japanese text via ElevenLabs, "
+            "so Dylan can pick the best-sounding take. Available in a male or "
+            "female voice — pick whichever fits the card (e.g. the speaker in "
+            "the lesson), or ask Dylan if it's not obvious which he wants. "
+            "Returns clip_ids (not the raw audio) — once Dylan picks one, pass "
+            "its clip_id into create_anki_note's audio argument to actually "
+            "attach it to the note; the clip is not saved anywhere on its own."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -69,6 +103,12 @@ TOOL_SCHEMAS: list[dict] = [
                     "type": "integer",
                     "description": "Number of audio options to generate.",
                     "default": 3,
+                },
+                "voice": {
+                    "type": "string",
+                    "enum": ["male", "female"],
+                    "description": "Which voice to use.",
+                    "default": "male",
                 },
             },
             "required": ["text"],
@@ -93,8 +133,191 @@ TOOL_SCHEMAS: list[dict] = [
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "audio": {
+                    "type": "object",
+                    "description": (
+                        "Attach a previously generated audio clip (a clip_id "
+                        "from generate_audio's result, after Dylan picked an "
+                        "option) to this note. AnkiConnect stores the audio in "
+                        "Anki's media collection and appends the [sound:...] "
+                        "reference to each listed field itself."
+                    ),
+                    "properties": {
+                        "clip_id": {
+                            "type": "integer",
+                            "description": "A clip_id from generate_audio's result.",
+                        },
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Field name(s) to attach the audio to, e.g. the "
+                                "discovered audio field for this note type."
+                            ),
+                        },
+                    },
+                    "required": ["clip_id", "fields"],
+                },
+                "picture": {
+                    "type": "object",
+                    "description": (
+                        "Attach a previously stored image (an image_id from an "
+                        "uploaded, searched, or generated image, after Dylan "
+                        "picked one) to this note. AnkiConnect stores the image "
+                        "in Anki's media collection and appends an <img> "
+                        "reference to each listed field itself."
+                    ),
+                    "properties": {
+                        "image_id": {
+                            "type": "integer",
+                            "description": "An image_id referencing a stored image.",
+                        },
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Field name(s) to attach the image to, e.g. the "
+                                "discovered image field for this note type."
+                            ),
+                        },
+                    },
+                    "required": ["image_id", "fields"],
+                },
             },
             "required": ["deck_name", "model_name", "fields"],
+        },
+    },
+    {
+        "name": "search_images",
+        "description": (
+            "Search Wikimedia Commons for candidate images matching a query "
+            "(e.g. to illustrate a card), so Dylan can pick the best one — "
+            "same choice-then-attach pattern as generate_audio. Good for "
+            "well-known subjects (animals, places, historical/educational "
+            "topics); less reliable for niche or branded content — "
+            "generate_image may work better for those. Returns image_ids "
+            "(not the raw images); once Dylan picks one, pass its image_id "
+            "into create_anki_note's picture argument to attach it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The image search query.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of image options to find.",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "generate_image",
+        "description": (
+            "Generate candidate images for a card from a text prompt via "
+            "Gemini, so Dylan can pick the best one — same choice-then-attach "
+            "pattern as generate_audio and search_images. Returns image_ids "
+            "(not the raw images); once Dylan picks one, pass its image_id "
+            "into create_anki_note's picture argument to attach it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "The image generation prompt.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of image options to generate.",
+                    "default": 3,
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "search_example_sentences",
+        "description": (
+            "Search Tatoeba for real, native-written Japanese sentences with "
+            "an English translation, so a card's example sentence can come "
+            "from a real corpus instead of one the model invents. Returns "
+            "each match's Japanese text, English translation (when "
+            "available), and an audio_id when Tatoeba has native audio for "
+            "that sentence — pass a chosen audio_id into create_anki_note's "
+            "audio argument to attach it, same choice-then-attach pattern as "
+            "generate_audio."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The Japanese search query, e.g. a word or phrase to find example sentences for.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of example sentences to find.",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_word_pronunciations",
+        "description": (
+            "Search Forvo for real native-speaker recordings of a Japanese "
+            "word, sorted by vote/rating count, so a card's audio can come "
+            "from a real speaker instead of ElevenLabs TTS when Dylan wants "
+            "that. Returns clip_ids (not the raw audio) — once Dylan picks "
+            "one, pass its clip_id into create_anki_note's audio argument to "
+            "attach it, same choice-then-attach pattern as generate_audio."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "word": {
+                    "type": "string",
+                    "description": "The Japanese word to find pronunciations for.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of pronunciation options to find.",
+                    "default": 3,
+                },
+            },
+            "required": ["word"],
+        },
+    },
+    {
+        "name": "search_dictionary",
+        "description": (
+            "Look up a Japanese word in Jisho's dictionary, so definitions "
+            "come from a real dictionary rather than the model's own "
+            "knowledge. Returns each match's readings, English meanings, "
+            "parts of speech, whether it's a common word, and a frequency "
+            "score (wordfreq's zipf scale, roughly 0-8, higher is more "
+            "frequent) to help judge whether a word is worth a card."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The Japanese word or phrase to look up.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Number of dictionary entries to return.",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
         },
     },
     {
@@ -106,10 +329,10 @@ TOOL_SCHEMAS: list[dict] = [
         "name": "save_workflow_spec",
         "description": (
             "Save (or update) a named, reusable workflow spec describing how "
-            "to handle a source — e.g. how the lesson doc is laid out, how "
-            "corrections are found, and how fields map onto the note type — "
-            "so a future session can offer to reuse it instead of starting "
-            "from scratch."
+            "to handle a recurring source or card format — e.g. how a "
+            "particular doc is laid out, how corrections are found, or how "
+            "fields map onto a note type — so a future session can offer to "
+            "reuse it instead of starting from scratch."
         ),
         "input_schema": {
             "type": "object",
@@ -149,14 +372,18 @@ TOOL_SCHEMAS: list[dict] = [
 
 
 async def dispatch_tool(
-    name: str, tool_input: dict, *, access_token: str | None = None
+    name: str,
+    tool_input: dict,
+    *,
+    get_access_token: Callable[[], Awaitable[str]] | None = None,
 ) -> object:
     """Execute a tool_use call against the underlying client and return a
     JSON-serializable result to send back as the tool_result content."""
 
     if name == "fetch_google_doc":
-        if not access_token:
-            raise ValueError("fetch_google_doc requires an access_token")
+        if get_access_token is None:
+            raise ValueError("fetch_google_doc requires get_access_token")
+        access_token = await get_access_token()
         doc_json = await google_docs.fetch_document(
             tool_input["document_id"], access_token
         )
@@ -170,17 +397,153 @@ async def dispatch_tool(
 
     if name == "generate_audio":
         n = tool_input.get("n", 3)
-        options = await elevenlabs.generate_audio_options(tool_input["text"], n=n)
-        return [base64.b64encode(option).decode("ascii") for option in options]
+        voice = tool_input.get("voice", elevenlabs.DEFAULT_VOICE)
+        options = await elevenlabs.generate_audio_options(
+            tool_input["text"], n=n, voice=voice
+        )
+        # Persist the raw audio server-side and hand the model back only
+        # small integer ids — not the audio itself. The model can't and
+        # shouldn't reproduce large binary blobs in a later tool call; it
+        # only needs a stable reference to pass into create_anki_note once
+        # Dylan picks one. (This also avoids repeatedly re-sending tens of
+        # KB of base64 per clip on every subsequent turn of the conversation.)
+        engine = get_engine()
+        clip_ids = []
+        with Session(engine) as session:
+            for option in options:
+                clip = AudioClip(
+                    text=tool_input["text"], voice=voice, audio=option, source="generate"
+                )
+                session.add(clip)
+                session.commit()
+                session.refresh(clip)
+                clip_ids.append(clip.id)
+        return {"clip_ids": clip_ids}
 
     if name == "create_anki_note":
+        audio = None
+        audio_input = tool_input.get("audio")
+        if audio_input:
+            engine = get_engine()
+            with Session(engine) as session:
+                clip = session.get(AudioClip, audio_input["clip_id"])
+            if clip is None:
+                raise ValueError(f"Unknown audio clip_id: {audio_input['clip_id']!r}")
+            audio = {
+                "data": base64.b64encode(clip.audio).decode("ascii"),
+                "filename": f"anki-ai-cards-{clip.id}.mp3",
+                "fields": audio_input["fields"],
+            }
+        picture = None
+        picture_input = tool_input.get("picture")
+        if picture_input:
+            engine = get_engine()
+            with Session(engine) as session:
+                image = session.get(ImageAsset, picture_input["image_id"])
+            if image is None:
+                raise ValueError(f"Unknown image image_id: {picture_input['image_id']!r}")
+            extension = mimetypes.guess_extension(image.content_type) or ".jpg"
+            picture = {
+                "data": base64.b64encode(image.data).decode("ascii"),
+                "filename": f"anki-ai-cards-{image.id}{extension}",
+                "fields": picture_input["fields"],
+            }
         note_id = await ankiconnect.create_note(
             deck_name=tool_input["deck_name"],
             model_name=tool_input["model_name"],
             fields=tool_input["fields"],
             tags=tool_input.get("tags"),
+            audio=audio,
+            picture=picture,
         )
         return {"note_id": note_id}
+
+    if name == "search_images":
+        n = tool_input.get("n", 3)
+        images = await wikimedia_image_search.search_images(tool_input["query"], n=n)
+        engine = get_engine()
+        image_ids = []
+        with Session(engine) as session:
+            for data in images:
+                image = ImageAsset(
+                    content_type=_guess_image_content_type(data),
+                    data=data,
+                    source="search",
+                )
+                session.add(image)
+                session.commit()
+                session.refresh(image)
+                image_ids.append(image.id)
+        return {"image_ids": image_ids}
+
+    if name == "generate_image":
+        n = tool_input.get("n", 3)
+        images = await gemini_images.generate_images(tool_input["prompt"], n=n)
+        engine = get_engine()
+        image_ids = []
+        with Session(engine) as session:
+            for data in images:
+                image = ImageAsset(
+                    content_type=_guess_image_content_type(data),
+                    data=data,
+                    source="generate",
+                )
+                session.add(image)
+                session.commit()
+                session.refresh(image)
+                image_ids.append(image.id)
+        return {"image_ids": image_ids}
+
+    if name == "search_example_sentences":
+        n = tool_input.get("n", 5)
+        sentences = await tatoeba.search_sentences(tool_input["query"], n=n)
+        engine = get_engine()
+        results = []
+        with Session(engine) as session:
+            for sentence in sentences:
+                audio_id = None
+                if sentence["audio"] is not None:
+                    clip = AudioClip(
+                        text=sentence["japanese"],
+                        voice=sentence["audio_author"] or "native",
+                        audio=sentence["audio"],
+                        source="tatoeba",
+                    )
+                    session.add(clip)
+                    session.commit()
+                    session.refresh(clip)
+                    audio_id = clip.id
+                results.append(
+                    {
+                        "japanese": sentence["japanese"],
+                        "english": sentence["english"],
+                        "audio_id": audio_id,
+                    }
+                )
+        return {"sentences": results}
+
+    if name == "search_word_pronunciations":
+        n = tool_input.get("n", 3)
+        pronunciations = await forvo.search_pronunciations(tool_input["word"], n=n)
+        engine = get_engine()
+        clip_ids = []
+        with Session(engine) as session:
+            for pronunciation in pronunciations:
+                clip = AudioClip(
+                    text=tool_input["word"],
+                    voice=pronunciation["username"] or "native",
+                    audio=pronunciation["audio"],
+                    source="forvo",
+                )
+                session.add(clip)
+                session.commit()
+                session.refresh(clip)
+                clip_ids.append(clip.id)
+        return {"clip_ids": clip_ids}
+
+    if name == "search_dictionary":
+        n = tool_input.get("n", 3)
+        return {"results": await dictionary.search_words(tool_input["query"], n=n)}
 
     if name == "sync_anki":
         await ankiconnect.sync()

@@ -8,6 +8,8 @@ async) — `dispatch_tool` is async but calls these directly rather than
 through a threadpool, which is fine for single-user SQLite.
 """
 
+from datetime import datetime, timezone
+
 from sqlmodel import Session, select
 
 from app.models import WorkflowSpec, get_engine
@@ -23,6 +25,7 @@ def save_workflow_spec(name: str, spec: str) -> WorkflowSpec:
         ).one_or_none()
         if existing is not None:
             existing.spec = spec
+            existing.updated_at = datetime.now(timezone.utc)
             session.add(existing)
             session.commit()
             session.refresh(existing)
@@ -47,3 +50,18 @@ def list_workflow_specs() -> list[WorkflowSpec]:
     engine = get_engine()
     with Session(engine) as session:
         return list(session.exec(select(WorkflowSpec)).all())
+
+
+def delete_workflow_spec(name: str) -> bool:
+    """Delete the named workflow spec. Returns False if it didn't exist."""
+
+    engine = get_engine()
+    with Session(engine) as session:
+        existing = session.exec(
+            select(WorkflowSpec).where(WorkflowSpec.name == name)
+        ).one_or_none()
+        if existing is None:
+            return False
+        session.delete(existing)
+        session.commit()
+        return True

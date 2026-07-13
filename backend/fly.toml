@@ -1,44 +1,72 @@
 # Fly.io app config for the FastAPI backend (PRD task 12). Builds from the
-# Dockerfile in this directory. Deploying this (`fly deploy --config
-# backend/fly.toml`) is a manual step for Dylan — the loop must never run it.
+# Dockerfile in this directory. Deploying this must be run from *inside*
+# `backend/` (`cd backend && fly deploy`) — Fly uses the current working
+# directory as the build context, and this Dockerfile's COPY paths are
+# relative to this directory. See AGENTS.md's "Autonomous deploy/debug
+# access" for who/what may run `fly deploy` against this app.
 #
 # Secrets are NOT set here (fly.toml is not a secret store) — they must be
 # pushed once via `fly secrets set -a anki-ai-cards-backend KEY=value` before
 # the first deploy:
 #   ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, GOOGLE_CLIENT_ID,
-#   GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL, SESSION_SECRET_KEY
+#   GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL, SESSION_SECRET_KEY, DEV_API_KEY
 # The [env] block below only holds non-secret configuration.
 
-app = "anki-ai-cards-backend"
-primary_region = "iad"
+app = 'anki-ai-cards-backend'
+primary_region = 'iad'
 
 [build]
 
 [env]
-  # Reaches the headless Anki app (deploy/anki-headless/fly.toml) over Fly's
-  # private 6PN network — no public URL, no VNC/AnkiConnect port exposed.
-  ANKICONNECT_URL = "http://anki-ai-cards-anki.internal:8765"
+  # Reaches the headless Anki app (deploy/anki-headless/fly.toml) via Flycast
+  # (.flycast) on port 80 — Flycast's Fly Proxy always listens on the
+  # service's *external* port (80/443, same as the public proxy) and forwards
+  # to that app's fly.toml `internal_port` (8766, a socat relay in front of
+  # AnkiConnect — NOT AnkiConnect's own port 8765 directly) from there.
+  # Dialing `internal_port` (8766) directly, as this used to do, bypasses the
+  # Fly Proxy entirely and gets a bare TCP connection that nothing is
+  # listening on at that address — hence a connection reset ~3s later once
+  # Flycast's own retry/timeout gives up, never even reaching the app's
+  # kernel socket (confirmed via a raw listener on the anki app that never
+  # saw an incoming connection while port 8766 was being dialed directly).
+  # Still fully private — no public IP is allocated for the anki app. See
+  # deploy/anki-headless/fly.toml's header comment for the socat relay story.
+  ANKICONNECT_URL = 'http://anki-ai-cards-anki.flycast'
   # SQLite file lives on the persistent volume mounted below.
-  DATABASE_PATH = "/data/anki-ai-cards.db"
+  DATABASE_PATH = '/data/anki-ai-cards.db'
+  # The frontend's public URL — used to build the OAuth redirect_uri (see
+  # backend/app/api/auth.py's _redirect_uri comment for why this can't be
+  # inferred from the incoming request). Must also be registered as an
+  # authorized redirect URI (+ "/auth/google/callback") on the Google Cloud
+  # OAuth client — NOT this backend app's own URL.
+  PUBLIC_APP_URL = 'https://anki-ai-cards-frontend.fly.dev'
 
 [[mounts]]
-  source = "backend_data"
-  destination = "/data"
+  source = 'backend_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  # Must stay at least 1: the frontend reaches this app over private 6PN
+  # networking (ANKICONNECT_URL-style .internal address), which bypasses
+  # Fly's public proxy entirely. Only the public proxy auto-wakes a stopped
+  # machine on request — a fully-stopped machine makes `.internal` DNS
+  # resolution fail outright (ENOTFOUND), not just slow. min = 0 here breaks
+  # the frontend's chat API calls whenever the backend idles out.
+  min_machines_running = 1
 
   [[http_service.checks]]
-    grace_period = "10s"
-    interval = "30s"
-    method = "GET"
-    timeout = "5s"
-    path = "/health"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = 'shared-cpu-1x'
+  memory = '512mb'
+  cpus = 1
+  memory_mb = 512

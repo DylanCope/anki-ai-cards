@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlmodel import Session
 
 from app.agent import core, tools, workflow_specs
 from app.models import init_db
@@ -59,7 +60,9 @@ async def test_dispatch_fetch_google_doc(monkeypatch):
     monkeypatch.setattr(tools.google_docs, "flatten_runs", flatten_mock)
 
     result = await tools.dispatch_tool(
-        "fetch_google_doc", {"document_id": "doc123"}, access_token="tok"
+        "fetch_google_doc",
+        {"document_id": "doc123"},
+        get_access_token=AsyncMock(return_value="tok"),
     )
 
     fetch_mock.assert_awaited_once_with("doc123", "tok")
@@ -98,24 +101,262 @@ async def test_dispatch_get_anki_note_type_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_generate_audio(monkeypatch):
+async def test_dispatch_generate_audio(db, monkeypatch):
     mock = AsyncMock(return_value=[b"aaa", b"bbb", b"ccc"])
     monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
 
     result = await tools.dispatch_tool("generate_audio", {"text": "こんにちは"})
 
-    mock.assert_awaited_once_with("こんにちは", n=3)
-    assert result == [base64.b64encode(b).decode("ascii") for b in [b"aaa", b"bbb", b"ccc"]]
+    mock.assert_awaited_once_with("こんにちは", n=3, voice=tools.elevenlabs.DEFAULT_VOICE)
+    # The raw audio is persisted server-side and referenced by id — never
+    # sent back as part of the tool_result the model sees (see tools.py).
+    assert len(result["clip_ids"]) == 3
+    with Session(tools.get_engine()) as session:
+        clips = [session.get(tools.AudioClip, cid) for cid in result["clip_ids"]]
+    assert [c.audio for c in clips] == [b"aaa", b"bbb", b"ccc"]
+    assert all(c.text == "こんにちは" for c in clips)
+    assert all(c.voice == tools.elevenlabs.DEFAULT_VOICE for c in clips)
+    assert all(c.source == "generate" for c in clips)
 
 
 @pytest.mark.asyncio
-async def test_dispatch_generate_audio_custom_n(monkeypatch):
+async def test_dispatch_generate_audio_custom_n(db, monkeypatch):
     mock = AsyncMock(return_value=[b"aaa"])
     monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
 
     await tools.dispatch_tool("generate_audio", {"text": "hi", "n": 1})
 
-    mock.assert_awaited_once_with("hi", n=1)
+    mock.assert_awaited_once_with("hi", n=1, voice=tools.elevenlabs.DEFAULT_VOICE)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_audio_custom_voice(db, monkeypatch):
+    mock = AsyncMock(return_value=[b"aaa"])
+    monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
+
+    await tools.dispatch_tool("generate_audio", {"text": "hi", "voice": "female"})
+
+    mock.assert_awaited_once_with("hi", n=3, voice="female")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_images(db, monkeypatch):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
+    mock = AsyncMock(return_value=[png_bytes, b"\xff\xd8\xffjpeg-bytes"])
+    monkeypatch.setattr(tools.wikimedia_image_search, "search_images", mock)
+
+    result = await tools.dispatch_tool("search_images", {"query": "shiba inu"})
+
+    mock.assert_awaited_once_with("shiba inu", n=3)
+    assert len(result["image_ids"]) == 2
+    with Session(tools.get_engine()) as session:
+        images = [session.get(tools.ImageAsset, iid) for iid in result["image_ids"]]
+    assert [img.data for img in images] == [png_bytes, b"\xff\xd8\xffjpeg-bytes"]
+    assert [img.content_type for img in images] == ["image/png", "image/jpeg"]
+    assert all(img.source == "search" for img in images)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_images_custom_n(db, monkeypatch):
+    mock = AsyncMock(return_value=[b"\xff\xd8\xffjpeg-bytes"])
+    monkeypatch.setattr(tools.wikimedia_image_search, "search_images", mock)
+
+    await tools.dispatch_tool("search_images", {"query": "shiba inu", "n": 1})
+
+    mock.assert_awaited_once_with("shiba inu", n=1)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_images_no_results(db, monkeypatch):
+    mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.wikimedia_image_search, "search_images", mock)
+
+    result = await tools.dispatch_tool("search_images", {"query": "asdfqwerzxcv"})
+
+    assert result == {"image_ids": []}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_example_sentences(db, monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {
+                "japanese": "猫が好きです。",
+                "english": "I like cats.",
+                "audio": b"audio-bytes",
+                "audio_author": "kevin62",
+            },
+            {
+                "japanese": "猫は可愛い。",
+                "english": "Cats are cute.",
+                "audio": None,
+                "audio_author": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(tools.tatoeba, "search_sentences", mock)
+
+    result = await tools.dispatch_tool("search_example_sentences", {"query": "猫"})
+
+    mock.assert_awaited_once_with("猫", n=5)
+    assert len(result["sentences"]) == 2
+    first, second = result["sentences"]
+    assert first["japanese"] == "猫が好きです。"
+    assert first["english"] == "I like cats."
+    assert isinstance(first["audio_id"], int)
+    assert second["audio_id"] is None
+    with Session(tools.get_engine()) as session:
+        clip = session.get(tools.AudioClip, first["audio_id"])
+    assert clip.audio == b"audio-bytes"
+    assert clip.voice == "kevin62"
+    assert clip.source == "tatoeba"
+    assert clip.text == "猫が好きです。"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_example_sentences_custom_n(db, monkeypatch):
+    mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.tatoeba, "search_sentences", mock)
+
+    await tools.dispatch_tool("search_example_sentences", {"query": "猫", "n": 2})
+
+    mock.assert_awaited_once_with("猫", n=2)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_example_sentences_no_audio_author_falls_back_to_native(db, monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {
+                "japanese": "猫が好きです。",
+                "english": "I like cats.",
+                "audio": b"audio-bytes",
+                "audio_author": None,
+            }
+        ]
+    )
+    monkeypatch.setattr(tools.tatoeba, "search_sentences", mock)
+
+    result = await tools.dispatch_tool("search_example_sentences", {"query": "猫"})
+
+    with Session(tools.get_engine()) as session:
+        clip = session.get(tools.AudioClip, result["sentences"][0]["audio_id"])
+    assert clip.voice == "native"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_word_pronunciations(db, monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {"audio": b"audio-bytes-1", "username": "kevin62"},
+            {"audio": b"audio-bytes-2", "username": None},
+        ]
+    )
+    monkeypatch.setattr(tools.forvo, "search_pronunciations", mock)
+
+    result = await tools.dispatch_tool("search_word_pronunciations", {"word": "猫"})
+
+    mock.assert_awaited_once_with("猫", n=3)
+    assert len(result["clip_ids"]) == 2
+    with Session(tools.get_engine()) as session:
+        clips = [session.get(tools.AudioClip, cid) for cid in result["clip_ids"]]
+    assert [clip.audio for clip in clips] == [b"audio-bytes-1", b"audio-bytes-2"]
+    assert [clip.voice for clip in clips] == ["kevin62", "native"]
+    assert all(clip.source == "forvo" for clip in clips)
+    assert all(clip.text == "猫" for clip in clips)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_word_pronunciations_custom_n(db, monkeypatch):
+    mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.forvo, "search_pronunciations", mock)
+
+    result = await tools.dispatch_tool(
+        "search_word_pronunciations", {"word": "猫", "n": 1}
+    )
+
+    mock.assert_awaited_once_with("猫", n=1)
+    assert result == {"clip_ids": []}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_dictionary(monkeypatch):
+    mock = AsyncMock(
+        return_value=[
+            {
+                "word": "猫",
+                "readings": ["ねこ"],
+                "meanings": ["cat"],
+                "parts_of_speech": ["Noun"],
+                "is_common": True,
+                "frequency": 5.05,
+            }
+        ]
+    )
+    monkeypatch.setattr(tools.dictionary, "search_words", mock)
+
+    result = await tools.dispatch_tool("search_dictionary", {"query": "猫"})
+
+    mock.assert_awaited_once_with("猫", n=3)
+    assert result == {
+        "results": [
+            {
+                "word": "猫",
+                "readings": ["ねこ"],
+                "meanings": ["cat"],
+                "parts_of_speech": ["Noun"],
+                "is_common": True,
+                "frequency": 5.05,
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_dictionary_custom_n(monkeypatch):
+    mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.dictionary, "search_words", mock)
+
+    result = await tools.dispatch_tool("search_dictionary", {"query": "猫", "n": 1})
+
+    mock.assert_awaited_once_with("猫", n=1)
+    assert result == {"results": []}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_image(db, monkeypatch):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
+    mock = AsyncMock(return_value=[png_bytes, b"\xff\xd8\xffjpeg-bytes"])
+    monkeypatch.setattr(tools.gemini_images, "generate_images", mock)
+
+    result = await tools.dispatch_tool("generate_image", {"prompt": "a shiba inu"})
+
+    mock.assert_awaited_once_with("a shiba inu", n=3)
+    assert len(result["image_ids"]) == 2
+    with Session(tools.get_engine()) as session:
+        images = [session.get(tools.ImageAsset, iid) for iid in result["image_ids"]]
+    assert [img.data for img in images] == [png_bytes, b"\xff\xd8\xffjpeg-bytes"]
+    assert [img.content_type for img in images] == ["image/png", "image/jpeg"]
+    assert all(img.source == "generate" for img in images)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_image_custom_n(db, monkeypatch):
+    mock = AsyncMock(return_value=[b"\xff\xd8\xffjpeg-bytes"])
+    monkeypatch.setattr(tools.gemini_images, "generate_images", mock)
+
+    await tools.dispatch_tool("generate_image", {"prompt": "a shiba inu", "n": 1})
+
+    mock.assert_awaited_once_with("a shiba inu", n=1)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_image_api_error_propagates(db, monkeypatch):
+    mock = AsyncMock(side_effect=tools.gemini_images.GeminiImageError("boom"))
+    monkeypatch.setattr(tools.gemini_images, "generate_images", mock)
+
+    with pytest.raises(tools.gemini_images.GeminiImageError):
+        await tools.dispatch_tool("generate_image", {"prompt": "a shiba inu"})
 
 
 @pytest.mark.asyncio
@@ -138,8 +379,110 @@ async def test_dispatch_create_anki_note(monkeypatch):
         model_name="Cloze",
         fields={"Text": "{{c1::食べる}}"},
         tags=["lesson"],
+        audio=None,
+        picture=None,
     )
     assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_attaches_picked_audio_clip(db, monkeypatch):
+    generate_mock = AsyncMock(return_value=[b"aaa", b"bbb"])
+    monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", generate_mock)
+    generated = await tools.dispatch_tool("generate_audio", {"text": "食べる"})
+    picked_clip_id = generated["clip_ids"][1]
+
+    create_mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", create_mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze+",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "audio": {"clip_id": picked_clip_id, "fields": ["Text Audio"]},
+        },
+    )
+
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        tags=None,
+        audio={
+            "data": base64.b64encode(b"bbb").decode("ascii"),
+            "filename": f"anki-ai-cards-{picked_clip_id}.mp3",
+            "fields": ["Text Audio"],
+        },
+        picture=None,
+    )
+    assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_rejects_unknown_audio_clip(db):
+    with pytest.raises(ValueError, match="Unknown audio clip_id"):
+        await tools.dispatch_tool(
+            "create_anki_note",
+            {
+                "deck_name": "Japanese",
+                "model_name": "Cloze+",
+                "fields": {"Text": "{{c1::食べる}}"},
+                "audio": {"clip_id": 999, "fields": ["Text Audio"]},
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_attaches_picked_image(db, monkeypatch):
+    with Session(tools.get_engine()) as session:
+        image = tools.ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(image)
+        image_id = image.id
+
+    create_mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", create_mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze+",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "picture": {"image_id": image_id, "fields": ["Picture"]},
+        },
+    )
+
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        tags=None,
+        audio=None,
+        picture={
+            "data": base64.b64encode(b"pngbytes").decode("ascii"),
+            "filename": f"anki-ai-cards-{image_id}.png",
+            "fields": ["Picture"],
+        },
+    )
+    assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_rejects_unknown_image_id(db):
+    with pytest.raises(ValueError, match="Unknown image image_id"):
+        await tools.dispatch_tool(
+            "create_anki_note",
+            {
+                "deck_name": "Japanese",
+                "model_name": "Cloze+",
+                "fields": {"Text": "{{c1::食べる}}"},
+                "picture": {"image_id": 999, "fields": ["Picture"]},
+            },
+        )
 
 
 @pytest.mark.asyncio
@@ -207,13 +550,13 @@ async def test_run_turn_no_tool_use(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        result = await core.run_turn([], "hi", model_id="claude-opus-4-8")
 
     assert result["reply"] == "Hello Dylan!"
     assert len(call_snapshots) == 1
     kwargs = call_snapshots[0]
-    assert kwargs["model"] == core.MODEL_ID
+    assert kwargs["model"] == "claude-opus-4-8"
     assert kwargs["tools"] == tools.TOOL_SCHEMAS
     assert kwargs["messages"][-1] == {"role": "user", "content": "hi"}
 
@@ -240,8 +583,8 @@ async def test_run_turn_one_tool_call_then_end_turn(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        result = await core.run_turn([], "what note types do I have?")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        result = await core.run_turn([], "what note types do I have?", model_id="claude-opus-4-8")
 
     list_mock.assert_awaited_once_with()
     assert result["reply"] == "You have a Cloze note type."
@@ -277,10 +620,75 @@ async def test_run_turn_passes_access_token_to_tools(db, monkeypatch):
         side_effect=[tool_use_response, end_turn_response]
     )
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "read the doc", access_token="tok-xyz")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn(
+            [],
+            "read the doc",
+            get_access_token=AsyncMock(return_value="tok-xyz"),
+            model_id="claude-opus-4-8",
+        )
 
     fetch_mock.assert_awaited_once_with("abc", "tok-xyz")
+
+
+@pytest.mark.asyncio
+async def test_run_turn_recovers_from_a_failing_tool_call(db, monkeypatch):
+    # A tool raising must not crash the whole turn — it should come back as
+    # an `is_error` tool_result so Claude can explain the failure to Dylan
+    # (or retry/ask a follow-up) instead of the chat API 500ing with no
+    # assistant reply at all.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    list_mock = AsyncMock(side_effect=tools.ankiconnect.AnkiConnectError("timed out"))
+    monkeypatch.setattr(tools.ankiconnect, "list_note_type_names", list_mock)
+
+    tool_use_response = _response(
+        "tool_use",
+        [_tool_use_block("toolu_3", "list_anki_note_types", {})],
+    )
+    end_turn_response = _response(
+        "end_turn",
+        [_text_block("I couldn't reach Anki just now — want me to try again?")],
+    )
+
+    create, call_snapshots = _mock_create([tool_use_response, end_turn_response])
+    client = AsyncMock()
+    client.messages.create = create
+
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        result = await core.run_turn([], "what note types do I have?", model_id="claude-opus-4-8")
+
+    assert result["reply"] == "I couldn't reach Anki just now — want me to try again?"
+    assert len(call_snapshots) == 2
+
+    second_call_messages = call_snapshots[1]["messages"]
+    tool_result = second_call_messages[-1]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == "toolu_3"
+    assert tool_result["is_error"] is True
+    assert "timed out" in tool_result["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_routes_to_the_gemini_provider_for_a_gemini_model(db, monkeypatch):
+    # run_turn must pick the provider adapter matching model_id's registry
+    # entry, not always Anthropic — this is the whole point of model
+    # selection. Patching gemini_provider.create_message directly (rather
+    # than mocking the underlying google-genai client, covered in
+    # test_gemini_provider.py) isolates core.py's provider-dispatch logic.
+    gemini_create = AsyncMock(
+        return_value=_response("end_turn", [_text_block("Konnichiwa!")])
+    )
+    monkeypatch.setattr(core.gemini_provider, "create_message", gemini_create)
+    anthropic_create = AsyncMock()
+    monkeypatch.setattr(core.anthropic_provider, "create_message", anthropic_create)
+
+    result = await core.run_turn([], "hi", model_id="gemini-3.1-flash-lite")
+
+    assert result["reply"] == "Konnichiwa!"
+    gemini_create.assert_awaited_once()
+    assert gemini_create.await_args.kwargs["model_id"] == "gemini-3.1-flash-lite"
+    anthropic_create.assert_not_awaited()
 
 
 # --- known workflow specs are surfaced at the start of a conversation ---
@@ -297,8 +705,8 @@ async def test_run_turn_surfaces_known_specs_on_empty_history(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn([], "hi", model_id="claude-opus-4-8")
 
     system_prompt = call_snapshots[0]["system"]
     assert "lesson-doc" in system_prompt
@@ -315,8 +723,8 @@ async def test_run_turn_no_specs_uses_plain_system_prompt(db, monkeypatch):
     client = AsyncMock()
     client.messages.create = create
 
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn([], "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn([], "hi", model_id="claude-opus-4-8")
 
     assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT
 
@@ -336,7 +744,7 @@ async def test_run_turn_does_not_surface_specs_on_nonempty_history(db, monkeypat
         {"role": "user", "content": "earlier message"},
         {"role": "assistant", "content": "earlier reply"},
     ]
-    with patch("app.agent.core.anthropic.AsyncAnthropic", return_value=client):
-        await core.run_turn(history, "hi")
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn(history, "hi", model_id="claude-opus-4-8")
 
     assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT

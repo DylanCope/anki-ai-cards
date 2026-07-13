@@ -46,3 +46,22 @@ def test_list_workflow_specs(engine) -> None:
 
     names = sorted(spec.name for spec in workflow_specs.list_workflow_specs())
     assert names == ["lesson-doc", "other-source"]
+
+
+def test_save_bumps_updated_at_on_upsert(engine) -> None:
+    original = workflow_specs.save_workflow_spec("lesson-doc", "v1")
+    updated = workflow_specs.save_workflow_spec("lesson-doc", "v2")
+
+    assert updated.updated_at >= original.updated_at
+    assert updated.created_at == original.created_at
+
+
+def test_delete_workflow_spec(engine) -> None:
+    workflow_specs.save_workflow_spec("lesson-doc", "v1")
+
+    assert workflow_specs.delete_workflow_spec("lesson-doc") is True
+    assert workflow_specs.load_workflow_spec("lesson-doc") is None
+
+
+def test_delete_missing_workflow_spec_returns_false(engine) -> None:
+    assert workflow_specs.delete_workflow_spec("does-not-exist") is False

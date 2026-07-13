@@ -22,6 +22,7 @@ def _set_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-client-secret")
     monkeypatch.setenv("ALLOWED_EMAIL", ALLOWED_EMAIL)
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-session-secret")
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://anki-ai-cards-frontend.fly.dev")
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
     init_db()
 
@@ -43,6 +44,23 @@ def test_login_redirects_to_google_and_sets_state_cookie(client):
     assert location.startswith(google_docs.AUTH_BASE_URL)
     assert "oauth_state" in response.cookies
     assert _extract_state(location) == response.cookies["oauth_state"]
+
+
+def test_login_redirect_uri_uses_public_app_url_not_request_host(client):
+    # Regression test: redirect_uri must come from PUBLIC_APP_URL, never be
+    # inferred from the incoming request (e.g. via request.url_for). In
+    # production every request arrives via the frontend's proxy, so deriving
+    # it from the request would leak the backend's private .internal address
+    # to Google — which neither Google nor the browser can ever reach.
+    response = client.get(
+        "/auth/google/login",
+        follow_redirects=False,
+        headers={"host": "anki-ai-cards-backend.internal:8000"},
+    )
+
+    location = response.headers["location"]
+    redirect_uri = parse_qs(urlparse(location).query)["redirect_uri"][0]
+    assert redirect_uri == "https://anki-ai-cards-frontend.fly.dev/auth/google/callback"
 
 
 @respx.mock
@@ -163,5 +181,54 @@ def test_require_auth_rejects_tampered_cookie():
     protected_client.cookies.set(SESSION_COOKIE_NAME, "not-a-valid-signed-token")
 
     response = protected_client.get("/protected")
+
+    assert response.status_code == 401
+
+
+def test_require_auth_accepts_dev_api_key(monkeypatch):
+    monkeypatch.setenv("DEV_API_KEY", "test-dev-key")
+
+    protected_app = FastAPI()
+
+    @protected_app.get("/protected")
+    def protected(email: str = Depends(require_auth)):
+        return {"email": email}
+
+    response = TestClient(protected_app).get(
+        "/protected", headers={"Authorization": "Bearer test-dev-key"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"email": ALLOWED_EMAIL}
+
+
+def test_require_auth_rejects_wrong_dev_api_key(monkeypatch):
+    monkeypatch.setenv("DEV_API_KEY", "test-dev-key")
+
+    protected_app = FastAPI()
+
+    @protected_app.get("/protected")
+    def protected(email: str = Depends(require_auth)):
+        return {"email": email}
+
+    response = TestClient(protected_app).get(
+        "/protected", headers={"Authorization": "Bearer wrong-key"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_require_auth_rejects_dev_api_key_header_when_unset():
+    # DEV_API_KEY is not set by the autouse _set_env fixture, so any bearer
+    # token must be rejected — the bypass must be off by default.
+    protected_app = FastAPI()
+
+    @protected_app.get("/protected")
+    def protected(email: str = Depends(require_auth)):
+        return {"email": email}
+
+    response = TestClient(protected_app).get(
+        "/protected", headers={"Authorization": "Bearer anything"}
+    )
 
     assert response.status_code == 401

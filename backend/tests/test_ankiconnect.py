@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 import respx
 from httpx import Response
@@ -12,6 +13,10 @@ ANKICONNECT_URL = "http://localhost:8765"
 @pytest.fixture(autouse=True)
 def _set_ankiconnect_url(monkeypatch):
     monkeypatch.setenv("ANKICONNECT_URL", ANKICONNECT_URL)
+    # No real delays in tests — retry backoff is only for production, where
+    # it gives Anki's crash-restart loop (a few seconds, see AGENTS.md) time
+    # to come back up.
+    monkeypatch.setattr(ankiconnect, "RETRY_DELAY_SECONDS", 0)
 
 
 @respx.mock
@@ -88,6 +93,59 @@ async def test_create_note():
 
 
 @respx.mock
+async def test_create_note_with_audio_attachment():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": 12345, "error": None})
+    )
+
+    await ankiconnect.create_note(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        audio={"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]},
+    )
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["params"]["note"]["audio"] == [
+        {"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]}
+    ]
+
+
+@respx.mock
+async def test_create_note_with_picture_attachment():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": 12345, "error": None})
+    )
+
+    await ankiconnect.create_note(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        picture={"data": "aW1n", "filename": "image-1.png", "fields": ["Picture"]},
+    )
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["params"]["note"]["picture"] == [
+        {"data": "aW1n", "filename": "image-1.png", "fields": ["Picture"]}
+    ]
+
+
+@respx.mock
+async def test_create_note_without_audio_omits_the_field():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": 12345, "error": None})
+    )
+
+    await ankiconnect.create_note(
+        deck_name="Japanese", model_name="Cloze", fields={"Text": "食べる"}
+    )
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert "audio" not in sent_body["params"]["note"]
+    assert "picture" not in sent_body["params"]["note"]
+
+
+@respx.mock
 async def test_sync():
     route = respx.post(ANKICONNECT_URL).mock(
         return_value=Response(200, json={"result": None, "error": None})
@@ -96,3 +154,62 @@ async def test_sync():
     await ankiconnect.sync()
 
     assert route.called
+
+
+@respx.mock
+async def test_invoke_retries_transient_connection_errors_then_succeeds():
+    route = respx.post(ANKICONNECT_URL).mock(
+        side_effect=[
+            httpx.ConnectError("connection refused"),
+            httpx.ReadError("connection reset"),
+            Response(200, json={"result": 6, "error": None}),
+        ]
+    )
+
+    result = await ankiconnect.invoke("version")
+
+    assert result == 6
+    assert route.call_count == 3
+
+
+@respx.mock
+async def test_invoke_retries_read_timeout_then_succeeds():
+    # A ReadTimeout (connection accepted, no response in time) is exactly
+    # what Anki's intermittent segfault-restart window looks like — it must
+    # be retried like the other transient connection errors, not just
+    # ConnectError/ConnectTimeout which only cover the pre-connect case.
+    route = respx.post(ANKICONNECT_URL).mock(
+        side_effect=[
+            httpx.ReadTimeout("timed out"),
+            Response(200, json={"result": 6, "error": None}),
+        ]
+    )
+
+    result = await ankiconnect.invoke("version")
+
+    assert result == 6
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_invoke_raises_after_exhausting_retries():
+    route = respx.post(ANKICONNECT_URL).mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+
+    with pytest.raises(ankiconnect.AnkiConnectError, match="failed after 3 attempts"):
+        await ankiconnect.invoke("version")
+
+    assert route.call_count == ankiconnect.MAX_ATTEMPTS
+
+
+@respx.mock
+async def test_invoke_does_not_retry_an_ankiconnect_reported_error():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": None, "error": "deck was not found"})
+    )
+
+    with pytest.raises(ankiconnect.AnkiConnectError, match="deck was not found"):
+        await ankiconnect.invoke("addNote", note={})
+
+    assert route.call_count == 1

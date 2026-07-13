@@ -2,7 +2,7 @@ import ChatApp from "@/app/components/ChatApp";
 
 export default function Home() {
   return (
-    <div className="flex flex-1 flex-col items-center bg-zinc-50 dark:bg-black">
+    <div className="flex min-h-0 w-full flex-1 flex-col bg-background">
       <ChatApp />
     </div>
   );

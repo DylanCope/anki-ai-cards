@@ -17,7 +17,7 @@ def _set_api_key(monkeypatch):
 @respx.mock
 async def test_generate_audio_options_makes_three_distinct_requests():
     route = respx.post(
-        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
     ).mock(
         side_effect=[
             Response(200, content=b"audio-one"),
@@ -33,6 +33,7 @@ async def test_generate_audio_options_makes_three_distinct_requests():
 
     bodies = [json.loads(call.request.content) for call in route.calls]
     assert all(body["text"] == "食べる" for body in bodies)
+    assert all(body["model_id"] == elevenlabs.MODEL_ID for body in bodies)
     # Each request should use different voice settings so the outputs vary.
     voice_settings = [body["voice_settings"] for body in bodies]
     assert len({json.dumps(v, sort_keys=True) for v in voice_settings}) == 3
@@ -44,9 +45,61 @@ async def test_generate_audio_options_makes_three_distinct_requests():
 @respx.mock
 async def test_generate_audio_options_respects_n():
     respx.post(
-        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.DEFAULT_VOICE_ID}"
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
     ).mock(return_value=Response(200, content=b"audio"))
 
     results = await elevenlabs.generate_audio_options("hello", n=1)
 
     assert results == [b"audio"]
+
+
+@respx.mock
+async def test_generate_audio_options_raises_elevenlabs_error_with_api_detail():
+    respx.post(
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
+    ).mock(
+        return_value=Response(
+            402,
+            json={
+                "detail": {
+                    "type": "payment_required",
+                    "code": "paid_plan_required",
+                    "message": (
+                        "Free users cannot use library voices via the API. "
+                        "Please upgrade your subscription to use this voice."
+                    ),
+                    "status": "payment_required",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(elevenlabs.ElevenLabsError, match="library voices"):
+        await elevenlabs.generate_audio_options("hello", n=1)
+
+
+@respx.mock
+async def test_generate_audio_options_raises_elevenlabs_error_for_non_json_body():
+    respx.post(
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS[elevenlabs.DEFAULT_VOICE]}"
+    ).mock(return_value=Response(500, text="internal server error"))
+
+    with pytest.raises(elevenlabs.ElevenLabsError, match="internal server error"):
+        await elevenlabs.generate_audio_options("hello", n=1)
+
+
+@respx.mock
+async def test_generate_audio_options_uses_female_voice_id():
+    route = respx.post(
+        f"{elevenlabs.API_BASE_URL}/text-to-speech/{elevenlabs.VOICE_IDS['female']}"
+    ).mock(return_value=Response(200, content=b"audio"))
+
+    results = await elevenlabs.generate_audio_options("hello", n=1, voice="female")
+
+    assert results == [b"audio"]
+    assert route.call_count == 1
+
+
+async def test_generate_audio_options_rejects_unknown_voice():
+    with pytest.raises(ValueError, match="Unknown voice"):
+        await elevenlabs.generate_audio_options("hello", n=1, voice="robot")
