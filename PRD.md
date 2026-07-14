@@ -1054,7 +1054,7 @@ which model the *currently open* conversation uses.
   (calling `init_db()` twice doesn't error) and correctly backfill a
   pre-existing SQLite file lacking the new column/table shape.
 
-- [ ] **52. Backend: AnkiConnect `modelTemplates`/`modelStyling` wrappers.**
+- [x] **52. Backend: AnkiConnect `modelTemplates`/`modelStyling` wrappers.**
   Independent of 51, unblocks 53's manual testing and 54. `backend/app/
   clients/ankiconnect.py`: add `get_model_templates(name: str) -> dict[str,
   dict[str, str]]` (wraps AnkiConnect's `modelTemplates` action — returns

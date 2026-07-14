@@ -14,6 +14,47 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 52: AnkiConnect `modelTemplates`/`modelStyling` wrappers
+- Did:
+  - `backend/app/clients/ankiconnect.py`: added `get_model_templates(name) ->
+    dict[str, dict[str, str]]` (thin `invoke("modelTemplates", modelName=name)`
+    call, returns AnkiConnect's raw `{card_name: {"Front": qfmt, "Back":
+    afmt}}` result unchanged) and `get_model_styling(name) -> str` (calls
+    `invoke("modelStyling", modelName=name)`, then unwraps the `{"css": ...}`
+    result dict down to just the CSS string) — both follow the existing
+    `list_note_type_names`/`get_note_type_fields` style exactly (no extra
+    error handling beyond what `invoke()` already provides, since a non-null
+    `error` already raises `AnkiConnectError` there).
+  - Confirmed the exact response shapes against AnkiConnect's real
+    documented example responses via web search (the project's own GitHub
+    mirror 404s now — it moved to sourcehut, which also 404/502'd on direct
+    fetch — but a search surfaced the same example JSON multiple independent
+    sources agree on) before writing the code, per the task's "confirm the
+    exact shape" instruction: `modelTemplates` result is
+    `{card_name: {"Front": qfmt, "Back": afmt}}`; `modelStyling` result is
+    `{"css": <str>}`. Both matched what the PRD already assumed, so no
+    surprises here — this was still worth confirming since tasks 19/35 found
+    real API surprises the same way.
+  - `backend/tests/test_ankiconnect.py`: added
+    `test_get_model_templates`/`test_get_model_templates_raises_on_error`/
+    `test_get_model_styling`/`test_get_model_styling_raises_on_error`,
+    mirroring `test_get_note_type_fields`'s respx-mocked style and
+    `test_invoke_raises_on_error`'s error-surfacing pattern.
+- Verified: `cd backend && uv run pytest tests/test_ankiconnect.py` → 17
+  passed (13 pre-existing + 4 new). Full suite `uv run pytest` → 228 passed
+  (224 pre-existing + 4 new), no regressions.
+- Learned:
+  - `git.foosoft.net`/`git.sr.ht` (AnkiConnect's current upstream host) both
+    failed to fetch directly in this sandbox (404/502) — `WebSearch` still
+    found the same example request/response JSON via other indexed mirrors
+    (a Rust/Elixir/TS AnkiConnect client repo, an agent-skill registry
+    entry), so that's a viable fallback for confirming AnkiConnect API
+    shapes if a future task hits the same direct-fetch dead end.
+  - Task 53 (template renderer) and task 54 (wiring +
+    `GET /api/pending-cards/{id}/preview`) are next and will call these two
+    wrappers directly — their return shapes are locked in now, don't change
+    them without checking those tasks' expectations first.
+
 ## 2026-07-14 — Task 51: rebuild `PendingCard` + add `Conversation.instant_creation`
 - Did:
   - `backend/app/models.py`: replaced `PendingCard`'s old task-2 columns
