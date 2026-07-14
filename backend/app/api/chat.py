@@ -46,12 +46,14 @@ from app.models import (
     ImageAsset,
     OAuthToken,
     PendingCard,
+    UserSettings,
     get_engine,
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 conversations_router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 models_router = APIRouter(prefix="/api/models", tags=["models"])
+settings_router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 TITLE_MAX_LENGTH = 60
 
@@ -74,8 +76,17 @@ class ChatResponse(BaseModel):
 
 
 class CreateConversationRequest(BaseModel):
-    model: str = DEFAULT_MODEL_ID
+    # None means "use the resolved default" (Dylan's stored default_model_id
+    # if set, else DEFAULT_MODEL_ID) — see create_conversation. Defaulting
+    # this field to DEFAULT_MODEL_ID directly would shadow a DB-stored
+    # default at the Pydantic level, since an explicit body model always
+    # wins over the stored one.
+    model: str | None = None
     instant_creation: bool = False
+
+
+class UpdateDefaultModelRequest(BaseModel):
+    model_id: str
 
 
 class UpdateConversationRequest(BaseModel):
@@ -107,6 +118,18 @@ def _get_conversation_or_404(session: Session, conversation_id: int) -> Conversa
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
+
+
+def _get_user_settings(session: Session) -> UserSettings:
+    """Get-or-create the single settings row (id=1) — this app is
+    single-user, so there's only ever one."""
+    settings = session.get(UserSettings, 1)
+    if settings is None:
+        settings = UserSettings(id=1)
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
+    return settings
 
 
 def _content_block_to_dict(block) -> dict:
@@ -582,14 +605,17 @@ async def create_conversation(
     body: CreateConversationRequest = CreateConversationRequest(),
     email: str = Depends(require_auth),
 ) -> dict:
-    try:
-        get_model(body.model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     engine = get_engine()
     with Session(engine) as session:
-        conversation = Conversation(model=body.model, instant_creation=body.instant_creation)
+        resolved_model = (
+            body.model or _get_user_settings(session).default_model_id or DEFAULT_MODEL_ID
+        )
+        try:
+            get_model(resolved_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        conversation = Conversation(model=resolved_model, instant_creation=body.instant_creation)
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
@@ -666,6 +692,34 @@ async def list_models(email: str = Depends(require_auth)) -> list[dict]:
         }
         for model in AVAILABLE_MODELS
     ]
+
+
+@settings_router.get("")
+async def get_settings(email: str = Depends(require_auth)) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        settings = _get_user_settings(session)
+    return {"default_model_id": settings.default_model_id}
+
+
+@settings_router.put("/default-model")
+async def set_default_model(
+    body: UpdateDefaultModelRequest, email: str = Depends(require_auth)
+) -> dict:
+    try:
+        get_model(body.model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    engine = get_engine()
+    with Session(engine) as session:
+        settings = _get_user_settings(session)
+        settings.default_model_id = body.model_id
+        settings.updated_at = datetime.now(timezone.utc)
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
+    return {"default_model_id": settings.default_model_id}
 
 
 bug_reports_router = APIRouter(prefix="/api/bug-reports", tags=["bug-reports"])

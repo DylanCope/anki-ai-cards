@@ -85,6 +85,18 @@ class PendingCard(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class UserSettings(SQLModel, table=True):
+    """A single-row table (id=1, get-or-create'd — see app.api.chat's
+    _get_user_settings) holding settings that apply across the whole app
+    rather than to one conversation, e.g. which model a brand new
+    conversation should default to. No email/multi-row logic needed, matching
+    every other single-user assumption in this app."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    default_model_id: str | None = Field(default=None)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class OAuthToken(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     email: str = Field(unique=True, index=True)

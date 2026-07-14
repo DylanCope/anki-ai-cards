@@ -1815,3 +1815,73 @@ def test_content_block_to_dict_omits_gemini_thought_signature_when_absent():
     result = chat_module._content_block_to_dict(block)
 
     assert "gemini_thought_signature" not in result
+
+
+def test_get_settings_requires_auth(client):
+    response = client.get("/api/settings")
+    assert response.status_code == 401
+
+
+def test_get_settings_defaults_to_no_default_model():
+    _seed_token()
+    response = _authed_client().get("/api/settings")
+
+    assert response.status_code == 200
+    assert response.json() == {"default_model_id": None}
+
+
+def test_set_default_model_requires_auth(client):
+    response = client.put("/api/settings/default-model", json={"model_id": "claude-sonnet-5"})
+    assert response.status_code == 401
+
+
+def test_set_default_model_rejects_an_unknown_model():
+    _seed_token()
+    response = _authed_client().put(
+        "/api/settings/default-model", json={"model_id": "gpt-4o"}
+    )
+    assert response.status_code == 400
+
+
+def test_set_default_model_then_get_settings_reflects_it():
+    _seed_token()
+    authed = _authed_client()
+
+    put_response = authed.put(
+        "/api/settings/default-model", json={"model_id": "claude-sonnet-5"}
+    )
+    assert put_response.status_code == 200
+    assert put_response.json()["default_model_id"] == "claude-sonnet-5"
+
+    get_response = authed.get("/api/settings")
+    assert get_response.json()["default_model_id"] == "claude-sonnet-5"
+
+
+def test_create_conversation_uses_stored_default_model_when_none_specified():
+    _seed_token()
+    authed = _authed_client()
+    authed.put("/api/settings/default-model", json={"model_id": "claude-haiku-4-5"})
+
+    response = authed.post("/api/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "claude-haiku-4-5"
+
+
+def test_create_conversation_explicit_model_wins_over_stored_default():
+    _seed_token()
+    authed = _authed_client()
+    authed.put("/api/settings/default-model", json={"model_id": "claude-haiku-4-5"})
+
+    response = authed.post("/api/conversations", json={"model": "claude-opus-4-8"})
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "claude-opus-4-8"
+
+
+def test_create_conversation_falls_back_to_hardcoded_default_when_no_stored_default():
+    _seed_token()
+    response = _authed_client().post("/api/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["model"] == DEFAULT_MODEL_ID

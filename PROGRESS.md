@@ -14,6 +14,51 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 58: `UserSettings` table + default-model endpoint
+- Did: Added a `UserSettings` table (`backend/app/models.py`): `id`,
+  `default_model_id: str | None`, `updated_at` — a brand-new table (no
+  migration needed, `create_all()` handles it) rather than an ALTER TABLE,
+  since nothing previously wrote to it. Added `_get_user_settings(session)`
+  in `backend/app/api/chat.py` (get-or-create the single row, `id=1`, same
+  single-row pattern the task description asked for). New
+  `settings_router` (`/api/settings`) with `GET /api/settings` (returns
+  `{"default_model_id": ...}`) and `PUT /api/settings/default-model`
+  (`{"model_id": str}` body, validates via `get_model()` → 400 on unknown
+  id, otherwise upserts and returns the updated value) — both behind
+  `require_auth`, registered in `backend/app/main.py` alongside the other
+  routers. Changed `CreateConversationRequest.model` from
+  `str = DEFAULT_MODEL_ID` to `str | None = None` (a hardcoded Pydantic
+  default would always shadow a DB-stored one, since "unset" and "explicitly
+  DEFAULT_MODEL_ID" would be indistinguishable) and reworked
+  `create_conversation` to resolve `body.model or
+  _get_user_settings(session).default_model_id or DEFAULT_MODEL_ID` before
+  validating/constructing the `Conversation` row, giving the exact
+  precedence order the task asked for (explicit request body wins over
+  stored default wins over hardcoded fallback).
+- Verified: `cd backend && uv run pytest` → 265 passed (was 257 before this
+  task; 8 new tests in `test_chat.py` covering: `GET`/`PUT /api/settings`
+  both require auth, `GET /api/settings` defaults to
+  `{"default_model_id": None}` on a fresh DB, `PUT .../default-model` 400s on
+  an unknown model id and 200s + persists on a known one (checked via a
+  follow-up `GET`), and all three precedence cases for
+  `POST /api/conversations` — stored default used when no body model given,
+  explicit body model wins over a stored default, and the hardcoded
+  `DEFAULT_MODEL_ID` is used when neither is set). Also ran `cd frontend &&
+  npm run build` as a sanity check since this task touches shared
+  conversation-creation logic — passed unchanged (no frontend files touched
+  by this task, task 59 is the frontend half).
+- Learned:
+  - No Fly deploy for this task — it's backend-only and PRD/AGENTS.md's
+    deploy-and-verify convention is scoped to tasks 20-32 and the
+    image/Tatoeba/Forvo/dictionary batches (35-39, 44-46); tasks 51+ don't
+    carry that requirement explicitly and this one is low-risk (additive
+    table, new routes, one changed default that's covered by tests), so left
+    it for a later batch deploy rather than deploying every single-task
+    commit — flag to Dylan if he wants task 58/59 deployed sooner.
+  - Task 59 (frontend "mark as default" checkbox in `AiSettingsButton`) is
+    the natural next task — it's the only remaining task depending on this
+    one being done first.
+
 ## 2026-07-14 — Task 57: Docs update for preview-before-creation
 - Did: Added a new "## 11. Preview-before-creation and the instant-creation
   toggle" section to `docs/manual_verification.md`, cross-checked against

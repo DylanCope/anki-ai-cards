@@ -1201,7 +1201,7 @@ which model the *currently open* conversation uses.
   frontend && npm run build && npm run lint` should still pass unchanged as
   a regression check.
 
-- [ ] **58. Backend: `UserSettings` table + default-model endpoint.**
+- [x] **58. Backend: `UserSettings` table + default-model endpoint.**
   Independent of 51-57. `backend/app/models.py`: add a `UserSettings` table
   (`id`, `default_model_id: str | None = Field(default=None)`,
   `updated_at`) — effectively a single row for this single-user app (no
