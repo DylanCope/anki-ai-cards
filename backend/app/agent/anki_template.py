@@ -3,9 +3,18 @@
 Only the subset of Anki's template syntax Dylan's real note types actually use
 is supported: `{{FieldName}}` substitution, `{{FrontSide}}` (afmt only),
 `{{#FieldName}}...{{/FieldName}}` / `{{^FieldName}}...{{/FieldName}}`
-conditional sections, and `{{cloze:FieldName}}`. Exotic/malformed syntax is
-left untouched in the output rather than raising — a broken-looking preview
-beats a 500 on a real card the agent already drafted.
+conditional sections, and `{{cloze:FieldName}}`. Any other `{{filter:Field}}`
+form (Anki has several built-ins — `furigana:`, `kanji:`, `kana:`, `hint:`,
+`type:`, `tts:` — and third-party note types add their own, e.g. Dylan's
+Migaku note type's `{{editable:Field}}`) falls back to plain field-value
+substitution, ignoring the filter's real rendering behavior. Confirmed
+against Dylan's real "Migaku Japanese Custom" note type (via live AnkiConnect
+data) that without this fallback, `{{editable:Field}}` was left completely
+unsubstituted in the output — every real field (sentence, word, definitions,
+audio, images) was invisible, just literal `{{editable:...}}` text, which is
+worse than an imperfect-but-legible best-effort render. Exotic/malformed
+syntax beyond this is left untouched in the output rather than raising — a
+broken-looking preview beats a 500 on a real card the agent already drafted.
 
 Cloze rendering always previews ordinal `c1` as the representative card, even
 for a note whose field contains multiple cloze numbers (`{{c1::...}}
@@ -22,6 +31,10 @@ _SECTION_RE = re.compile(r"\{\{([#^])([^{}]+?)\}\}(.*?)\{\{/\2\}\}", re.DOTALL)
 _CLOZE_FIELD_RE = re.compile(r"\{\{cloze:([^{}]+?)\}\}")
 _CLOZE_DELETION_RE = re.compile(r"\{\{c(\d+)::(.*?)\}\}", re.DOTALL)
 _FIELD_RE = re.compile(r"\{\{([^#^/:{}]+?)\}\}")
+# Any remaining `{{filter:Field}}` once `{{cloze:...}}` has already been
+# resolved above — see module docstring for why this falls back to a plain
+# field substitution instead of leaving the token unrendered.
+_FILTERED_FIELD_RE = re.compile(r"\{\{[a-zA-Z0-9_-]+:([^{}]+?)\}\}")
 
 PREVIEW_CLOZE_ORDINAL = 1
 
@@ -80,6 +93,7 @@ def _render_template(
     result = _process_cloze(result, fields, side=side, ordinal=ordinal)
     if front_html is not None:
         result = result.replace("{{FrontSide}}", front_html)
+    result = _FILTERED_FIELD_RE.sub(lambda m: fields.get(m.group(1).strip(), ""), result)
     result = _FIELD_RE.sub(lambda m: fields.get(m.group(1).strip(), ""), result)
     return result
 

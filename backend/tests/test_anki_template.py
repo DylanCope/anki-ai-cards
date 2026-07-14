@@ -115,6 +115,35 @@ def test_multi_cloze_in_one_field_only_masks_the_previewed_ordinal():
     assert result["back_html"] == '<span class="cloze">to eat</span> is taberu'
 
 
+def test_unknown_filter_falls_back_to_plain_field_substitution():
+    # Anki has several built-in filters (furigana:, kanji:, kana:, hint:,
+    # type:, tts:) and third-party note types add their own (e.g. Dylan's
+    # Migaku note type's {{editable:Field}}) — none render the filter's real
+    # behavior, but the field's raw value should still show up rather than
+    # leaving the literal `{{filter:Field}}` token in the output.
+    result = render_card(
+        qfmt='<div>{{editable:Target Word}}</div>',
+        afmt="{{furigana:Sentence}}",
+        css="",
+        fields={"Target Word": "誘惑[ゆうわく]", "Sentence": "彼は誘惑に負けた。"},
+    )
+
+    assert result["front_html"] == "<div>誘惑[ゆうわく]</div>"
+    assert result["back_html"] == "彼は誘惑に負けた。"
+
+
+def test_unknown_filter_does_not_interfere_with_cloze():
+    result = render_card(
+        qfmt="{{cloze:Text}}",
+        afmt="{{cloze:Text}}<br>{{editable:Extra}}",
+        css="",
+        fields={"Text": "{{c1::to eat}}", "Extra": "verb"},
+    )
+
+    assert result["front_html"] == '<span class="cloze">[...]</span>'
+    assert result["back_html"] == '<span class="cloze">to eat</span><br>verb'
+
+
 def test_malformed_template_renders_best_effort_without_raising():
     result = render_card(
         qfmt="{{#Unclosed}}oops",
