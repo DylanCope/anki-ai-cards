@@ -247,6 +247,27 @@ export default function ChatApp() {
     }
   }
 
+  async function toggleInstantCreation(checked: boolean) {
+    if (conversationId === null || sending) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instant_creation: checked }),
+      });
+      if (res.status === 401) {
+        setAuth("signed_out");
+        return;
+      }
+      if (!res.ok) throw new Error(`Instant-creation update failed (${res.status})`);
+      const updated = (await res.json()) as Conversation;
+      setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+    } catch {
+      setError("Could not update instant-creation setting.");
+    }
+  }
+
   async function handleImageSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -583,7 +604,7 @@ export default function ChatApp() {
                 </button>
               </div>
             )}
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -596,10 +617,22 @@ export default function ChatApp() {
                 onClick={() => fileInputRef.current?.click()}
                 disabled={sending || uploadingImage}
                 aria-label="Attach an image"
-                className="self-end rounded-lg p-2 text-foreground/60 hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+                className="rounded-lg p-2 text-foreground/60 hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
               >
                 <Paperclip size={20} />
               </button>
+              <label className="flex select-none items-center gap-1.5 text-xs text-foreground/60">
+                <input
+                  type="checkbox"
+                  checked={activeConversation?.instant_creation ?? false}
+                  onChange={(event) => toggleInstantCreation(event.target.checked)}
+                  disabled={sending || !activeConversation}
+                  className="h-3.5 w-3.5 rounded border-border accent-accent"
+                />
+                Create cards instantly
+              </label>
+            </div>
+            <div className="flex gap-2">
               <textarea
                 ref={textareaRef}
                 value={input}

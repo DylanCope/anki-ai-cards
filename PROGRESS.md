@@ -14,6 +14,49 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 56: Frontend instant-creation checkbox
+- Did:
+  - `frontend/app/lib/types.ts`: added `instant_creation: boolean` to
+    `Conversation` (backend's `_conversation_to_dict` in `chat.py` already
+    returned this field from task 54 — the frontend type just hadn't
+    caught up).
+  - `frontend/app/components/ChatApp.tsx`: added `toggleInstantCreation(checked)`
+    (mirrors `changeModel`'s pattern exactly — `PATCH
+    /api/conversations/{id}` with `{instant_creation: checked}`, then merges
+    the returned `Conversation` into local `conversations` state). Added a
+    labeled checkbox ("Create cards instantly") in its own row directly above
+    the textarea/send row, alongside the existing attach-image button (moved
+    the file input + paperclip button out of the row that also contains the
+    textarea/send button, into this new row, since keeping them inline with
+    the auto-growing multi-line textarea via `self-end` no longer read well
+    next to a checkbox+label). Checked state reads
+    `activeConversation?.instant_creation ?? false`; disabled while `sending`
+    or before any conversation has loaded.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass.
+  - `cd backend && uv run pytest` — 257 passed (regression check only, no
+    backend changes this task; task 54 already built the
+    `instant_creation` field/endpoints).
+  - Deploy-and-verify (frontend only, per convention): `fly deploy` from
+    `frontend/` succeeded; `fly status -a anki-ai-cards-frontend` shows the
+    one machine `started` with no failing checks; `fly logs` showed nothing
+    unusual; `curl -s -o /dev/null -w "%{http_code}" https://anki-ai-cards-
+    frontend.fly.dev/` returned `200`. (The deploy output's "not listening on
+    0.0.0.0:3000" warning is pre-existing Next.js/Fly noise unrelated to this
+    change — the machine still reached "started"/healthy and the site is
+    reachable, so not investigated further here.)
+- Learned:
+  - Dylan still needs to manually confirm in a browser (can't be checked
+    headlessly): the checkbox starts unchecked on a brand-new chat, its state
+    persists across a page reload (i.e. survives `GET /api/conversations`
+    re-fetch), and checking it makes the *next* card-creation request skip
+    the pending-draft/preview step and create the Anki note immediately (task
+    51-55's original, pre-instant-creation-toggle behavior).
+  - Task 57 (docs update for the whole preview-before-creation batch,
+    51-56) is next and should cover this checkbox's behavior in
+    `docs/manual_verification.md` too — didn't touch that doc in this task
+    since 57 depends on 51-56 as a whole, not just this one.
+
 ## 2026-07-14 — Task 55: Frontend pending-card preview/create/discard UI
 - Did:
   - `frontend/app/lib/types.ts`: extended `CardPayload` with `status:

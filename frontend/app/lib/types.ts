@@ -4,6 +4,7 @@ export interface Conversation {
   id: number;
   title: string | null;
   model: string;
+  instant_creation: boolean;
   created_at: string;
   updated_at: string;
 }

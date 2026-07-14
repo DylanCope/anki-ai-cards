@@ -1175,7 +1175,7 @@ which model the *currently open* conversation uses.
   and a working front/back flip, Create turns it into a normal created-card
   display, and Discard on a separate draft correctly removes only that one.
 
-- [ ] **56. Frontend: instant-creation checkbox.** Depends on 54 (the
+- [x] **56. Frontend: instant-creation checkbox.** Depends on 54 (the
   `Conversation.instant_creation` field and `PATCH`/`POST` support).
   `frontend/app/components/ChatApp.tsx`: add a labeled checkbox ("Create
   cards instantly") near the composer (e.g. in the same row as the
