@@ -14,6 +14,46 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 57: Docs update for preview-before-creation
+- Did: Added a new "## 11. Preview-before-creation and the instant-creation
+  toggle" section to `docs/manual_verification.md`, cross-checked against
+  tasks 51-56 and their PROGRESS.md entries (not just the PRD text) so it
+  reflects what was actually built, not just what was asked for:
+  - 11a covers the default (instant-creation off) draft flow: proposing a
+    card now yields a "Card draft" (not "Card added to Anki"), Preview
+    rendering the real per-note-type template/CSS via the sandboxed iframe,
+    the front/back toggle, the mobile/PC width toggle, Create turning the
+    draft into a real Anki note (verified via VNC), and Discard on a
+    second draft leaving the first Create untouched.
+  - Explicitly flagged two known, already-documented gaps inline rather than
+    presenting them as new bugs to find: (a) task 60 (not yet done) means a
+    picked audio/image never reaches the draft/preview yet — told Dylan to
+    check PRD.md task 60's checkbox before treating a missing
+    audio/image in Preview as new; (b) the reload-shows-stale-"pending"
+    quirk from task 55's PROGRESS entry (payloads are re-derived from the
+    frozen original tool_result, not live `PendingCard.status`).
+  - 11b covers toggling "Create cards instantly" on: persists across reload,
+    makes the next card write to Anki immediately with no draft step, then
+    toggling off resumes the draft flow.
+  - Updated the closing "If something doesn't match" provenance paragraph to
+    mention section 11 / tasks 51-56 / the task-57 commit, matching the
+    existing pattern for sections 8 and 9.
+  - No code changes — confirmed no new env vars or AGENTS.md updates were
+    needed for tasks 51-56 (no new external services in this batch, unlike
+    tasks 36-40/43-47 which each got a matching docs task).
+- Verified: `cd backend && uv run pytest` → 257 passed (unchanged, regression
+  check only). `cd frontend && npm run build && npm run lint` → build and
+  lint both clean (unchanged). This task's actual verification is the doc
+  text matching the built system, which I cross-checked line-by-line against
+  the task 51/54/55/56 PROGRESS.md entries above.
+- Learned:
+  - PRD.md's tasks 58-59 (default AI model) and 60 (persist picked
+    audio/image on a `PendingCard`) remain unchecked and are independent of
+    this task — 58/59 don't touch anything this doc covers; 60 is
+    specifically called out inline in the new section 11a as a forward
+    reference so Dylan doesn't mistake its current absence for a bug.
+
+
 ## 2026-07-14 — Task 56: Frontend instant-creation checkbox
 - Did:
   - `frontend/app/lib/types.ts`: added `instant_creation: boolean` to

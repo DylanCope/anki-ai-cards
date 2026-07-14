@@ -1189,7 +1189,7 @@ which model the *currently open* conversation uses.
   creation request skip the draft/preview step entirely (today's original
   immediate-creation behavior).
 
-- [ ] **57. Docs: update the manual verification checklist for
+- [x] **57. Docs: update the manual verification checklist for
   preview-before-creation.** Depends on 51-56. Update `docs/
   manual_verification.md` (task 13's checklist) with steps covering: leaving
   instant-creation off and confirming a proposed card shows as a draft with
