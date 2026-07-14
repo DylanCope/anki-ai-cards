@@ -105,3 +105,7 @@ export interface WorkflowSpec {
   created_at: string;
   updated_at: string;
 }
+
+export interface UserSettings {
+  default_model_id: string | null;
+}

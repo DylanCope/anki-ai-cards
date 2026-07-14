@@ -1227,7 +1227,7 @@ which model the *currently open* conversation uses.
   precedence order (explicit body model wins over stored default wins over
   hardcoded `DEFAULT_MODEL_ID`).
 
-- [ ] **59. Frontend: "mark as default" checkbox in the model panel.**
+- [x] **59. Frontend: "mark as default" checkbox in the model panel.**
   Depends on 58. `frontend/app/lib/types.ts`: add a type for the `GET
   /api/settings` response. `frontend/app/components/ChatApp.tsx`: fetch
   `GET /api/settings` alongside the existing models/conversations bootstrap

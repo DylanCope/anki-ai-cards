@@ -11,6 +11,7 @@ import type {
   Conversation,
   ImageAttachmentPayload,
   ModelInfo,
+  UserSettings,
 } from "@/app/lib/types";
 import MessageBubble from "@/app/components/MessageBubble";
 import AudioOptionsCard from "@/app/components/AudioOptionsCard";
@@ -32,6 +33,7 @@ export default function ChatApp() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -77,11 +79,16 @@ export default function ChatApp() {
     let cancelled = false;
     (async () => {
       try {
-        const [conversationsRes, modelsRes] = await Promise.all([
+        const [conversationsRes, modelsRes, settingsRes] = await Promise.all([
           fetch("/api/conversations"),
           fetch("/api/models"),
+          fetch("/api/settings"),
         ]);
-        if (conversationsRes.status === 401 || modelsRes.status === 401) {
+        if (
+          conversationsRes.status === 401 ||
+          modelsRes.status === 401 ||
+          settingsRes.status === 401
+        ) {
           if (!cancelled) setAuth("signed_out");
           return;
         }
@@ -89,8 +96,10 @@ export default function ChatApp() {
           throw new Error(`Conversation list request failed (${conversationsRes.status})`);
         }
         if (!modelsRes.ok) throw new Error(`Model list request failed (${modelsRes.status})`);
+        if (!settingsRes.ok) throw new Error(`Settings request failed (${settingsRes.status})`);
         let list = (await conversationsRes.json()) as Conversation[];
         const modelList = (await modelsRes.json()) as ModelInfo[];
+        const settings = (await settingsRes.json()) as UserSettings;
         if (list.length === 0) {
           const created = await fetch("/api/conversations", { method: "POST" });
           list = [(await created.json()) as Conversation];
@@ -98,6 +107,7 @@ export default function ChatApp() {
         if (!cancelled) {
           setConversations(list);
           setModels(modelList);
+          setDefaultModelId(settings.default_model_id);
           setConversationId(list[0].id);
           setAuth("signed_in");
         }
@@ -244,6 +254,26 @@ export default function ChatApp() {
       setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
     } catch {
       setError("Could not change the model.");
+    }
+  }
+
+  async function setDefaultModel(modelId: string) {
+    setError(null);
+    try {
+      const res = await fetch("/api/settings/default-model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId }),
+      });
+      if (res.status === 401) {
+        setAuth("signed_out");
+        return;
+      }
+      if (!res.ok) throw new Error(`Default-model update failed (${res.status})`);
+      const updated = (await res.json()) as UserSettings;
+      setDefaultModelId(updated.default_model_id);
+    } catch {
+      setError("Could not set the default model.");
     }
   }
 
@@ -507,6 +537,8 @@ export default function ChatApp() {
                 selectedId={activeConversation.model}
                 onSelect={changeModel}
                 disabled={sending}
+                defaultModelId={defaultModelId}
+                onSetDefault={setDefaultModel}
               />
             )}
             <WorkflowsButton />

@@ -14,6 +14,51 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 59: "mark as default" checkbox in the model panel
+- Did: `frontend/app/lib/types.ts`: added a `UserSettings` type
+  (`{ default_model_id: string | null }`) matching task 58's `GET
+  /api/settings` response shape. `frontend/app/components/ChatApp.tsx`: the
+  bootstrap effect now fetches `GET /api/settings` in parallel with the
+  existing conversations/models fetches (also checks its `401` alongside the
+  other two), holding the result in a new `defaultModelId` state var. Added
+  `setDefaultModel(modelId)` (mirrors `changeModel`'s fetch/error-handling
+  shape) calling `PUT /api/settings/default-model` with `{model_id: ...}` and
+  updating `defaultModelId` from the response on success.
+  `frontend/app/components/AiSettingsButton.tsx`: added `defaultModelId:
+  string | null` and `onSetDefault: (modelId: string) => void` props; each
+  model row now renders a `lucide-react` `Star` icon button (filled +
+  accent-colored when `model.id === defaultModelId`) alongside the existing
+  display name/price/description text, calling `onSetDefault(model.id)` with
+  `event.stopPropagation()` so clicking the star doesn't also fire the row's
+  existing "select this model for the current conversation" click handler.
+- Verified: `cd frontend && npm run build && npm run lint` — both pass, no
+  new warnings. `cd backend && uv run pytest` — 265 passed, unchanged (no
+  backend code touched by this task; ran as a regression check per the loop
+  convention of verifying both stacks even on frontend-only tasks).
+- Learned:
+  - The model row was originally a single `<button>` wrapping the whole
+    card (select-on-click). Nesting a second `<button>` (the star) inside it
+    for the "set default" action isn't valid HTML/React (a `<button>` can't
+    contain interactive descendants) — changed the outer element from
+    `<button>` to a `<div role="button" tabIndex={0} onClick={...}
+    onKeyDown={...}>` (Enter/Space trigger the same select action) so the
+    inner star `<button>` with its own `stopPropagation`'d click handler
+    stays valid and keyboard-accessible. Future rows-with-a-secondary-action
+    patterns in this codebase should use this same div+inner-button shape
+    rather than nested buttons.
+  - `GET /api/settings` was added to the bootstrap `Promise.all` rather than
+    fetched lazily inside `AiSettingsButton` (which only mounts its dropdown
+    contents when opened) — `defaultModelId` needs to be known up front so
+    the star renders correctly filled the very first time the panel opens,
+    not just after a re-fetch.
+  - Manual browser verification still needed (per PRD's note on this task):
+    Dylan should confirm marking a model as default persists across reload,
+    renders visually distinct from (and independent of) the current
+    conversation's selected model highlight, and that a brand new chat
+    actually opens using the marked default (already covered logically by
+    task 58's backend precedence order — this task only adds the UI to set
+    it).
+
 ## 2026-07-14 — Task 58: `UserSettings` table + default-model endpoint
 - Did: Added a `UserSettings` table (`backend/app/models.py`): `id`,
   `default_model_id: str | None`, `updated_at` — a brand-new table (no

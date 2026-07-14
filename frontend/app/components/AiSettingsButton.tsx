@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Sparkles, X } from "lucide-react";
+import { Sparkles, Star, X } from "lucide-react";
 import type { ModelInfo } from "@/app/lib/types";
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   selectedId: string;
   onSelect: (modelId: string) => void;
   disabled: boolean;
+  defaultModelId: string | null;
+  onSetDefault: (modelId: string) => void;
 }
 
 function formatPrice(model: ModelInfo): string {
@@ -20,7 +22,14 @@ const PROVIDER_LABELS: Record<ModelInfo["provider"], string> = {
   gemini: "Gemini (Google)",
 };
 
-export default function AiSettingsButton({ models, selectedId, onSelect, disabled }: Props) {
+export default function AiSettingsButton({
+  models,
+  selectedId,
+  onSelect,
+  disabled,
+  defaultModelId,
+  onSetDefault,
+}: Props) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -81,25 +90,56 @@ export default function AiSettingsButton({ models, selectedId, onSelect, disable
                       .filter((m) => m.provider === provider)
                       .map((model) => {
                         const isSelected = model.id === selectedId;
+                        const isDefault = model.id === defaultModelId;
                         return (
-                          <button
+                          <div
                             key={model.id}
-                            type="button"
+                            role="button"
+                            tabIndex={0}
                             onClick={() => onSelect(model.id)}
-                            className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                onSelect(model.id);
+                              }
+                            }}
+                            className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
                               isSelected
                                 ? "border-accent bg-accent/10"
                                 : "border-border hover:bg-foreground/5"
                             }`}
                           >
-                            <p className="text-sm font-medium text-foreground">
-                              {model.display_name}
-                            </p>
-                            <p className="mt-0.5 text-xs text-foreground/50">
-                              {formatPrice(model)}
-                            </p>
-                            <p className="mt-1 text-xs text-foreground/60">{model.description}</p>
-                          </button>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-medium text-foreground">
+                                {model.display_name}
+                              </p>
+                              <p className="mt-0.5 text-xs text-foreground/50">
+                                {formatPrice(model)}
+                              </p>
+                              <p className="mt-1 text-xs text-foreground/60">
+                                {model.description}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onSetDefault(model.id);
+                              }}
+                              aria-label={
+                                isDefault
+                                  ? `${model.display_name} is the default model`
+                                  : `Set ${model.display_name} as default model`
+                              }
+                              title={isDefault ? "Default model" : "Set as default"}
+                              className="shrink-0 rounded-lg p-1 text-foreground/30 transition-colors hover:bg-foreground/10 hover:text-foreground/60"
+                            >
+                              <Star
+                                size={16}
+                                className={isDefault ? "fill-accent text-accent" : undefined}
+                              />
+                            </button>
+                          </div>
                         );
                       })}
                   </div>
