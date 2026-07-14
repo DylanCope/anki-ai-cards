@@ -22,17 +22,34 @@ interface Props {
   actionError: string | null;
 }
 
-// Real Anki toggles a `night_mode` class on an ancestor of `.card` when its
-// night mode is active, and note types' own CSS (e.g. Dylan's Cloze+) style
-// off it — added to both the root element and the `.card` div itself so
-// either `.night_mode .foo` or `.card.night_mode` selector conventions match.
+// Real Anki toggles a `nightMode` class (confirmed against Dylan's actual
+// Cloze+ styling, which has `.nightMode .cloze { color: lightblue; }`) on an
+// ancestor of `.card` when night mode is active. Also add the less common
+// `night_mode` snake_case variant some other shared note types use — added
+// to both the root element and the `.card` div itself so ancestor selectors
+// (`.nightMode .foo`) and compound selectors (`.card.nightMode`) both match.
+//
+// Real Anki's reviewer also ships its own base dark background/text-color
+// for night mode, which the note's own CSS cascades on top of and can
+// override — e.g. Dylan's "Cloze" note type hardcodes `.card { background:
+// white }` with no night-mode override, so it stays white under real Anki's
+// night mode too; "Cloze+" leaves its background undefined (a commented-out
+// CSS variable block), so Anki's own dark default shows through. The
+// low-specificity `body`/`html` rule below approximates that same base
+// layer, loaded before the note's own CSS so anything more specific in it
+// still wins.
 function buildSrcDoc(preview: PendingCardPreview, side: PreviewSide, nightMode: boolean): string {
   const html = side === "front" ? preview.front_html : preview.back_html;
-  const nightClass = nightMode ? " night_mode" : "";
-  return `<!DOCTYPE html><html class="${nightMode ? "night_mode" : ""}"><head><style>
-body { font-family: Arial, Helvetica, "Noto Sans JP", sans-serif; margin: 0; }
+  const nightClasses = nightMode ? " nightMode night_mode" : "";
+  const nightBase = nightMode
+    ? "html, body { background: #2f2f31; color: #fff; }"
+    : "";
+  return `<!DOCTYPE html><html class="${nightMode ? "nightMode night_mode" : ""}"><head><style>
+body { font-family: Arial, Helvetica, "Noto Sans JP", sans-serif; margin: 0; height: 100%; }
+html { height: 100%; }
+${nightBase}
 ${preview.css}
-</style></head><body><div class="card${nightClass}">${html}</div></body></html>`;
+</style></head><body><div class="card${nightClasses}">${html}</div></body></html>`;
 }
 
 export default function PendingCardPreviewModal({
@@ -60,14 +77,14 @@ export default function PendingCardPreviewModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md sm:p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md"
       onClick={onClose}
     >
       <div
-        className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
+        className="relative flex h-[90vh] w-[92vw] flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-2 border-b border-border p-3">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border p-3">
           <div className="flex gap-1 rounded-lg border border-border p-0.5">
             <button
               type="button"
@@ -132,17 +149,21 @@ export default function PendingCardPreviewModal({
           </div>
         </div>
 
-        <div className="flex flex-1 flex-col items-center gap-3 overflow-y-auto p-4">
-          <iframe
-            sandbox=""
-            srcDoc={buildSrcDoc(preview, side, theme === "dark")}
-            className={`h-96 rounded-md border border-border ${
-              width === "mobile" ? "w-[375px]" : "w-[700px]"
-            } max-w-full`}
-            title="Card preview"
-          />
+        <div className="flex min-h-0 flex-1 flex-col items-center gap-3 overflow-y-auto p-4">
+          <div
+            className={`min-h-[55vh] w-full flex-1 ${
+              width === "mobile" ? "max-w-[420px]" : "max-w-[900px]"
+            }`}
+          >
+            <iframe
+              sandbox=""
+              srcDoc={buildSrcDoc(preview, side, theme === "dark")}
+              className="h-full w-full rounded-md border border-border"
+              title="Card preview"
+            />
+          </div>
           {preview.audio_base64 && (
-            <div className="flex w-full max-w-[700px] items-center gap-2">
+            <div className="flex w-full max-w-[900px] shrink-0 items-center gap-2">
               <span className="text-xs text-foreground/60">Attached audio</span>
               <audio
                 controls
@@ -152,7 +173,7 @@ export default function PendingCardPreviewModal({
             </div>
           )}
           {preview.picture_base64 && (
-            <div className="flex w-full max-w-[700px] flex-col items-start gap-1">
+            <div className="flex w-full max-w-[900px] shrink-0 flex-col items-start gap-1">
               <span className="text-xs text-foreground/60">Attached image</span>
               {/* eslint-disable-next-line @next/next/no-img-element -- variable-format base64 data URI, not a fit for next/image */}
               <img
@@ -164,7 +185,7 @@ export default function PendingCardPreviewModal({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border p-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border p-3">
           {actionError && <p className="mr-auto text-xs text-red-500">{actionError}</p>}
           <button
             type="button"
