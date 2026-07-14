@@ -49,6 +49,9 @@ export interface PendingCardPreview {
   front_html: string;
   back_html: string;
   css: string;
+  audio_base64?: string;
+  picture_base64?: string;
+  picture_content_type?: string;
 }
 
 export interface ImageOptionsPayload {

@@ -1287,6 +1287,77 @@ which model the *currently open* conversation uses.
   migration is additive and idempotent, matching this file's other
   `_add_*_column_if_missing` migrations.
 
+- [ ] **61. Frontend: rebuild the pending-card preview as a full-screen
+  panel; fix its theme/font, and surface picked audio/image playback.**
+  Found via live testing after task 55/60 deployed: three bugs, all
+  scoping/sequencing gaps rather than deviations from what was written.
+  (1) Task 55 explicitly scoped the preview to render inline inside
+  `CardPayloadCard.tsx` (a small `h-64`/`w-[700px]` `<iframe>` dropped into
+  the card itself) - Dylan wanted a full-screen panel instead, same pattern
+  already used for images: `ImageLightbox.tsx` (a `fixed inset-0 z-50`
+  overlay, `bg-black/70 backdrop-blur-md`, Escape-to-close via a `keydown`
+  listener, click-outside-to-close, close button in the corner - see how
+  `MessageBubble.tsx`/`ImageOptionsCard.tsx` already open it). Add a new
+  `PendingCardPreviewModal.tsx` following that exact pattern; `CardPayloadCard`'s
+  "Preview" button fetches `GET /api/pending-cards/{id}/preview` as today,
+  then opens this modal instead of the inline `previewOpen` block. Move the
+  front/back toggle and mobile/pc width toggle buttons into the modal.
+  Also move (or duplicate) the Create/Discard buttons into the modal so
+  Dylan can act immediately after reviewing - clicking Create/Discard in
+  the modal should call the same handlers `CardPayloadCard` already has and
+  close the modal on success, updating the turn's payload same as today.
+  (2) Theme/font: the iframe's `srcDoc` (`buildSrcDoc` in
+  `CardPayloadCard.tsx`) injects only the note type's own CSS with no font
+  fallback, so it renders in the browser's default (serif) font, and the
+  iframe container hardcodes `bg-white` regardless of app theme. Fix the
+  font by prepending a base `<style>` block to `buildSrcDoc`'s output
+  setting `font-family: Arial, Helvetica, "Noto Sans JP", sans-serif` on
+  `body`/`.card` before the note's own CSS cascades over it (the sandboxed
+  iframe can't reach the parent document's `next/font`-loaded Inter/Noto
+  webfonts, so this is a literal fallback stack, not `var(--font-inter)`).
+  Fix dark-mode matching by activating Anki's own night-mode CSS: Dylan
+  confirmed his real note types' CSS (e.g. Cloze+) already contains
+  `.night_mode` rules, matching how Anki's own reviewer works - real Anki
+  toggles a `night_mode` class onto an ancestor of `.card` when night mode
+  is on. Read the app's current theme via `useTheme()`
+  (`ThemeProvider.tsx`) and add `class="night_mode"` to the appropriate
+  element in `buildSrcDoc`'s HTML when `theme === "dark"` (verify exactly
+  which element real Anki applies it to and match that placement - check
+  Dylan's actual Cloze+ CSS selectors, e.g. whether rules are written as
+  `.night_mode .cloze {}` needing an ancestor or `.card.night_mode {}`
+  needing the same element, and place the class accordingly). Drop the
+  iframe container's hardcoded `bg-white` so the note's own (now
+  night-mode-aware) background shows through instead of clashing with a
+  dark-styled card; the *modal chrome* around the iframe (background,
+  borders, buttons, toggle pills) should use the app's existing theme
+  tokens (`bg-surface`/`border-border`/`text-foreground`, same as the rest
+  of this component) same as every other panel in the app.
+  (3) Audio/image playback: task 60 already added `audio_base64` /
+  `picture_base64` / `picture_content_type` to the `GET
+  /api/pending-cards/{id}/preview` response (`backend/app/api/chat.py`
+  `preview_pending_card`, lines ~843-847) specifically so the picked media
+  could be checked before creation, but no frontend task ever consumed
+  them - `PendingCardPreview` in `frontend/app/lib/types.ts` doesn't
+  declare those fields and `CardPayloadCard.tsx` never reads them. Extend
+  `PendingCardPreview` with `audio_base64?: string`, `picture_base64?:
+  string`, `picture_content_type?: string`, and render them in the new
+  modal: an `<audio controls src={"data:audio/mpeg;base64," + ...}>` when
+  `audio_base64` is present (so Dylan can actually hear the attached clip
+  and confirm it's correct before creating - the whole point, since the
+  agent sometimes attaches wrong audio/images per Dylan), and an `<img>`
+  thumbnail when `picture_base64`/`picture_content_type` are present
+  (`data:${picture_content_type};base64,...`). Verify: `cd frontend && npm
+  run build && npm run lint` pass; note in PROGRESS.md that Dylan should
+  confirm in a browser: clicking "Preview" on a pending card opens a
+  full-screen overlay (not inline in the message list) with working
+  front/back and mobile/pc toggles and working Create/Discard buttons
+  inside it; the panel and card render in the app's current theme
+  (including `.night_mode` CSS actually activating when the app is in dark
+  mode) with a normal sans-serif font instead of browser-default serif;
+  and a card with a picked audio clip shows a working play button whose
+  audio Dylan can confirm matches the expected word/phrase, with a picked
+  image likewise shown as a thumbnail.
+
 ## Out of scope
 
 - Any source type other than the one Google Doc (no generic connector
