@@ -156,7 +156,12 @@ export default function PendingCardPreviewModal({
             }`}
           >
             <iframe
-              sandbox=""
+              // allow-scripts only (no allow-same-origin) — srcDoc iframes
+              // with just allow-scripts get a unique opaque origin, so any
+              // JS a note type's template embeds (e.g. Migaku's
+              // furigana/pitch-accent rendering) can run without being able
+              // to read this app's cookies/session or call its API.
+              sandbox="allow-scripts"
               srcDoc={buildSrcDoc(preview, side, theme === "dark")}
               className="h-full w-full rounded-md border border-border"
               title="Card preview"

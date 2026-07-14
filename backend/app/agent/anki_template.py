@@ -23,6 +23,18 @@ single rendered card: the active ordinal's text is masked (front) or revealed
 (back) inside a `<span class="cloze">` (so the note type's own CSS `.cloze`
 rule applies, same as a real Anki card), while every *other* ordinal in that
 field is always shown revealed and unstyled on both sides.
+
+`find_local_media_refs`/`inline_local_media` are a separate concern from
+template rendering proper: some note types' CSS/HTML reference local Anki
+collection.media files by bare filename (a custom @font-face, an `<img>` in
+the template itself, not a picked/attached asset) — confirmed against
+Dylan's real "Migaku Japanese Custom" note type, which loads a custom font
+this way. The preview iframe has no way to resolve a bare filename, so
+`app.api.chat`'s preview endpoint fetches these via AnkiConnect's
+`retrieveMediaFile` and inlines them as data URIs using the two functions
+below. Kept as pure functions here (no AnkiConnect/network dependency, same
+rationale as `render_card` itself) — the actual fetching is the API layer's
+job.
 """
 
 import re
@@ -116,3 +128,47 @@ def render_card(qfmt: str, afmt: str, css: str, fields: dict[str, str]) -> dict:
         back_html = afmt.replace("{{FrontSide}}", front_html)
 
     return {"front_html": front_html, "back_html": back_html, "css": css}
+
+
+_CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")]+)['"]?\s*\)""")
+_IMG_SRC_RE = re.compile(r"""<img\b[^>]*\bsrc=["']([^"']+)["']""", re.IGNORECASE)
+
+
+def _is_local_media_ref(ref: str) -> bool:
+    return not ref.startswith(("http://", "https://", "data:", "//", "#"))
+
+
+def find_local_media_refs(css: str, front_html: str, back_html: str) -> set[str]:
+    """Local (Anki collection.media) filenames referenced by a rendered
+    card's CSS `url(...)` or HTML `<img src="...">` — anything not already
+    an absolute URL or data URI."""
+
+    refs: set[str] = set()
+    refs.update(ref for ref in _CSS_URL_RE.findall(css) if _is_local_media_ref(ref))
+    for html in (front_html, back_html):
+        refs.update(ref for ref in _IMG_SRC_RE.findall(html) if _is_local_media_ref(ref))
+    return refs
+
+
+def inline_local_media(
+    css: str, front_html: str, back_html: str, media_data_uris: dict[str, str]
+) -> dict[str, str]:
+    """Replace local media filename references with their data-URI
+    equivalents from `media_data_uris` (filename -> `"data:<mime>;base64,
+    <bytes>"`). Substitution is scoped to each matched `url(...)`/`src="..."`
+    span rather than a blind string replace, so a filename that happens to
+    be a substring of unrelated text elsewhere is never touched."""
+
+    def _sub(pattern: re.Pattern[str], text: str) -> str:
+        def repl(match: re.Match[str]) -> str:
+            ref = match.group(1)
+            data_uri = media_data_uris.get(ref)
+            return match.group(0).replace(ref, data_uri) if data_uri else match.group(0)
+
+        return pattern.sub(repl, text)
+
+    return {
+        "css": _sub(_CSS_URL_RE, css),
+        "front_html": _sub(_IMG_SRC_RE, front_html),
+        "back_html": _sub(_IMG_SRC_RE, back_html),
+    }

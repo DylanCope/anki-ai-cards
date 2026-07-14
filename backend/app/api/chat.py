@@ -21,9 +21,11 @@ from a prior turn's persisted JSON) — `_content_block_to_dict` normalizes
 both to dicts before anything here inspects or persists them.
 """
 
+import asyncio
 import base64
 import functools
 import json
+import mimetypes
 import re
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -840,6 +842,33 @@ async def preview_pending_card(
     card_name = next(iter(templates))
     template = templates[card_name]
     result = anki_template.render_card(template["Front"], template["Back"], css, fields)
+
+    # Some note types' own CSS/HTML reference local Anki collection.media
+    # files by bare filename (a custom @font-face, an <img> baked into the
+    # template itself — not a picked/attached asset, which is handled
+    # separately above) — confirmed against Dylan's real "Migaku Japanese
+    # Custom" note type, which loads a custom font this way. The sandboxed
+    # preview iframe has no way to resolve a bare filename, so fetch each one
+    # via AnkiConnect and inline it as a data URI before returning.
+    media_refs = list(
+        anki_template.find_local_media_refs(
+            result["css"], result["front_html"], result["back_html"]
+        )
+    )
+    if media_refs:
+        media_files = await asyncio.gather(*(ankiconnect.get_media_file(ref) for ref in media_refs))
+        media_data_uris = {
+            ref: f"data:{mimetypes.guess_type(ref)[0] or 'application/octet-stream'};base64,{b64}"
+            for ref, b64 in zip(media_refs, media_files)
+            if b64 is not None
+        }
+        if media_data_uris:
+            result.update(
+                anki_template.inline_local_media(
+                    result["css"], result["front_html"], result["back_html"], media_data_uris
+                )
+            )
+
     if audio_clip is not None:
         result["audio_base64"] = base64.b64encode(audio_clip.audio).decode("ascii")
     if image_asset is not None:

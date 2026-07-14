@@ -130,6 +130,31 @@ async def test_get_model_styling_raises_on_error():
 
 
 @respx.mock
+async def test_get_media_file_returns_base64_content():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": "aGVsbG8=", "error": None})
+    )
+
+    result = await ankiconnect.get_media_file("_custom_font.ttf")
+
+    assert result == "aGVsbG8="
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["action"] == "retrieveMediaFile"
+    assert sent_body["params"] == {"filename": "_custom_font.ttf"}
+
+
+@respx.mock
+async def test_get_media_file_returns_none_when_missing():
+    respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": False, "error": None})
+    )
+
+    result = await ankiconnect.get_media_file("_does_not_exist.ttf")
+
+    assert result is None
+
+
+@respx.mock
 async def test_create_note():
     route = respx.post(ANKICONNECT_URL).mock(
         return_value=Response(200, json={"result": 12345, "error": None})

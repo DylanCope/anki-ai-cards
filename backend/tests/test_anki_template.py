@@ -1,4 +1,4 @@
-from app.agent.anki_template import render_card
+from app.agent.anki_template import find_local_media_refs, inline_local_media, render_card
 
 
 def test_plain_field_substitution():
@@ -154,3 +154,48 @@ def test_malformed_template_renders_best_effort_without_raising():
 
     assert "oops" in result["front_html"]
     assert result["back_html"] == "hello"
+
+
+def test_find_local_media_refs_finds_css_url_and_img_src():
+    css = "@font-face { font-family: textbook; src: url('_HGSKyokashotai.ttf'); }"
+    front_html = '<img src="_screenshot.png">'
+    back_html = "<div>no media here</div>"
+
+    refs = find_local_media_refs(css, front_html, back_html)
+
+    assert refs == {"_HGSKyokashotai.ttf", "_screenshot.png"}
+
+
+def test_find_local_media_refs_ignores_absolute_and_data_urls():
+    css = "body { background: url('https://example.com/bg.png'); }"
+    front_html = '<img src="data:image/png;base64,abc123">'
+    back_html = ""
+
+    refs = find_local_media_refs(css, front_html, back_html)
+
+    assert refs == set()
+
+
+def test_inline_local_media_replaces_only_the_matched_reference():
+    css = "@font-face { src: url('_font.ttf'); }"
+    front_html = '<img src="_pic.png"><p>_pic.png mentioned in text too</p>'
+    back_html = ""
+    media_data_uris = {
+        "_font.ttf": "data:font/ttf;base64,Zm9udA==",
+        "_pic.png": "data:image/png;base64,cGlj",
+    }
+
+    result = inline_local_media(css, front_html, back_html, media_data_uris)
+
+    assert result["css"] == "@font-face { src: url('data:font/ttf;base64,Zm9udA=='); }"
+    assert result["front_html"] == (
+        '<img src="data:image/png;base64,cGlj"><p>_pic.png mentioned in text too</p>'
+    )
+
+
+def test_inline_local_media_leaves_unresolved_refs_untouched():
+    css = "@font-face { src: url('_missing.ttf'); }"
+
+    result = inline_local_media(css, "", "", {})
+
+    assert result["css"] == css

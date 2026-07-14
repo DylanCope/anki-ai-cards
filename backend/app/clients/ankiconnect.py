@@ -93,6 +93,17 @@ async def get_model_styling(name: str) -> str:
     return result["css"]
 
 
+async def get_media_file(filename: str) -> str | None:
+    """Wraps `retrieveMediaFile` — result is the file's base64-encoded
+    content, or `False` if no file by that name exists in the collection
+    (confirmed against the real deployed AnkiConnect instance, both cases).
+    Returns `None` for the missing case instead of `False` so callers get a
+    normal falsy-but-typed Python value."""
+
+    result = await invoke("retrieveMediaFile", filename=filename)
+    return result or None
+
+
 async def create_note(
     deck_name: str,
     model_name: str,

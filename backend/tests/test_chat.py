@@ -1783,6 +1783,49 @@ def test_preview_pending_card_omits_media_keys_when_none_picked(monkeypatch):
     assert "picture_content_type" not in body
 
 
+def test_preview_pending_card_inlines_local_media_referenced_by_note_css(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(
+        return_value="@font-face { font-family: textbook; src: url('_font.ttf'); }"
+    )
+    media_mock = AsyncMock(return_value="Zm9udGJ5dGVz")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_media_file", media_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    media_mock.assert_awaited_once_with("_font.ttf")
+    assert "_font.ttf" not in body["css"]
+    assert "data:font/ttf;base64,Zm9udGJ5dGVz" in body["css"]
+
+
+def test_preview_pending_card_skips_media_fetch_when_none_referenced(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    media_mock = AsyncMock()
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_media_file", media_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    media_mock.assert_not_awaited()
+
+
 def test_delete_conversation_requires_auth(client):
     response = client.delete("/api/conversations/1")
     assert response.status_code == 401
