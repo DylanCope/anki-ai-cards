@@ -1069,7 +1069,7 @@ which model the *currently open* conversation uses.
   AnkiConnect's error-surfacing case (same pattern as existing tests in this
   file).
 
-- [ ] **53. Backend: Anki template renderer.** Independent of 51-52 (pure
+- [x] **53. Backend: Anki template renderer.** Independent of 51-52 (pure
   function, no AnkiConnect/DB dependency — can be built and tested in
   isolation against hand-written fixture template strings). New
   `backend/app/agent/anki_template.py`: `render_card(qfmt: str, afmt: str,

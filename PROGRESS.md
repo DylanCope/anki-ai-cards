@@ -14,6 +14,76 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 53: Anki template renderer
+- Did:
+  - New `backend/app/agent/anki_template.py`: `render_card(qfmt, afmt, css,
+    fields) -> {"front_html", "back_html", "css"}`, a pure function (no
+    AnkiConnect/DB dependency) implementing the specific template-syntax
+    subset the PRD scoped: `{{Field}}` substitution, `{{FrontSide}}` (afmt
+    only, substitutes the already-rendered front HTML), `{{#Field}}...{{/Field}}`
+    / `{{^Field}}...{{/Field}}` conditional sections (shown/hidden based on
+    whether `fields.get(name, "").strip()` is non-empty), and
+    `{{cloze:Field}}`.
+  - Cloze rendering always previews ordinal `c1` (`PREVIEW_CLOZE_ORDINAL`
+    module constant) regardless of how many distinct cloze numbers exist in
+    the note's fields, per the task's explicit scoping. The active ordinal's
+    deletion is wrapped in `<span class="cloze">` — masked to `[...]` (or
+    `[hint]`, parsed via `text, _, hint = inner.partition("::")`) on the front,
+    revealed on the back — while every other ordinal in the same field is
+    always shown revealed and *unstyled* (no span) on both sides, matching
+    real Anki's actual multi-cloze-in-one-field behavior as described in the
+    task.
+  - Implementation approach: four regex-based passes applied in a fixed
+    order — (1) conditional sections resolved via a fixed-point loop (`while
+    previous != result`) since sections aren't nested in Dylan's real
+    templates, so no real recursive-descent parser is needed, just repeated
+    single-pass substitution until stable; (2) `{{cloze:Field}}` resolved
+    per-field via `_render_cloze_deletion`; (3) a literal `{{FrontSide}}`
+    string replacement (only when `front_html` is passed in, i.e. only for
+    the afmt/back pass) — done *before* step 4's generic field regex so that
+    regex (which treats any unmatched `{{Name}}` as a field lookup defaulting
+    to `""`) doesn't blank out `{{FrontSide}}` before it can be substituted;
+    (4) generic `{{Field}}` substitution for whatever's left, with the regex
+    explicitly excluding names containing `:`/`#`/`^`/`/` so leftover
+    unsupported syntax like `{{hint:Field}}` or `{{type:Field}}` (out of
+    scope per the PRD) is left untouched in the output rather than
+    mis-substituted.
+  - "Best-effort, never raise" requirement: the whole render is wrapped in a
+    top-level `try/except Exception`, falling back to the raw, unprocessed
+    `qfmt`/`afmt` strings (with a literal `{{FrontSide}}` replacement still
+    applied to the fallback afmt) if anything unexpected throws — in
+    practice the regex-substitution approach doesn't raise on the malformed
+    inputs tried in tests (e.g. an unclosed `{{#Section}}` just fails to
+    match and is left as literal text, which is itself already
+    "best-effort"), so this fallback is currently a safety net rather than a
+    load-bearing code path — worth knowing if a future task changes the
+    parsing approach to something that *can* throw (e.g. a real parser) and
+    needs to keep this guarantee.
+  - New `backend/tests/test_anki_template.py` (10 tests): plain substitution,
+    conditional section shown/hidden for both `#`/`^` forms, `{{FrontSide}}`,
+    single-cloze front-mask/back-reveal, cloze with a hint, multi-cloze-in-
+    one-field (confirms only the previewed ordinal gets masked/spanned, the
+    other stays plain revealed text), and a malformed-template case
+    (unclosed section) confirming no exception is raised.
+- Verified: `cd backend && uv run pytest tests/test_anki_template.py -v` → 10
+  passed. Full suite: `cd backend && uv run pytest` → 238 passed (228
+  pre-existing + 10 new), no regressions.
+- Learned:
+  - No new dependency needed — plain `re` module regex is sufficient for the
+    supported syntax subset; didn't reach for a templating library (Mustache/
+    Jinja) since Anki's actual template syntax has enough Anki-specific
+    quirks (the cloze ordinal-masking behavior, `{{FrontSide}}`) that a
+    general-purpose template engine wouldn't map cleanly onto it anyway, and
+    the PRD explicitly scoped this as *not* a general-purpose engine (see
+    "Out of scope").
+  - This task was pure-function/no-integration — task 54 (next unblocked
+    task) is what actually wires `get_model_templates`/`get_model_styling`
+    (task 52) + this renderer into a real `GET
+    /api/pending-cards/{id}/preview` endpoint against a `PendingCard`'s
+    stored `fields`. Nothing here was tested against a real Anki
+    instance/AnkiConnect — that only becomes possible once task 54's
+    endpoint exists to call end-to-end.
+
 ## 2026-07-14 — Task 52: AnkiConnect `modelTemplates`/`modelStyling` wrappers
 - Did:
   - `backend/app/clients/ankiconnect.py`: added `get_model_templates(name) ->
