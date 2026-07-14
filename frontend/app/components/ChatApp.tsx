@@ -5,6 +5,7 @@ import { Menu, Paperclip, X } from "lucide-react";
 import type {
   ChatErrorBody,
   ChatHistoryResponseEntry,
+  ChatPayload,
   ChatResponseBody,
   ChatTurn,
   Conversation,
@@ -294,6 +295,23 @@ export default function ChatApp() {
     setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
   }
 
+  // Card creation/discard/preview are separate REST calls the pending-card
+  // components make themselves (not new agent turns) — this just reflects
+  // the resulting status back into local state so the card re-renders
+  // without a full history reload.
+  function updateTurnPayload(turnIndex: number, payloadIndex: number, updated: ChatPayload) {
+    setTurns((prev) =>
+      prev.map((turn, i) =>
+        i !== turnIndex
+          ? turn
+          : {
+              ...turn,
+              payloads: turn.payloads.map((payload, j) => (j === payloadIndex ? updated : payload)),
+            }
+      )
+    );
+  }
+
   async function sendMessage(text: string) {
     const message = text.trim();
     if (!message || sending || conversationId === null) return;
@@ -522,6 +540,9 @@ export default function ChatApp() {
                         key={payloadIndex}
                         payload={payload}
                         onRequestChange={setInput}
+                        onUpdatePayload={(updated) =>
+                          updateTurnPayload(index, payloadIndex, updated)
+                        }
                         disabled={sending}
                       />
                     );

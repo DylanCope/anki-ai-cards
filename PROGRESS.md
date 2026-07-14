@@ -14,6 +14,96 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 55: Frontend pending-card preview/create/discard UI
+- Did:
+  - `frontend/app/lib/types.ts`: extended `CardPayload` with `status:
+    "pending" | "created" | "discarded" | null` and `pending_card_id: number
+    | null` (nullable status to match `_payloads_for_message`'s backend
+    derivation, which can in theory leave `status` unset — see task 54's
+    `result_dict.get("status") or (...)` fallback — even though every test
+    case so far always yields `"pending"`/`"created"`); added a new
+    `PendingCardPreview` type (`front_html`/`back_html`/`css`) for the
+    preview endpoint's response shape.
+  - `frontend/app/components/CardPayloadCard.tsx`: rewritten to branch on
+    `payload.status` (defaulting to `"created"` when null/undefined, so
+    pre-existing "always instant-creation" conversations from before task 51
+    still render exactly as before). Three states:
+    - `"pending"`: header reads "Card draft" (no note-id badge); action row
+      is Preview / Create / Discard buttons instead of the old lone "Request
+      a change" button. Preview lazily fetches `GET
+      /api/pending-cards/{id}/preview` on first click (cached in local state
+      after that — toggling front/back or mobile/PC width just re-renders
+      the same fetched data, no refetch), and renders the result inside a
+      sandboxed `<iframe sandbox="" srcDoc={...}>` built as
+      `<style>${css}</style><div class="card">${front_html|back_html}</div>`
+      wrapped in a full `<html><head>...</head><body>...</body></html>`
+      shell (bare `<style>`+`<div>` as an `srcDoc` still parses in all
+      browsers, but wrapping is more correct/robust). Front/Back is a
+      2-button segmented toggle; mobile/PC is a second segmented toggle
+      (`Smartphone`/`Monitor` icons from `lucide-react`) that switches the
+      iframe's own `width` class (`w-[375px]` vs `w-[700px]`, both
+      `max-w-full`) so the note type's own CSS reflows, per the task's
+      explicit instruction not to swap CSS per device.
+    - `"created"`: unchanged from before this task — note-id badge, "Request
+      a change" button.
+    - `"discarded"`: fields still shown (draft framing preserved), action
+      row replaced with a plain "Draft discarded." line.
+    Create/Discard call their respective `POST /api/pending-cards/{id}/...`
+    endpoints and, on success, call a new `onUpdatePayload` prop with the
+    merged payload (`{...payload, status: "created", note_id}` /
+    `{...payload, status: "discarded"}`) rather than mutating anything
+    locally that the parent doesn't know about — matches the task's literal
+    instruction to "update this turn's payload in `turns` state."
+  - `frontend/app/components/ChatApp.tsx`: added `updateTurnPayload(turnIndex,
+    payloadIndex, updated)` (immutable `setTurns` map-of-maps, mirrors the
+    existing `setTurns` patterns already in this file) and wired it into
+    `CardPayloadCard`'s new `onUpdatePayload` prop as `(updated) =>
+    updateTurnPayload(index, payloadIndex, updated)` at the existing render
+    call site (the `turns.map`/`turn.payloads.map` loop already had both
+    indices in scope).
+- Verified: `cd frontend && npm run build && npm run lint` — both pass, no
+  new warnings. No backend changes in this task, so `uv run pytest` wasn't
+  re-run (task 55 is frontend-only per its own verify line, and task 54's
+  full suite already covers the endpoints this UI calls). Deploy-and-verify
+  convention (tasks 20-32's note) doesn't literally apply to this task range
+  (51-59 doesn't carry it forward explicitly), and this loop has no way to
+  exercise a real browser/iframe rendering path itself — **Dylan should
+  confirm in a browser**: proposing a card with instant-creation off (the
+  default) shows a "Card draft" with working Preview (front/back flip
+  renders real Anki template HTML/CSS via the sandboxed iframe, mobile/PC
+  toggle visibly reflows width), Create turns it into the normal "Card added
+  to Anki" display, and Discard on a separate draft in the same conversation
+  only removes that one (leaves other drafts/created cards untouched).
+- Learned:
+  - Known pre-existing gap (from task 54, still unresolved, not this task's
+    job to fix): `PendingCard` has no audio/picture columns yet (task 60),
+    so a picked audio clip/image never reaches the preview or the eventual
+    real Anki note while instant-creation is off — the preview UI built here
+    has no way to show media that was never stored. Task 60 needs to land
+    before any "does the preview show attached audio/images" manual check
+    would mean anything.
+  - Reload caveat worth flagging for Dylan (not a bug in this task, just a
+    consequence of how `_payloads_for_message` derives `status`): a page
+    reload re-derives each turn's payloads from the *stored tool_result
+    JSON* of the original `create_anki_note` call, which is frozen at
+    `"pending"` forever for a drafted card — clicking Create/Discard updates
+    the `PendingCard` row in the DB and this session's in-memory `turns`
+    state, but does not rewrite the historical tool_result, so a drafted
+    card that was later created or discarded via these buttons will show
+    back up as `"pending"` (with working but stale Create/Discard buttons)
+    after a reload. Out of this task's scope per its literal PRD text (which
+    only asks for local `turns`-state updates), but real enough that it's
+    worth Dylan knowing about — a future task could fix it by having
+    `_payloads_for_message` read the *current* `PendingCard.status` from the
+    DB by `pending_card_id` instead of trusting the frozen tool_result,
+    falling back to the stored value only when `pending_card_id` is absent
+    (the instant-creation path).
+  - `CardPayload.status` typed as nullable (`| null`) rather than the task
+    text's literal `"pending" | "created" | "discarded"` (no null) — matches
+    what the backend can actually send (see task 54's `_payloads_for_message`
+    fallback logic), and `CardPayloadCard` treats null the same as
+    `"created"` so old conversations predating this feature don't break.
+
 ## 2026-07-14 — Task 54: wire `instant_creation` through `dispatch_tool`/`run_turn`, pending-card REST endpoints
 - Did:
   - `backend/app/agent/tools.py`: `dispatch_tool` gains `instant_creation:

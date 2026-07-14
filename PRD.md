@@ -1148,7 +1148,7 @@ which model the *currently open* conversation uses.
   today's existing tests already assert; all three new endpoints' success,
   404, and 409 paths; the `"card"` payload shape including the pending case.
 
-- [ ] **55. Frontend: pending-card preview/create/discard UI.** Depends on
+- [x] **55. Frontend: pending-card preview/create/discard UI.** Depends on
   54. `frontend/app/lib/types.ts`: extend `CardPayload` with `status:
   "pending" | "created" | "discarded"` and `pending_card_id: number | null`.
   `frontend/app/components/CardPayloadCard.tsx`: when `status === "pending"`,

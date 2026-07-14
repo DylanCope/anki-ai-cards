@@ -40,6 +40,14 @@ export interface CardPayload {
   fields: Record<string, string> | null;
   tags: string[] | null;
   note_id: number | null;
+  status: "pending" | "created" | "discarded" | null;
+  pending_card_id: number | null;
+}
+
+export interface PendingCardPreview {
+  front_html: string;
+  back_html: string;
+  css: string;
 }
 
 export interface ImageOptionsPayload {
