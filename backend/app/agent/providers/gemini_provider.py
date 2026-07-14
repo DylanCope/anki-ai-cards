@@ -123,6 +123,19 @@ def _to_internal_response(response: types.GenerateContentResponse) -> object:
     candidate = response.candidates[0] if response.candidates else None
     parts = candidate.content.parts if candidate and candidate.content else []
 
+    # Confirmed empirically against the real API: when a single response
+    # contains multiple parallel function_call parts, Gemini only attaches a
+    # thought_signature to the *first* one — the rest come back with none.
+    # Replaying that history later with those parts still unsigned is what
+    # produces the "Function call is missing a thought_signature" 400
+    # described above, so share the one signature this response did give us
+    # across every function_call part from it (there's no per-call signature
+    # available for the others, and this is the only value we have).
+    shared_signature = next(
+        (part.thought_signature for part in parts if part.function_call and part.thought_signature),
+        None,
+    )
+
     blocks = []
     has_function_call = False
     for part in parts:
@@ -137,10 +150,9 @@ def _to_internal_response(response: types.GenerateContentResponse) -> object:
                 name=part.function_call.name,
                 input=dict(part.function_call.args or {}),
             )
-            if part.thought_signature:
-                block.gemini_thought_signature = base64.b64encode(
-                    part.thought_signature
-                ).decode("ascii")
+            signature = part.thought_signature or shared_signature
+            if signature:
+                block.gemini_thought_signature = base64.b64encode(signature).decode("ascii")
             blocks.append(block)
 
     stop_reason = "tool_use" if has_function_call else "end_turn"
