@@ -14,6 +14,58 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 51: rebuild `PendingCard` + add `Conversation.instant_creation`
+- Did:
+  - `backend/app/models.py`: replaced `PendingCard`'s old task-2 columns
+    (`japanese_cloze`/`furigana`/`english`/`note`) with the generic shape
+    tasks 52-56 need: `deck_name`, `model_name`, `fields` (JSON-serialized
+    `dict[str, str]`), `tags` (JSON-serialized `list[str] | None`), `status`
+    (`"pending"`/`"created"`/`"discarded"`), `note_id: int | None`,
+    `created_at`. Added `Conversation.instant_creation: bool = Field(default=False)`.
+  - Two new migrations in `init_db()`: `_rebuild_pendingcard_table_if_stale`
+    (checks `PRAGMA table_info(pendingcard)` for the new `deck_name` column;
+    if a `pendingcard` table exists without it, `DROP TABLE pendingcard`) and
+    `_add_conversation_instant_creation_column_if_missing` (plain additive
+    `ALTER TABLE ... ADD COLUMN instant_creation BOOLEAN NOT NULL DEFAULT 0`,
+    following the existing `_add_conversation_model_column_if_missing`
+    pattern exactly).
+  - **Ordering gotcha**: the pendingcard rebuild must run *before*
+    `SQLModel.metadata.create_all(engine)`, not after — `create_all()` only
+    creates whole *missing* tables, so if the stale table is dropped after
+    `create_all()` already ran and skipped it (since it existed), the new
+    schema never actually gets created and every real `PendingCard` write
+    would then fail. Reordered `init_db()` so
+    `_rebuild_pendingcard_table_if_stale` is the very first call, with a
+    comment explaining why, then `create_all()` recreates it fresh with the
+    new schema.
+  - Updated `backend/tests/test_models.py`: rewrote `test_pending_card_roundtrip`
+    for the new schema, added `test_pending_card_tags_default_to_none`,
+    `test_pending_card_status_can_be_set_to_created`,
+    `test_init_db_rebuilds_a_stale_pendingcard_table` (simulates the old
+    task-2 schema with a real row in it, confirms `init_db()` drops/recreates
+    rather than erroring, and confirms idempotency), plus
+    `test_conversation_instant_creation_defaults_to_false`/
+    `_can_be_set_explicitly`/`test_init_db_migrates_a_pre_instant_creation_database`
+    mirroring the existing `model`-column migration test's structure.
+- Verified: `cd backend && uv run pytest tests/test_models.py` → 18 passed.
+  Also ran the full suite (`uv run pytest`) to check for regressions from
+  changing `PendingCard`'s shape — 224 passed; confirmed via
+  `grep -rn "PendingCard\|japanese_cloze\|\.furigana\b" app/` that no other
+  app code referenced the old columns (only `test_models.py` did, as PRD's
+  task description predicted).
+- Learned:
+  - This is the first migration in this file that *drops* a table rather
+    than additively altering it — safe here specifically because
+    `PendingCard` was confirmed-unused scaffolding (no production writes to
+    the old shape ever happened), unlike every other table in this file.
+    Don't treat this drop-and-recreate pattern as generally safe for other
+    tables without the same "never actually written to" confirmation.
+  - Tasks 52-56 (AnkiConnect template wrappers, the template renderer, wiring
+    `instant_creation` through `dispatch_tool`/`run_turn` + pending-card REST
+    endpoints, and the frontend preview/create/discard UI) are next and
+    depend on this table shape — don't change `PendingCard`'s columns again
+    without checking those tasks' exact field-name expectations first.
+
 ## 2026-07-12 — Task 47: docs — system prompt + verification checklist for the new tools
 - Did:
   - `backend/app/agent/prompts.py`'s `SYSTEM_PROMPT`: added three new

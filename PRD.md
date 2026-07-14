@@ -1023,7 +1023,7 @@ single-row `UserSettings` table Dylan can update via a "mark as default"
 checkbox in the existing `AiSettingsButton` model panel, decoupled from
 which model the *currently open* conversation uses.
 
-- [ ] **51. Backend: rebuild `PendingCard` as a generic draft-card table,
+- [x] **51. Backend: rebuild `PendingCard` as a generic draft-card table,
   and add `Conversation.instant_creation`.** Foundational — unblocks 52-56.
   `backend/app/models.py`: replace `PendingCard`'s current
   `japanese_cloze`/`furigana`/`english`/`note` columns with a generic shape

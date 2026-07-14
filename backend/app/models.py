@@ -27,6 +27,10 @@ class Conversation(SQLModel, table=True):
     # truncated snippet of it — see app.api.chat's post_chat.
     title: str | None = Field(default=None)
     model: str = Field(default=_DEFAULT_MODEL_ID)
+    # Off by default: create_anki_note drafts a PendingCard for Dylan to
+    # preview/create/discard instead of calling AnkiConnect immediately. See
+    # app.agent.tools.dispatch_tool's create_anki_note branch.
+    instant_creation: bool = Field(default=False)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -66,12 +70,18 @@ class ProcessingCursor(SQLModel, table=True):
 
 
 class PendingCard(SQLModel, table=True):
+    """A draft card awaiting Dylan's preview/create/discard decision, created
+    by dispatch_tool's create_anki_note branch when instant_creation is off.
+    fields/tags mirror create_anki_note's own tool-schema shapes, JSON-encoded
+    since SQLite has no native list/dict column type."""
+
     id: int | None = Field(default=None, primary_key=True)
-    japanese_cloze: str
-    furigana: str
-    english: str
-    note: str | None = Field(default=None)
-    status: str = Field(default="pending")
+    deck_name: str
+    model_name: str
+    fields: str  # JSON-serialized dict[str, str]
+    tags: str | None = Field(default=None)  # JSON-serialized list[str]
+    status: str = Field(default="pending")  # "pending" / "created" / "discarded"
+    note_id: int | None = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -202,6 +212,53 @@ def _add_audioclip_source_column_if_missing(engine) -> None:
             conn.commit()
 
 
+def _add_conversation_instant_creation_column_if_missing(engine) -> None:
+    """Same rationale as `_add_conversation_id_column_if_missing` — the
+    `instant_creation` column (added so create_anki_note can draft a
+    PendingCard instead of calling AnkiConnect immediately, see
+    app.agent.tools) needs its own ALTER TABLE on an already-deployed
+    `conversation` table. Existing rows backfill to 0 (off), which preserves
+    a subtle behavior change: today's actual behavior (immediate creation)
+    becomes the non-default opt-in going forward, but only for *new*
+    conversations created after this migration — pre-existing conversations
+    keep behaving exactly as they always have by defaulting to 0 here too,
+    since PendingCard didn't exist yet when they were created."""
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(conversation)")}
+        if "instant_creation" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE conversation ADD COLUMN instant_creation BOOLEAN NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+
+
+def _rebuild_pendingcard_table_if_stale(engine) -> None:
+    """PendingCard was dead scaffolding from task 2 (hardcoded
+    japanese_cloze/furigana/english/note columns, never read or written by
+    any real code — confirmed via `grep -rn PendingCard backend/` finding
+    only test_models.py's round-trip test) until task 51 rebuilt it as a
+    generic draft-card table matching create_anki_note's actual argument
+    shape. Since no real app code — and therefore no real production data —
+    ever wrote to the old shape, it's safe to just drop and recreate it here,
+    unlike every other migration in this file which preserves real rows via
+    an additive ALTER TABLE."""
+
+    with engine.connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='pendingcard'"
+            )
+        }
+        if not tables:
+            return
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(pendingcard)")}
+        if "deck_name" not in columns:
+            conn.exec_driver_sql("DROP TABLE pendingcard")
+            conn.commit()
+
+
 def _backfill_legacy_conversation(engine) -> None:
     """Any ConversationMessage row with no conversation_id predates the
     multi-conversation feature — group them all into one real Conversation
@@ -226,10 +283,15 @@ def _backfill_legacy_conversation(engine) -> None:
 
 def init_db():
     engine = get_engine()
+    # Must run before create_all(): create_all() only creates whole missing
+    # tables, so a stale pendingcard table left in place would never pick up
+    # the new schema — dropping it first lets create_all() recreate it fresh.
+    _rebuild_pendingcard_table_if_stale(engine)
     SQLModel.metadata.create_all(engine)
     _add_conversation_id_column_if_missing(engine)
     _add_conversation_model_column_if_missing(engine)
     _add_conversation_message_image_id_column_if_missing(engine)
     _add_audioclip_source_column_if_missing(engine)
+    _add_conversation_instant_creation_column_if_missing(engine)
     _backfill_legacy_conversation(engine)
     return engine
