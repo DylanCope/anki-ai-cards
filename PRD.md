@@ -1097,7 +1097,7 @@ which model the *currently open* conversation uses.
   (single-cloze and multi-cloze-in-one-field cases) against hand-written
   fixture templates.
 
-- [ ] **54. Backend: wire `instant_creation` through `dispatch_tool`/
+- [x] **54. Backend: wire `instant_creation` through `dispatch_tool`/
   `run_turn`, and the pending-card REST endpoints.** Depends on 51 (schema)
   and 52+53 (preview endpoint needs both). `backend/app/agent/tools.py`:
   `dispatch_tool` gains an `instant_creation: bool = False` keyword param
@@ -1245,6 +1245,47 @@ which model the *currently open* conversation uses.
   browser: marking a model as default persists across reload, is visually
   distinct from (and independent of) the current conversation's selected
   model, and a brand new chat actually opens using the marked default.
+
+- [ ] **60. Backend: persist a picked audio clip/image on a drafted
+  `PendingCard`, so preview-before-creation doesn't silently drop them.**
+  Found while implementing task 54: `PendingCard` (task 51's schema) has no
+  audio/picture columns, and task 54's `dispatch_tool` `create_anki_note`
+  branch (`instant_creation=False`) only stores `deck_name`/`model_name`/
+  `fields`/`tags` — it never records `tool_input.get("audio")`/
+  `tool_input.get("picture")` at all. So today, if Dylan picks audio or an
+  image for a card and instant-creation is off (the new default), that pick
+  is silently lost: the draft is created with no media, `POST
+  /api/pending-cards/{id}/create` (task 54) always calls
+  `_create_note_in_anki` with `audio_input=None, picture_input=None`, and
+  neither the pending-card preview (task 54's `GET .../preview`, which only
+  renders `fields` through the note type's template) nor the eventual
+  AnkiConnect note reflects the picked media — with no error or warning
+  anywhere, since nothing about this path currently fails, it just quietly
+  drops the attachment. Fix: add `audio: str | None` /
+  `picture: str | None` columns to `PendingCard` (JSON-serialized
+  `{"clip_id"/"image_id": ..., "fields": [...]}`, same shape
+  `create_anki_note`'s tool schema already uses for these arguments) via an
+  additive `_add_pendingcard_audio_picture_columns_if_missing` migration
+  (same pattern as every other additive migration in `app/models.py` — this
+  one must NOT reuse task 51's drop-and-recreate approach, since by the time
+  this task lands real Dylan-created `PendingCard` rows likely exist).
+  `dispatch_tool`'s draft branch stores `tool_input.get("audio")`/
+  `tool_input.get("picture")` (JSON-serialized) on the new `PendingCard` row.
+  `POST /api/pending-cards/{id}/create` passes the stored audio/picture back
+  into `_create_note_in_anki` instead of hardcoded `None, None`. Consider
+  whether task 54's preview endpoint should also reflect attached media in
+  some way (e.g. an audio player / image thumbnail alongside the rendered
+  HTML) — not required to match real Anki's rendered `[sound:...]`/`<img>`
+  markup exactly, since the template renderer (task 53) doesn't fetch actual
+  media, but worth deciding rather than leaving picked-but-unpreviewed media
+  as a silent gap in the preview too. Verify: `cd backend && uv run pytest`
+  — cover: drafting a card with a picked audio clip and/or image persists
+  them on the `PendingCard` row; `POST /api/pending-cards/{id}/create`
+  attaches the stored audio/picture (mocked `respx`/`ankiconnect.create_note`,
+  asserting the request body's `note.audio`/`note.picture` shape matches
+  what task 35's existing instant-creation tests already assert); the
+  migration is additive and idempotent, matching this file's other
+  `_add_*_column_if_missing` migrations.
 
 ## Out of scope
 

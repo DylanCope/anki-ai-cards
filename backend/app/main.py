@@ -7,6 +7,7 @@ from app.api.chat import (
     bug_reports_router,
     conversations_router,
     models_router,
+    pending_cards_router,
     router as chat_router,
 )
 from app.api.images import router as images_router
@@ -33,6 +34,7 @@ app.include_router(conversations_router)
 app.include_router(models_router)
 app.include_router(workflows_router)
 app.include_router(images_router)
+app.include_router(pending_cards_router)
 
 
 @app.get("/health")

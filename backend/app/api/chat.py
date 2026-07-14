@@ -32,10 +32,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.agent import anki_template
 from app.agent import core as agent_core
+from app.agent import tools as agent_tools
 from app.agent.model_registry import AVAILABLE_MODELS, DEFAULT_MODEL_ID, get_model
 from app.auth import require_auth
-from app.clients import google_docs
+from app.clients import ankiconnect, google_docs
 from app.models import (
     AudioClip,
     BugReport,
@@ -43,6 +45,7 @@ from app.models import (
     ConversationMessage,
     ImageAsset,
     OAuthToken,
+    PendingCard,
     get_engine,
 )
 
@@ -72,11 +75,13 @@ class ChatResponse(BaseModel):
 
 class CreateConversationRequest(BaseModel):
     model: str = DEFAULT_MODEL_ID
+    instant_creation: bool = False
 
 
 class UpdateConversationRequest(BaseModel):
     model: str | None = None
     title: str | None = None
+    instant_creation: bool | None = None
 
 
 def _conversation_to_dict(conversation: Conversation) -> dict:
@@ -84,6 +89,7 @@ def _conversation_to_dict(conversation: Conversation) -> dict:
         "id": conversation.id,
         "title": conversation.title,
         "model": conversation.model,
+        "instant_creation": conversation.instant_creation,
         "created_at": conversation.created_at,
         "updated_at": conversation.updated_at,
     }
@@ -288,6 +294,12 @@ def _payloads_for_message(
                     }
                 )
         elif block["name"] == "create_anki_note":
+            result_dict = result if isinstance(result, dict) else {}
+            note_id = result_dict.get("note_id")
+            # instant_creation=True's tool result is just {"note_id": ...} —
+            # no explicit "status" key (see dispatch_tool) — so a note_id
+            # with no status means "created" here.
+            status = result_dict.get("status") or ("created" if note_id is not None else None)
             payloads.append(
                 {
                     "type": "card",
@@ -295,9 +307,9 @@ def _payloads_for_message(
                     "model_name": tool_input.get("model_name"),
                     "fields": tool_input.get("fields"),
                     "tags": tool_input.get("tags"),
-                    "note_id": (result or {}).get("note_id")
-                    if isinstance(result, dict)
-                    else None,
+                    "note_id": note_id,
+                    "status": status,
+                    "pending_card_id": result_dict.get("pending_card_id"),
                 }
             )
     return payloads
@@ -465,6 +477,7 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
             effective_message,
             get_access_token=functools.partial(_get_access_token, email),
             model_id=conversation.model,
+            instant_creation=conversation.instant_creation,
         )
     except Exception as exc:
         detail = f"{traceback.format_exc()}\n\nUser message: {body.message}"
@@ -576,7 +589,7 @@ async def create_conversation(
 
     engine = get_engine()
     with Session(engine) as session:
-        conversation = Conversation(model=body.model)
+        conversation = Conversation(model=body.model, instant_creation=body.instant_creation)
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
@@ -612,6 +625,8 @@ async def update_conversation(
             conversation.model = body.model
         if body.title is not None:
             conversation.title = body.title
+        if body.instant_creation is not None:
+            conversation.instant_creation = body.instant_creation
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
@@ -681,3 +696,82 @@ async def get_bug_report(bug_report_id: int, email: str = Depends(require_auth))
         "message": bug_report.message,
         "detail": bug_report.detail,
     }
+
+
+pending_cards_router = APIRouter(prefix="/api/pending-cards", tags=["pending-cards"])
+
+
+def _get_pending_card_or_404(session: Session, pending_card_id: int) -> PendingCard:
+    pending_card = session.get(PendingCard, pending_card_id)
+    if pending_card is None:
+        raise HTTPException(status_code=404, detail="Pending card not found")
+    return pending_card
+
+
+@pending_cards_router.post("/{pending_card_id}/create")
+async def create_pending_card(
+    pending_card_id: int, email: str = Depends(require_auth)
+) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        pending_card = _get_pending_card_or_404(session, pending_card_id)
+        if pending_card.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Pending card is already {pending_card.status}",
+            )
+        # PendingCard has no audio/picture columns (see dispatch_tool's
+        # create_anki_note branch) — a draft never carries picked media, so
+        # both are always None here.
+        note_id = await agent_tools._create_note_in_anki(
+            pending_card.deck_name,
+            pending_card.model_name,
+            json.loads(pending_card.fields),
+            json.loads(pending_card.tags) if pending_card.tags else None,
+            None,
+            None,
+        )
+        pending_card.status = "created"
+        pending_card.note_id = note_id
+        session.add(pending_card)
+        session.commit()
+    return {"note_id": note_id}
+
+
+@pending_cards_router.post("/{pending_card_id}/discard")
+async def discard_pending_card(
+    pending_card_id: int, email: str = Depends(require_auth)
+) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        pending_card = _get_pending_card_or_404(session, pending_card_id)
+        if pending_card.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Pending card is already {pending_card.status}",
+            )
+        pending_card.status = "discarded"
+        session.add(pending_card)
+        session.commit()
+    return {"status": "discarded"}
+
+
+@pending_cards_router.get("/{pending_card_id}/preview")
+async def preview_pending_card(
+    pending_card_id: int, email: str = Depends(require_auth)
+) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        pending_card = _get_pending_card_or_404(session, pending_card_id)
+        model_name = pending_card.model_name
+        fields = json.loads(pending_card.fields)
+
+    templates = await ankiconnect.get_model_templates(model_name)
+    css = await ankiconnect.get_model_styling(model_name)
+    # Cloze note types have exactly one card template; other note types may
+    # define more than one (e.g. Basic (and reversed)) — the first is enough
+    # for a representative preview, same "preview one representative card"
+    # scoping the template renderer itself uses for cloze ordinals.
+    card_name = next(iter(templates))
+    template = templates[card_name]
+    return anki_template.render_card(template["Front"], template["Back"], css, fields)

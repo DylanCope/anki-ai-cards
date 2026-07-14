@@ -14,6 +14,144 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 54: wire `instant_creation` through `dispatch_tool`/`run_turn`, pending-card REST endpoints
+- Did:
+  - `backend/app/agent/tools.py`: `dispatch_tool` gains `instant_creation:
+    bool = False`. Extracted the audio/picture-resolution +
+    `ankiconnect.create_note` call that used to live inline in the
+    `create_anki_note` branch into a standalone `async def
+    _create_note_in_anki(deck_name, model_name, fields, tags, audio_input,
+    picture_input) -> int` — now the single place that actually talks to
+    AnkiConnect for note creation. The `create_anki_note` branch now
+    branches: `instant_creation=True` calls `_create_note_in_anki` and
+    returns `{"note_id": ...}` (byte-for-byte the same behavior/return shape
+    as before this task); `instant_creation=False` (new default) skips
+    AnkiConnect entirely and saves a `PendingCard(status="pending", ...)`
+    row instead, returning `{"pending_card_id": <id>, "status": "pending"}`.
+  - `backend/app/agent/core.py`: `run_turn` gains `instant_creation: bool =
+    False`, threaded through to every `dispatch_tool` call in the loop
+    (same call-context pattern as `get_access_token`).
+  - `backend/app/agent/prompts.py`: extended the `create_anki_note` bullet
+    to tell the agent to check the tool result's `status` and say "drafted
+    ... for him to preview" (never "created it in Anki") when it's
+    `"pending"`.
+  - `backend/app/api/chat.py`:
+    - `CreateConversationRequest`/`UpdateConversationRequest` gained
+      `instant_creation` (default `False` / optional respectively, same
+      pattern as `model`); `create_conversation`/`update_conversation`/
+      `_conversation_to_dict` wired accordingly.
+    - `post_chat` now reads `conversation.instant_creation` and passes it
+      into `agent_core.run_turn`.
+    - `_payloads_for_message`'s `create_anki_note` branch now reads
+      `status`/`pending_card_id` out of the tool result alongside the
+      existing `note_id`. Since `instant_creation=True`'s tool result is
+      still just `{"note_id": ...}` with no explicit `status` key (kept
+      that way deliberately — see task 54's PRD text, "behave exactly as
+      today"), the payload defaults `status` to `"created"` whenever
+      `note_id is not None` and there's no explicit `status` in the result;
+      the pending path always has an explicit `"pending"` status in its
+      result, so no ambiguity there.
+    - New `pending_cards_router` (`/api/pending-cards`, registered in
+      `app/main.py`): `POST /{id}/create` (404/409-guarded, calls
+      `agent_tools._create_note_in_anki` — reaching into tools.py's
+      leading-underscore helper directly, which is fine in Python and is
+      exactly what the task asked for: "so both ... call the same code, not
+      two copies" — sets `status="created"` + `note_id`), `POST
+      /{id}/discard` (404/409-guarded, sets `status="discarded"`), `GET
+      /{id}/preview` (404-guarded; calls task 52's
+      `get_model_templates`/`get_model_styling` for the pending card's
+      `model_name`, takes the *first* card template AnkiConnect returns —
+      works uniformly for both Cloze note types, which have exactly one
+      template, and multi-template note types like Basic (and reversed),
+      where the first is a reasonable representative preview — and feeds it
+      plus the pending card's stored `fields` into task 53's
+      `render_card`).
+  - Tests: `backend/tests/test_agent.py` — updated the four existing
+    `create_anki_note` dispatch tests (audio/picture attach + unknown-id
+    rejection) to pass `instant_creation=True` explicitly, since they assert
+    today's original AnkiConnect-calling behavior; added two new tests for
+    the `instant_creation=False` (default) drafting path (with tags, with no
+    tags); added a `run_turn` test confirming `instant_creation` is threaded
+    through to `dispatch_tool` by mocking `core.dispatch_tool` directly (same
+    style as the existing `test_run_turn_passes_access_token_to_tools`).
+    `backend/tests/test_chat.py` — updated the two existing card-payload
+    assertions (`test_post_chat_extracts_card_payload`,
+    `test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_it`)
+    to include the new `status`/`pending_card_id` keys; added
+    `test_post_chat_extracts_pending_card_payload`; added conversation
+    `instant_creation` create/update/default tests plus a
+    `post_chat`-passes-it-to-`run_turn` test; added a `_new_pending_card`
+    seeding helper and a full create/discard/preview endpoint test block
+    (auth, 404, 409, and the success path for each, including asserting the
+    AnkiConnect request body shape on create and the rendered
+    front_html/back_html/css on preview).
+  - Bookkeeping gotcha this task's own text flagged and I had to actually
+    fix: every one of the ~20 `async def run_turn(history, message, *,
+    get_access_token=None, model_id=None): ...` fake implementations already
+    in `test_chat.py` (used to monkeypatch `chat_module.agent_core.run_turn`)
+    needed an `instant_creation=False` parameter added, or `post_chat`
+    calling `agent_core.run_turn(..., instant_creation=...)` against them
+    would TypeError with "unexpected keyword argument". All ~20 shared
+    byte-identical signature text, so a single `sed -i 's/.../.../'` handled
+    the `run_turn`-named ones in one shot; missed the 4 separately-named
+    `failing_run_turn` fakes in the bug-report tests on the first pass (sed
+    pattern only matched the literal name `run_turn`) — caught by the first
+    full-suite run, fixed with a second identical `sed` targeting that name.
+    Any future task adding a new required kwarg to `agent_core.run_turn`'s
+    signature should expect the same ripple and grep for *all* fake
+    implementations, not just ones literally named `run_turn`.
+- Verified: `cd backend && uv run pytest tests/test_chat.py
+  tests/test_agent.py` → 70 + 42 passed. Full suite `uv run pytest` → 257
+  passed (238 pre-existing + 19 new), no regressions. No frontend changes in
+  this task, so `npm run build`/`npm run lint` wasn't run (task 54 is
+  backend-only per its own verify line).
+- Learned:
+  - **Real gap found and deliberately deferred, not silently fixed**: per
+    the task's exact literal instructions, `dispatch_tool`'s draft branch
+    only ever passes `deck_name`/`model_name`/`fields`/`tags` into the new
+    `PendingCard` row — `tool_input.get("audio")`/`tool_input.get("picture")`
+    are read by the *instant_creation=True* path but completely ignored
+    (never stored anywhere) on the draft path, since `PendingCard`'s schema
+    (locked in by task 51, "don't change `PendingCard`'s columns again
+    without checking those tasks' exact field-name expectations first") has
+    no audio/picture columns at all. So today: if Dylan picks audio or an
+    image for a card and instant-creation is off (the new default
+    behavior), that pick is silently dropped — the draft, its preview, and
+    the eventual real Anki note all end up with no media, no error anywhere.
+    Added PRD task 60 to fix this properly (additive migration adding
+    audio/picture columns to `PendingCard`, storing + replaying them through
+    `POST /api/pending-cards/{id}/create`) rather than reworking task 51's
+    already-implemented-and-tested schema mid-task-54, per this loop's "one
+    task only" rule and "add a new unchecked task rather than doing it now."
+    **Task 55 (frontend pending-card UI) should know about this gap too** —
+    Dylan picking audio/an image right before a draft-mode card creation
+    will look like it worked (no error) but silently lose the attachment
+    until task 60 lands.
+  - `agent_tools._create_note_in_anki` (leading underscore, defined in
+    `tools.py`) is called directly from `chat.py`'s pending-card `create`
+    endpoint — a private-looking cross-module call, but this is exactly the
+    "one code path, not two copies" the task asked for, and Python doesn't
+    actually enforce module-private access. Don't be tempted to "clean this
+    up" into a public name without checking whether that's actually wanted;
+    it's a deliberate choice recorded here.
+  - `_payloads_for_message`'s new `status` derivation
+    (`result_dict.get("status") or ("created" if note_id is not None else
+    None)`) exists because `instant_creation=True`'s dispatch_tool result
+    was deliberately kept as literally `{"note_id": ...}` (no `status` key)
+    to match the task's "behave exactly as today" instruction for that
+    path — don't "simplify" this by adding an explicit `"status": "created"`
+    key to that dispatch_tool branch without checking whether anything else
+    started relying on the current minimal shape.
+  - Confirmed via `grep -rn PendingCard backend/app` that task 51's rebuilt
+    schema (no audio/picture columns) really is exactly what's live — this
+    wasn't a stale assumption, it's the actual current state, which is why
+    task 60 is a real fix and not a misunderstanding.
+  - Tasks 55/56 (frontend preview/create/discard UI, instant-creation
+    checkbox) are next and consume this task's `CardPayload` shape
+    (`status`, `pending_card_id`) and the three `/api/pending-cards/*`
+    endpoints/`Conversation.instant_creation` field exactly as built here —
+    don't change either without checking those tasks' expectations first.
+
 ## 2026-07-14 — Task 53: Anki template renderer
 - Did:
   - New `backend/app/agent/anki_template.py`: `render_card(qfmt, afmt, css,

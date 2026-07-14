@@ -11,6 +11,7 @@ the model's tool input.
 """
 
 import base64
+import json
 import mimetypes
 from collections.abc import Awaitable, Callable
 
@@ -18,7 +19,7 @@ from sqlmodel import Session
 
 from app.agent import workflow_specs
 from app.clients import ankiconnect, dictionary, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
-from app.models import AudioClip, ImageAsset, get_engine
+from app.models import AudioClip, ImageAsset, PendingCard, get_engine
 
 # Magic-byte prefixes for the image formats a Wikimedia Commons search
 # result (or an uploaded file) are realistically going to be.
@@ -371,14 +372,71 @@ TOOL_SCHEMAS: list[dict] = [
 ]
 
 
+async def _create_note_in_anki(
+    deck_name: str,
+    model_name: str,
+    fields: dict[str, str],
+    tags: list[str] | None,
+    audio_input: dict | None,
+    picture_input: dict | None,
+) -> int:
+    """Resolve a picked audio clip/image (if any) to AnkiConnect's media-
+    attachment shape and actually call `ankiconnect.create_note`. Shared by
+    `dispatch_tool`'s `create_anki_note` branch (when `instant_creation` is
+    True) and `POST /api/pending-cards/{id}/create` (`app.api.chat`), so
+    there's exactly one place that talks to AnkiConnect for note creation."""
+
+    audio = None
+    if audio_input:
+        engine = get_engine()
+        with Session(engine) as session:
+            clip = session.get(AudioClip, audio_input["clip_id"])
+        if clip is None:
+            raise ValueError(f"Unknown audio clip_id: {audio_input['clip_id']!r}")
+        audio = {
+            "data": base64.b64encode(clip.audio).decode("ascii"),
+            "filename": f"anki-ai-cards-{clip.id}.mp3",
+            "fields": audio_input["fields"],
+        }
+    picture = None
+    if picture_input:
+        engine = get_engine()
+        with Session(engine) as session:
+            image = session.get(ImageAsset, picture_input["image_id"])
+        if image is None:
+            raise ValueError(f"Unknown image image_id: {picture_input['image_id']!r}")
+        extension = mimetypes.guess_extension(image.content_type) or ".jpg"
+        picture = {
+            "data": base64.b64encode(image.data).decode("ascii"),
+            "filename": f"anki-ai-cards-{image.id}{extension}",
+            "fields": picture_input["fields"],
+        }
+    return await ankiconnect.create_note(
+        deck_name=deck_name,
+        model_name=model_name,
+        fields=fields,
+        tags=tags,
+        audio=audio,
+        picture=picture,
+    )
+
+
 async def dispatch_tool(
     name: str,
     tool_input: dict,
     *,
     get_access_token: Callable[[], Awaitable[str]] | None = None,
+    instant_creation: bool = False,
 ) -> object:
     """Execute a tool_use call against the underlying client and return a
-    JSON-serializable result to send back as the tool_result content."""
+    JSON-serializable result to send back as the tool_result content.
+
+    `instant_creation` controls what `create_anki_note` actually does: True
+    calls AnkiConnect immediately (today's original behavior), False (the
+    default) instead saves a `PendingCard` draft for Dylan to preview/create/
+    discard via the `/api/pending-cards/*` endpoints (`app.api.chat`). It's
+    call-context threaded down from the conversation's own setting, same as
+    `get_access_token` — never read from the model's tool input."""
 
     if name == "fetch_google_doc":
         if get_access_token is None:
@@ -421,42 +479,39 @@ async def dispatch_tool(
         return {"clip_ids": clip_ids}
 
     if name == "create_anki_note":
-        audio = None
-        audio_input = tool_input.get("audio")
-        if audio_input:
-            engine = get_engine()
-            with Session(engine) as session:
-                clip = session.get(AudioClip, audio_input["clip_id"])
-            if clip is None:
-                raise ValueError(f"Unknown audio clip_id: {audio_input['clip_id']!r}")
-            audio = {
-                "data": base64.b64encode(clip.audio).decode("ascii"),
-                "filename": f"anki-ai-cards-{clip.id}.mp3",
-                "fields": audio_input["fields"],
-            }
-        picture = None
-        picture_input = tool_input.get("picture")
-        if picture_input:
-            engine = get_engine()
-            with Session(engine) as session:
-                image = session.get(ImageAsset, picture_input["image_id"])
-            if image is None:
-                raise ValueError(f"Unknown image image_id: {picture_input['image_id']!r}")
-            extension = mimetypes.guess_extension(image.content_type) or ".jpg"
-            picture = {
-                "data": base64.b64encode(image.data).decode("ascii"),
-                "filename": f"anki-ai-cards-{image.id}{extension}",
-                "fields": picture_input["fields"],
-            }
-        note_id = await ankiconnect.create_note(
-            deck_name=tool_input["deck_name"],
-            model_name=tool_input["model_name"],
-            fields=tool_input["fields"],
-            tags=tool_input.get("tags"),
-            audio=audio,
-            picture=picture,
-        )
-        return {"note_id": note_id}
+        deck_name = tool_input["deck_name"]
+        model_name = tool_input["model_name"]
+        fields = tool_input["fields"]
+        tags = tool_input.get("tags")
+        if instant_creation:
+            note_id = await _create_note_in_anki(
+                deck_name,
+                model_name,
+                fields,
+                tags,
+                tool_input.get("audio"),
+                tool_input.get("picture"),
+            )
+            return {"note_id": note_id}
+
+        # Draft-only: no AnkiConnect call at all. A picked audio clip/image
+        # (if any) isn't stored on PendingCard — see task 54's PROGRESS.md
+        # entry for why this is a known gap, not an oversight to silently
+        # "fix" here.
+        engine = get_engine()
+        with Session(engine) as session:
+            pending = PendingCard(
+                deck_name=deck_name,
+                model_name=model_name,
+                fields=json.dumps(fields),
+                tags=json.dumps(tags) if tags else None,
+                status="pending",
+            )
+            session.add(pending)
+            session.commit()
+            session.refresh(pending)
+            pending_card_id = pending.id
+        return {"pending_card_id": pending_card_id, "status": "pending"}
 
     if name == "search_images":
         n = tool_input.get("n", 3)

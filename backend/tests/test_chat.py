@@ -19,6 +19,7 @@ from app.models import (
     ConversationMessage,
     ImageAsset,
     OAuthToken,
+    PendingCard,
     get_engine,
     init_db,
 )
@@ -74,7 +75,7 @@ def _new_conversation_id() -> int:
 
 
 def _text_only_run_turn(reply_text: str):
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -134,7 +135,7 @@ def test_post_chat_with_image_id_appends_a_machine_readable_reference(monkeypatc
     conversation_id = _new_conversation_id()
     captured_messages = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_messages.append(message)
         new_history = [
             *history,
@@ -165,7 +166,7 @@ def test_post_chat_without_image_id_leaves_message_unchanged(monkeypatch):
     conversation_id = _new_conversation_id()
     captured_messages = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_messages.append(message)
         new_history = [
             *history,
@@ -286,7 +287,7 @@ def test_post_chat_second_call_only_persists_new_messages_and_reuses_history(mon
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -324,7 +325,7 @@ def test_post_chat_keeps_separate_conversations_isolated(monkeypatch):
     conversation_b = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -365,7 +366,7 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
         session.refresh(clip_two)
         clip_ids = [clip_one.id, clip_two.id]
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -434,7 +435,7 @@ def test_post_chat_extracts_audio_options_payload_for_search_word_pronunciations
         session.refresh(clip_two)
         clip_ids = [clip_one.id, clip_two.id]
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -497,7 +498,7 @@ def test_post_chat_extracts_image_options_payload_for_search_images(monkeypatch)
         session.refresh(image_two)
         image_ids = [image_one.id, image_two.id]
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -558,7 +559,7 @@ def test_post_chat_extracts_image_options_payload_for_generate_image(monkeypatch
         session.refresh(image)
         image_ids = [image.id]
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -610,7 +611,7 @@ def test_post_chat_extracts_workflow_loaded_payload(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -661,7 +662,7 @@ def test_post_chat_extracts_no_payload_when_workflow_spec_not_found(monkeypatch)
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -707,7 +708,7 @@ def test_post_chat_extracts_card_payload(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -757,6 +758,68 @@ def test_post_chat_extracts_card_payload(monkeypatch):
             "fields": {"Text": "{{c1::食べます}}"},
             "tags": ["lesson"],
             "note_id": 42,
+            "status": "created",
+            "pending_card_id": None,
+        }
+    ]
+
+
+def test_post_chat_extracts_pending_card_payload(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-3",
+                        "name": "create_anki_note",
+                        "input": {
+                            "deck_name": "Japanese",
+                            "model_name": "Cloze",
+                            "fields": {"Text": "{{c1::食べます}}"},
+                            "tags": ["lesson"],
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-3",
+                        "content": json.dumps({"pending_card_id": 7, "status": "pending"}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Drafted."}]},
+        ]
+        return {"history": new_history, "reply": "Drafted."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "create it"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {
+            "type": "card",
+            "deck_name": "Japanese",
+            "model_name": "Cloze",
+            "fields": {"Text": "{{c1::食べます}}"},
+            "tags": ["lesson"],
+            "note_id": None,
+            "status": "pending",
+            "pending_card_id": 7,
         }
     ]
 
@@ -799,7 +862,7 @@ def test_post_chat_edit_rejects_when_a_card_was_already_created(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -907,7 +970,7 @@ def test_post_chat_refreshes_expired_access_token_when_google_docs_used(monkeypa
     )
     monkeypatch.setattr(chat_module.google_docs, "refresh_access_token", refresh_mock)
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         # Simulate the turn actually invoking fetch_google_doc, which is the
         # only tool that needs a Google token.
         token = await get_access_token()
@@ -931,7 +994,7 @@ def test_post_chat_saves_bug_report_and_returns_500_without_traceback(monkeypatc
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise httpx.HTTPStatusError(
             "Bad response", request=httpx.Request("POST", "http://x"), response=httpx.Response(500)
         )
@@ -965,7 +1028,7 @@ def test_post_chat_failure_still_persists_the_turn(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -1003,7 +1066,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -1012,7 +1075,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
         "/api/chat", json={"conversation_id": conversation_id, "message": "first try"}
     )
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_histories.append(history)
         return {
             "history": [
@@ -1044,7 +1107,7 @@ def test_list_and_get_bug_reports(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -1085,7 +1148,7 @@ def test_get_chat_history_returns_text_only_transcript(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1140,7 +1203,7 @@ def test_get_chat_history_returns_payloads_alongside_the_turn_that_produced_them
         session.refresh(clip)
         clip_id = clip.id
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1212,7 +1275,7 @@ def test_get_chat_history_returns_image_options_payload_alongside_the_turn_that_
         session.refresh(image)
         image_id = image.id
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1275,7 +1338,7 @@ def test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1331,6 +1394,8 @@ def test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_
                     "fields": {"Text": "{{c1::食べます}}"},
                     "tags": ["lesson"],
                     "note_id": 42,
+                    "status": "created",
+                    "pending_card_id": None,
                 }
             ],
         },
@@ -1397,7 +1462,7 @@ def test_update_conversation_model_switches_which_provider_a_later_turn_uses(mon
     conversation_id = _new_conversation_id()
     captured_model_ids = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_model_ids.append(model_id)
         return {"history": [], "reply": "ok"}
 
@@ -1435,6 +1500,184 @@ def test_update_conversation_title_404s_for_unknown_conversation():
         "/api/conversations/999", json={"title": "New title"}
     )
     assert response.status_code == 404
+
+
+def test_create_conversation_defaults_to_instant_creation_off():
+    _seed_token()
+    response = _authed_client().post("/api/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["instant_creation"] is False
+
+
+def test_create_conversation_with_instant_creation_on():
+    _seed_token()
+    response = _authed_client().post("/api/conversations", json={"instant_creation": True})
+
+    assert response.status_code == 200
+    assert response.json()["instant_creation"] is True
+
+
+def test_update_conversation_instant_creation():
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    response = _authed_client().patch(
+        f"/api/conversations/{conversation_id}", json={"instant_creation": True}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["instant_creation"] is True
+
+
+def test_post_chat_passes_conversation_instant_creation_to_run_turn(monkeypatch):
+    _seed_token()
+    captured_instant_creation = []
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        captured_instant_creation.append(instant_creation)
+        return {"history": [], "reply": "ok"}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    authed = _authed_client()
+
+    create_response = authed.post("/api/conversations", json={"instant_creation": True})
+    conversation_id = create_response.json()["id"]
+
+    authed.post("/api/chat", json={"conversation_id": conversation_id, "message": "hi"})
+
+    assert captured_instant_creation == [True]
+
+
+# --- Pending-card endpoints ---
+
+
+def _new_pending_card(*, status: str = "pending", tags: list[str] | None = ["lesson"]) -> int:
+    with Session(get_engine()) as session:
+        pending = PendingCard(
+            deck_name="Japanese",
+            model_name="Cloze",
+            fields=json.dumps({"Text": "{{c1::食べます}}"}),
+            tags=json.dumps(tags) if tags else None,
+            status=status,
+        )
+        session.add(pending)
+        session.commit()
+        session.refresh(pending)
+        return pending.id
+
+
+def test_create_pending_card_requires_auth(client):
+    response = client.post("/api/pending-cards/1/create")
+    assert response.status_code == 401
+
+
+def test_create_pending_card_404s_for_unknown_card():
+    _seed_token()
+    response = _authed_client().post("/api/pending-cards/999/create")
+    assert response.status_code == 404
+
+
+def test_create_pending_card_calls_ankiconnect_and_marks_created(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card()
+
+    create_mock = AsyncMock(return_value=99)
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", create_mock)
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 200
+    assert response.json() == {"note_id": 99}
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze",
+        fields={"Text": "{{c1::食べます}}"},
+        tags=["lesson"],
+        audio=None,
+        picture=None,
+    )
+
+    with Session(get_engine()) as session:
+        pending = session.get(PendingCard, pending_card_id)
+    assert pending.status == "created"
+    assert pending.note_id == 99
+
+
+def test_create_pending_card_409s_when_not_pending(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(status="created")
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 409
+
+
+def test_discard_pending_card_requires_auth(client):
+    response = client.post("/api/pending-cards/1/discard")
+    assert response.status_code == 401
+
+
+def test_discard_pending_card_404s_for_unknown_card():
+    _seed_token()
+    response = _authed_client().post("/api/pending-cards/999/discard")
+    assert response.status_code == 404
+
+
+def test_discard_pending_card_marks_discarded():
+    _seed_token()
+    pending_card_id = _new_pending_card()
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/discard")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "discarded"}
+    with Session(get_engine()) as session:
+        pending = session.get(PendingCard, pending_card_id)
+    assert pending.status == "discarded"
+
+
+def test_discard_pending_card_409s_when_not_pending():
+    _seed_token()
+    pending_card_id = _new_pending_card(status="discarded")
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/discard")
+
+    assert response.status_code == 409
+
+
+def test_preview_pending_card_requires_auth(client):
+    response = client.get("/api/pending-cards/1/preview")
+    assert response.status_code == 401
+
+
+def test_preview_pending_card_404s_for_unknown_card():
+    _seed_token()
+    response = _authed_client().get("/api/pending-cards/999/preview")
+    assert response.status_code == 404
+
+
+def test_preview_pending_card_renders_the_note_type_template(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    templates_mock.assert_awaited_once_with("Cloze")
+    styling_mock.assert_awaited_once_with("Cloze")
+    assert body["css"] == ".cloze { font-weight: bold; }"
+    assert "食べます" not in body["front_html"]
+    assert "[...]" in body["front_html"]
+    assert "食べます" in body["back_html"]
 
 
 def test_delete_conversation_requires_auth(client):

@@ -372,6 +372,7 @@ async def test_dispatch_create_anki_note(monkeypatch):
             "fields": {"Text": "{{c1::食べる}}"},
             "tags": ["lesson"],
         },
+        instant_creation=True,
     )
 
     mock.assert_awaited_once_with(
@@ -383,6 +384,56 @@ async def test_dispatch_create_anki_note(monkeypatch):
         picture=None,
     )
     assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_drafts_a_pending_card_by_default(db, monkeypatch):
+    mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "tags": ["lesson"],
+        },
+    )
+
+    mock.assert_not_awaited()
+    assert result["status"] == "pending"
+    pending_card_id = result["pending_card_id"]
+
+    with Session(tools.get_engine()) as session:
+        pending = session.get(tools.PendingCard, pending_card_id)
+    assert pending.deck_name == "Japanese"
+    assert pending.model_name == "Cloze"
+    assert json.loads(pending.fields) == {"Text": "{{c1::食べる}}"}
+    assert json.loads(pending.tags) == ["lesson"]
+    assert pending.status == "pending"
+    assert pending.note_id is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_drafts_a_pending_card_with_no_tags(db, monkeypatch):
+    mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze",
+            "fields": {"Text": "{{c1::食べる}}"},
+        },
+        instant_creation=False,
+    )
+
+    mock.assert_not_awaited()
+    with Session(tools.get_engine()) as session:
+        pending = session.get(tools.PendingCard, result["pending_card_id"])
+    assert pending.tags is None
 
 
 @pytest.mark.asyncio
@@ -403,6 +454,7 @@ async def test_dispatch_create_anki_note_attaches_picked_audio_clip(db, monkeypa
             "fields": {"Text": "{{c1::食べる}}"},
             "audio": {"clip_id": picked_clip_id, "fields": ["Text Audio"]},
         },
+        instant_creation=True,
     )
 
     create_mock.assert_awaited_once_with(
@@ -431,6 +483,7 @@ async def test_dispatch_create_anki_note_rejects_unknown_audio_clip(db):
                 "fields": {"Text": "{{c1::食べる}}"},
                 "audio": {"clip_id": 999, "fields": ["Text Audio"]},
             },
+            instant_creation=True,
         )
 
 
@@ -454,6 +507,7 @@ async def test_dispatch_create_anki_note_attaches_picked_image(db, monkeypatch):
             "fields": {"Text": "{{c1::食べる}}"},
             "picture": {"image_id": image_id, "fields": ["Picture"]},
         },
+        instant_creation=True,
     )
 
     create_mock.assert_awaited_once_with(
@@ -482,6 +536,7 @@ async def test_dispatch_create_anki_note_rejects_unknown_image_id(db):
                 "fields": {"Text": "{{c1::食べる}}"},
                 "picture": {"image_id": 999, "fields": ["Picture"]},
             },
+            instant_creation=True,
         )
 
 
@@ -599,6 +654,41 @@ async def test_run_turn_one_tool_call_then_end_turn(db, monkeypatch):
     assert tool_result["type"] == "tool_result"
     assert tool_result["tool_use_id"] == "toolu_1"
     assert json.loads(tool_result["content"]) == ["Basic", "Cloze"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_passes_instant_creation_to_dispatch_tool(db, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    dispatch_mock = AsyncMock(return_value={"note_id": 1})
+    monkeypatch.setattr(core, "dispatch_tool", dispatch_mock)
+
+    tool_use_response = _response(
+        "tool_use",
+        [
+            _tool_use_block(
+                "toolu_4",
+                "create_anki_note",
+                {"deck_name": "Japanese", "model_name": "Cloze", "fields": {}},
+            )
+        ],
+    )
+    end_turn_response = _response("end_turn", [_text_block("done")])
+
+    client = AsyncMock()
+    client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
+
+    with patch("app.agent.providers.anthropic_provider.anthropic.AsyncAnthropic", return_value=client):
+        await core.run_turn(
+            [], "make a card", model_id="claude-opus-4-8", instant_creation=True
+        )
+
+    dispatch_mock.assert_awaited_once_with(
+        "create_anki_note",
+        {"deck_name": "Japanese", "model_name": "Cloze", "fields": {}},
+        get_access_token=None,
+        instant_creation=True,
+    )
 
 
 @pytest.mark.asyncio
