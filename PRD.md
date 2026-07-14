@@ -1246,7 +1246,7 @@ which model the *currently open* conversation uses.
   distinct from (and independent of) the current conversation's selected
   model, and a brand new chat actually opens using the marked default.
 
-- [ ] **60. Backend: persist a picked audio clip/image on a drafted
+- [x] **60. Backend: persist a picked audio clip/image on a drafted
   `PendingCard`, so preview-before-creation doesn't silently drop them.**
   Found while implementing task 54: `PendingCard` (task 51's schema) has no
   audio/picture columns, and task 54's `dispatch_tool` `create_anki_note`

@@ -80,6 +80,13 @@ class PendingCard(SQLModel, table=True):
     model_name: str
     fields: str  # JSON-serialized dict[str, str]
     tags: str | None = Field(default=None)  # JSON-serialized list[str]
+    # JSON-serialized {"clip_id"/"image_id": ..., "fields": [...]}, same shape
+    # create_anki_note's tool schema already uses for these arguments — set
+    # when Dylan picked audio/an image before the draft was saved (task 60),
+    # so POST /api/pending-cards/{id}/create can attach it instead of
+    # silently dropping the pick.
+    audio: str | None = Field(default=None)
+    picture: str | None = Field(default=None)
     status: str = Field(default="pending")  # "pending" / "created" / "discarded"
     note_id: int | None = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow)
@@ -271,6 +278,28 @@ def _rebuild_pendingcard_table_if_stale(engine) -> None:
             conn.commit()
 
 
+def _add_pendingcard_audio_picture_columns_if_missing(engine) -> None:
+    """Same rationale as `_add_conversation_id_column_if_missing` — the
+    `audio`/`picture` columns (added so a picked audio clip/image survives
+    onto a drafted PendingCard instead of being silently dropped, see
+    app.agent.tools) need their own ALTER TABLE on an already-deployed
+    `pendingcard` table. Unlike `_rebuild_pendingcard_table_if_stale` above,
+    this one must NOT drop-and-recreate: by the time this migration landed,
+    real Dylan-created PendingCard rows already exist and must be preserved.
+    Existing rows backfill to NULL, meaning "no media was picked" — correct
+    for every row that predates this column, since none of them could have
+    stored a pick in the first place."""
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(pendingcard)")}
+        if "audio" not in columns:
+            conn.exec_driver_sql("ALTER TABLE pendingcard ADD COLUMN audio TEXT")
+            conn.commit()
+        if "picture" not in columns:
+            conn.exec_driver_sql("ALTER TABLE pendingcard ADD COLUMN picture TEXT")
+            conn.commit()
+
+
 def _backfill_legacy_conversation(engine) -> None:
     """Any ConversationMessage row with no conversation_id predates the
     multi-conversation feature — group them all into one real Conversation
@@ -305,5 +334,6 @@ def init_db():
     _add_conversation_message_image_id_column_if_missing(engine)
     _add_audioclip_source_column_if_missing(engine)
     _add_conversation_instant_creation_column_if_missing(engine)
+    _add_pendingcard_audio_picture_columns_if_missing(engine)
     _backfill_legacy_conversation(engine)
     return engine

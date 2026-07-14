@@ -1552,13 +1552,21 @@ def test_post_chat_passes_conversation_instant_creation_to_run_turn(monkeypatch)
 # --- Pending-card endpoints ---
 
 
-def _new_pending_card(*, status: str = "pending", tags: list[str] | None = ["lesson"]) -> int:
+def _new_pending_card(
+    *,
+    status: str = "pending",
+    tags: list[str] | None = ["lesson"],
+    audio: dict | None = None,
+    picture: dict | None = None,
+) -> int:
     with Session(get_engine()) as session:
         pending = PendingCard(
             deck_name="Japanese",
             model_name="Cloze",
             fields=json.dumps({"Text": "{{c1::食べます}}"}),
             tags=json.dumps(tags) if tags else None,
+            audio=json.dumps(audio) if audio else None,
+            picture=json.dumps(picture) if picture else None,
             status=status,
         )
         session.add(pending)
@@ -1602,6 +1610,47 @@ def test_create_pending_card_calls_ankiconnect_and_marks_created(monkeypatch):
         pending = session.get(PendingCard, pending_card_id)
     assert pending.status == "created"
     assert pending.note_id == 99
+
+
+def test_create_pending_card_attaches_stored_audio_and_picture(monkeypatch):
+    _seed_token()
+    with Session(get_engine()) as session:
+        clip = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
+        session.add(clip)
+        image = ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(clip)
+        session.refresh(image)
+        clip_id, image_id = clip.id, image.id
+
+    pending_card_id = _new_pending_card(
+        audio={"clip_id": clip_id, "fields": ["Text Audio"]},
+        picture={"image_id": image_id, "fields": ["Picture"]},
+    )
+
+    create_mock = AsyncMock(return_value=99)
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", create_mock)
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 200
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze",
+        fields={"Text": "{{c1::食べます}}"},
+        tags=["lesson"],
+        audio={
+            "data": base64.b64encode(b"aaa").decode("ascii"),
+            "filename": f"anki-ai-cards-{clip_id}.mp3",
+            "fields": ["Text Audio"],
+        },
+        picture={
+            "data": base64.b64encode(b"pngbytes").decode("ascii"),
+            "filename": f"anki-ai-cards-{image_id}.png",
+            "fields": ["Picture"],
+        },
+    )
 
 
 def test_create_pending_card_409s_when_not_pending(monkeypatch):
@@ -1678,6 +1727,60 @@ def test_preview_pending_card_renders_the_note_type_template(monkeypatch):
     assert "食べます" not in body["front_html"]
     assert "[...]" in body["front_html"]
     assert "食べます" in body["back_html"]
+
+
+def test_preview_pending_card_includes_picked_media(monkeypatch):
+    _seed_token()
+    with Session(get_engine()) as session:
+        clip = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
+        session.add(clip)
+        image = ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(clip)
+        session.refresh(image)
+        clip_id, image_id = clip.id, image.id
+
+    pending_card_id = _new_pending_card(
+        tags=None,
+        audio={"clip_id": clip_id, "fields": ["Text Audio"]},
+        picture={"image_id": image_id, "fields": ["Picture"]},
+    )
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["audio_base64"] == base64.b64encode(b"aaa").decode("ascii")
+    assert body["picture_base64"] == base64.b64encode(b"pngbytes").decode("ascii")
+    assert body["picture_content_type"] == "image/png"
+
+
+def test_preview_pending_card_omits_media_keys_when_none_picked(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "audio_base64" not in body
+    assert "picture_base64" not in body
+    assert "picture_content_type" not in body
 
 
 def test_delete_conversation_requires_auth(client):

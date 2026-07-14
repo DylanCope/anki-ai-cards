@@ -236,6 +236,87 @@ def test_pending_card_roundtrip(engine) -> None:
         assert card.note_id is None
 
 
+def test_pending_card_audio_and_picture_roundtrip(engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            PendingCard(
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}"}),
+                audio=json.dumps({"clip_id": 5, "fields": ["Text Audio"]}),
+                picture=json.dumps({"image_id": 9, "fields": ["Picture"]}),
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert json.loads(card.audio) == {"clip_id": 5, "fields": ["Text Audio"]}
+        assert json.loads(card.picture) == {"image_id": 9, "fields": ["Picture"]}
+
+
+def test_pending_card_audio_and_picture_default_to_none(engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            PendingCard(
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}"}),
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert card.audio is None
+        assert card.picture is None
+
+
+def test_init_db_migrates_a_pre_pendingcard_audio_picture_database(
+    tmp_path, monkeypatch
+) -> None:
+    # Simulate a database from after task 51's rebuild but before task 60's
+    # audio/picture columns existed. init_db() must add them (backfilling
+    # existing rows to NULL) without dropping the table — unlike
+    # _rebuild_pendingcard_table_if_stale, this migration must preserve real
+    # pre-existing PendingCard rows.
+    db_path = tmp_path / "pre_pendingcard_audio_picture.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE pendingcard ("
+            "id INTEGER PRIMARY KEY, deck_name TEXT, model_name TEXT, "
+            "fields TEXT, tags TEXT, status TEXT, note_id INTEGER, "
+            "created_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO pendingcard "
+            "(deck_name, model_name, fields, status, created_at) "
+            "VALUES ('Japanese', 'Cloze', '{\"Text\": \"food\"}', 'pending', "
+            "'2026-07-01T00:00:00')"
+        )
+        conn.commit()
+
+    engine = init_db()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert card.deck_name == "Japanese"
+        assert card.audio is None
+        assert card.picture is None
+
+    # Idempotent, and doesn't clobber a value already set on a real row.
+    with Session(engine) as session:
+        card.audio = json.dumps({"clip_id": 1, "fields": ["Text Audio"]})
+        session.add(card)
+        session.commit()
+    init_db()
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert json.loads(card.audio) == {"clip_id": 1, "fields": ["Text Audio"]}
+
+
 def test_pending_card_tags_default_to_none(engine) -> None:
     with Session(engine) as session:
         session.add(

@@ -774,16 +774,13 @@ async def create_pending_card(
                 status_code=409,
                 detail=f"Pending card is already {pending_card.status}",
             )
-        # PendingCard has no audio/picture columns (see dispatch_tool's
-        # create_anki_note branch) — a draft never carries picked media, so
-        # both are always None here.
         note_id = await agent_tools._create_note_in_anki(
             pending_card.deck_name,
             pending_card.model_name,
             json.loads(pending_card.fields),
             json.loads(pending_card.tags) if pending_card.tags else None,
-            None,
-            None,
+            json.loads(pending_card.audio) if pending_card.audio else None,
+            json.loads(pending_card.picture) if pending_card.picture else None,
         )
         pending_card.status = "created"
         pending_card.note_id = note_id
@@ -819,6 +816,20 @@ async def preview_pending_card(
         pending_card = _get_pending_card_or_404(session, pending_card_id)
         model_name = pending_card.model_name
         fields = json.loads(pending_card.fields)
+        # The template renderer (app.agent.anki_template) only substitutes
+        # field text — it has no notion of media — so a picked audio
+        # clip/image doesn't show up in front_html/back_html at all. Rather
+        # than leave that a silent gap, surface the raw picked media
+        # alongside the rendered HTML so a frontend can show a player/
+        # thumbnail next to the preview if it chooses to.
+        audio_input = json.loads(pending_card.audio) if pending_card.audio else None
+        picture_input = json.loads(pending_card.picture) if pending_card.picture else None
+        audio_clip = (
+            session.get(AudioClip, audio_input["clip_id"]) if audio_input else None
+        )
+        image_asset = (
+            session.get(ImageAsset, picture_input["image_id"]) if picture_input else None
+        )
 
     templates = await ankiconnect.get_model_templates(model_name)
     css = await ankiconnect.get_model_styling(model_name)
@@ -828,4 +839,10 @@ async def preview_pending_card(
     # scoping the template renderer itself uses for cloze ordinals.
     card_name = next(iter(templates))
     template = templates[card_name]
-    return anki_template.render_card(template["Front"], template["Back"], css, fields)
+    result = anki_template.render_card(template["Front"], template["Back"], css, fields)
+    if audio_clip is not None:
+        result["audio_base64"] = base64.b64encode(audio_clip.audio).decode("ascii")
+    if image_asset is not None:
+        result["picture_base64"] = base64.b64encode(image_asset.data).decode("ascii")
+        result["picture_content_type"] = image_asset.content_type
+    return result

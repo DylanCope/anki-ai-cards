@@ -14,6 +14,66 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 60: persist picked audio/image on a drafted PendingCard
+- Did: This was the last unchecked task in PRD.md — all 60 tasks are now
+  checked.
+  - `backend/app/models.py`: added `audio: str | None` / `picture: str |
+    None` columns to `PendingCard` (JSON-serialized `{"clip_id"/"image_id":
+    ..., "fields": [...]}`, same shape `create_anki_note`'s tool schema
+    already uses), plus an additive
+    `_add_pendingcard_audio_picture_columns_if_missing` migration (two plain
+    `ALTER TABLE ... ADD COLUMN` calls, each independently guarded — NOT the
+    drop-and-recreate approach task 51's `_rebuild_pendingcard_table_if_stale`
+    used, since real `PendingCard` rows exist by now and must survive).
+  - `backend/app/agent/tools.py`: `dispatch_tool`'s `create_anki_note` draft
+    branch (`instant_creation=False`) now reads `tool_input.get("audio")`/
+    `tool_input.get("picture")` and stores them JSON-serialized on the new
+    `PendingCard` row (previously silently dropped — see task 54's
+    PROGRESS.md entry that first flagged this gap).
+  - `backend/app/api/chat.py`: `POST /api/pending-cards/{id}/create` now
+    deserializes `pending_card.audio`/`.picture` and passes them into
+    `agent_tools._create_note_in_anki` instead of hardcoded `None, None`.
+  - Decided the open question the task raised ("should preview reflect
+    picked media too?") — yes, minimally: `GET /api/pending-cards/{id}/preview`
+    now also fetches the referenced `AudioClip`/`ImageAsset` rows (if any)
+    and adds `audio_base64` / `picture_base64` + `picture_content_type` keys
+    to the response alongside the existing `front_html`/`back_html`/`css`
+    (omitted entirely when nothing was picked, not sent as `null`). This is
+    backend-only — no frontend change, since the task's own Verify section
+    only asked for backend coverage and didn't list a frontend task. A
+    future task should decide how `CardPayloadCard`'s Preview UI (task 55)
+    surfaces these two new optional fields (e.g. an `<audio>` player /
+    `<img>` thumbnail next to the sandboxed iframe) — flagging this as a
+    natural follow-up rather than adding it here, since PRD.md's task 60
+    text explicitly scoped the frontend side as optional ("worth deciding
+    rather than leaving... as a silent gap in the preview too", not "build
+    the UI for it").
+  - Template rendering itself (`app/agent/anki_template.py`) is untouched —
+    it only ever substitutes field *text*, so this is additive metadata
+    alongside the rendered HTML, not a template-engine change.
+- Verified: `cd backend && uv run pytest` → 273 passed (was 265 before this
+  task; 8 new tests: 3 in `test_models.py` for the new columns'
+  round-trip/default-None/migration-idempotency-and-backfill, 2 in
+  `test_agent.py` for `dispatch_tool` persisting/omitting audio+picture on a
+  draft, 3 in `test_chat.py` for `create_pending_card` attaching stored
+  media through to the `ankiconnect.create_note` mock, and the preview
+  endpoint including/omitting the new media keys).
+- Learned:
+  - **PRD.md now has zero unchecked tasks** — `grep -n "^\- \[ \]"
+    PRD.md` returns nothing. Per the Ralph loop's completion rule, this
+    means the next iteration (or this one, since verification already
+    passed) should output `<promise>RALPH_DONE</promise>` rather than
+    picking a new task — there isn't one.
+  - Test gotcha: don't hardcode plausible-looking `clip_id`/`image_id`
+    values in a `PendingCard.audio`/`.picture` fixture — each test gets a
+    fresh SQLite file via the `_set_env` autouse fixture, so real
+    `AudioClip`/`ImageAsset` rows created in the same test start their
+    autoincrement at 1. Create the referenced rows first, capture their
+    actual `.id` after `session.refresh(...)`, and use those in the
+    `PendingCard`'s JSON — this is exactly what
+    `test_create_pending_card_attaches_stored_audio_and_picture` and
+    `test_preview_pending_card_includes_picked_media` do.
+
 ## 2026-07-14 — Task 59: "mark as default" checkbox in the model panel
 - Did: `frontend/app/lib/types.ts`: added a `UserSettings` type
   (`{ default_model_id: string | null }`) matching task 58's `GET

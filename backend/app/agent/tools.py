@@ -495,9 +495,12 @@ async def dispatch_tool(
             return {"note_id": note_id}
 
         # Draft-only: no AnkiConnect call at all. A picked audio clip/image
-        # (if any) isn't stored on PendingCard — see task 54's PROGRESS.md
-        # entry for why this is a known gap, not an oversight to silently
-        # "fix" here.
+        # (if any) is stored on PendingCard so POST /api/pending-cards/{id}/
+        # create (app.api.chat) can attach it once Dylan confirms the draft —
+        # see task 60's PROGRESS.md entry for why this wasn't the case
+        # originally.
+        audio_input = tool_input.get("audio")
+        picture_input = tool_input.get("picture")
         engine = get_engine()
         with Session(engine) as session:
             pending = PendingCard(
@@ -505,6 +508,8 @@ async def dispatch_tool(
                 model_name=model_name,
                 fields=json.dumps(fields),
                 tags=json.dumps(tags) if tags else None,
+                audio=json.dumps(audio_input) if audio_input else None,
+                picture=json.dumps(picture_input) if picture_input else None,
                 status="pending",
             )
             session.add(pending)
