@@ -242,7 +242,7 @@ def _payloads_for_message(
             continue
         result = tool_results.get(block["id"])
         tool_input = block["input"]
-        if block["name"] == "generate_audio":
+        if block["name"] in ("generate_audio", "search_word_pronunciations"):
             clip_ids = result.get("clip_ids", []) if isinstance(result, dict) else []
             options = [
                 base64.b64encode(clips_by_id[cid].audio).decode("ascii")
@@ -252,7 +252,9 @@ def _payloads_for_message(
             payloads.append(
                 {
                     "type": "audio_options",
-                    "text": tool_input.get("text"),
+                    "text": tool_input.get("text")
+                    if block["name"] == "generate_audio"
+                    else tool_input.get("word"),
                     "clip_ids": clip_ids,
                     "options": options,
                 }
@@ -273,6 +275,18 @@ def _payloads_for_message(
                     "content_types": [image.content_type for image in found],
                 }
             )
+        elif block["name"] == "load_workflow_spec":
+            # No payload when the loaded name wasn't found (result is None) —
+            # nothing to surface to Dylan; the agent's own text reply already
+            # has to explain a miss.
+            if isinstance(result, dict):
+                payloads.append(
+                    {
+                        "type": "workflow_loaded",
+                        "name": result.get("name"),
+                        "spec": result.get("spec"),
+                    }
+                )
         elif block["name"] == "create_anki_note":
             payloads.append(
                 {

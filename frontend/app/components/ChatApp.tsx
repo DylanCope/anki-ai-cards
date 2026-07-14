@@ -15,6 +15,7 @@ import MessageBubble from "@/app/components/MessageBubble";
 import AudioOptionsCard from "@/app/components/AudioOptionsCard";
 import CardPayloadCard from "@/app/components/CardPayloadCard";
 import ImageOptionsCard from "@/app/components/ImageOptionsCard";
+import WorkflowLoadedCard from "@/app/components/WorkflowLoadedCard";
 import ConversationSidebar from "@/app/components/ConversationSidebar";
 import AiSettingsButton from "@/app/components/AiSettingsButton";
 import WorkflowsButton from "@/app/components/WorkflowsButton";
@@ -44,6 +45,13 @@ export default function ChatApp() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Set right before the history-load effect calls setTurns, and consumed
+  // (then reset) by the scroll effect below — lets it tell "a conversation's
+  // history just loaded" (jump instantly) apart from "a new message arrived
+  // in the conversation already on screen" (animate smoothly), instead of
+  // always animating, which made every conversation open visibly scroll
+  // from the top.
+  const historyJustLoadedRef = useRef(false);
 
   const MAX_TEXTAREA_HEIGHT_PX = 200;
 
@@ -115,6 +123,7 @@ export default function ChatApp() {
         if (!res.ok) throw new Error(`History request failed (${res.status})`);
         const history = (await res.json()) as ChatHistoryResponseEntry[];
         if (!cancelled) {
+          historyJustLoadedRef.current = true;
           setTurns(
             history.map((entry) => ({
               message: { role: entry.role, text: entry.text },
@@ -132,7 +141,9 @@ export default function ChatApp() {
   }, [conversationId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const instant = historyJustLoadedRef.current;
+    historyJustLoadedRef.current = false;
+    bottomRef.current?.scrollIntoView({ behavior: instant ? "auto" : "smooth" });
   }, [turns]);
 
   // Auto-resize the composer to fit its content, up to a max height.
@@ -271,6 +282,16 @@ export default function ChatApp() {
       if (prev) URL.revokeObjectURL(prev.previewUrl);
       return null;
     });
+  }
+
+  // Picking an option (audio/image) appends to the composer instead of
+  // sending immediately — with multiple choice cards showing at once (e.g.
+  // pronunciation audio + a generated image in the same turn), auto-sending
+  // on the first pick advanced the conversation before the second pick
+  // could happen at all. Appending lets Dylan pick from several cards, then
+  // send once.
+  function appendPickToComposer(text: string) {
+    setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
   }
 
   async function sendMessage(text: string) {
@@ -432,7 +453,7 @@ export default function ChatApp() {
             >
               <Menu size={20} />
             </button>
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent font-jp text-lg font-bold text-accent-foreground">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent font-jp text-base leading-none font-bold whitespace-nowrap text-accent-foreground">
               暗助
             </div>
             <div className="leading-tight">
@@ -478,7 +499,7 @@ export default function ChatApp() {
                         <AudioOptionsCard
                           key={payloadIndex}
                           payload={payload}
-                          onPick={sendMessage}
+                          onPick={appendPickToComposer}
                           disabled={sending}
                         />
                       );
@@ -488,10 +509,13 @@ export default function ChatApp() {
                         <ImageOptionsCard
                           key={payloadIndex}
                           payload={payload}
-                          onPick={sendMessage}
+                          onPick={appendPickToComposer}
                           disabled={sending}
                         />
                       );
+                    }
+                    if (payload.type === "workflow_loaded") {
+                      return <WorkflowLoadedCard key={payloadIndex} payload={payload} />;
                     }
                     return (
                       <CardPayloadCard
@@ -571,7 +595,7 @@ export default function ChatApp() {
                 disabled={sending}
                 rows={1}
                 style={{ maxHeight: MAX_TEXTAREA_HEIGHT_PX }}
-                className="flex-1 resize-none overflow-y-auto rounded-lg border border-border bg-surface px-4 py-2 text-sm disabled:opacity-50"
+                className="flex-1 resize-none overflow-y-auto rounded-lg border border-border bg-surface px-4 py-2 text-base disabled:opacity-50 md:text-sm"
               />
               <button
                 type="submit"

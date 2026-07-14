@@ -26,6 +26,11 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // Without this, some mobile browsers overlay the on-screen keyboard on
+  // top of the page instead of shrinking the layout viewport, so a
+  // `h-dvh`-based fixed-composer layout like this app's doesn't reliably
+  // end up positioned above the keyboard.
+  interactiveWidget: "resizes-content",
 };
 
 // Sets the `dark` class before hydration so the persisted theme choice

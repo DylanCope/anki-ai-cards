@@ -57,11 +57,18 @@ export interface ImageAttachmentPayload {
   content_type: string;
 }
 
+export interface WorkflowLoadedPayload {
+  type: "workflow_loaded";
+  name: string | null;
+  spec: string | null;
+}
+
 export type ChatPayload =
   | AudioOptionsPayload
   | CardPayload
   | ImageOptionsPayload
-  | ImageAttachmentPayload;
+  | ImageAttachmentPayload
+  | WorkflowLoadedPayload;
 
 export interface ChatTurn {
   message: ChatHistoryEntry;

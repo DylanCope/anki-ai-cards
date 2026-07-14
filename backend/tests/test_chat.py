@@ -415,6 +415,75 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
     ]
 
 
+def test_post_chat_extracts_audio_options_payload_for_search_word_pronunciations(monkeypatch):
+    # Regression test: search_word_pronunciations returns the same
+    # {"clip_ids": [...]} shape as generate_audio, but the extraction below
+    # originally only matched on block name "generate_audio", so Forvo
+    # results never got turned into a playable audio_options payload — the
+    # frontend just showed clip_ids/usernames as text with no way to hear
+    # them before picking.
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        clip_one = AudioClip(text="猫", voice="Nekomata", audio=b"aaa", source="forvo")
+        clip_two = AudioClip(text="猫", voice="Kyoko", audio=b"bbb", source="forvo")
+        session.add(clip_one)
+        session.add(clip_two)
+        session.commit()
+        session.refresh(clip_one)
+        session.refresh(clip_two)
+        clip_ids = [clip_one.id, clip_two.id]
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "search_word_pronunciations",
+                        "input": {"word": "猫"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"clip_ids": clip_ids}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Here are 2 options."}]},
+        ]
+        return {"history": new_history, "reply": "Here are 2 options."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "find pronunciations"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {
+            "type": "audio_options",
+            "text": "猫",
+            "clip_ids": clip_ids,
+            "options": [
+                base64.b64encode(b"aaa").decode("ascii"),
+                base64.b64encode(b"bbb").decode("ascii"),
+            ],
+        }
+    ]
+
+
 def test_post_chat_extracts_image_options_payload_for_search_images(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
@@ -535,6 +604,103 @@ def test_post_chat_extracts_image_options_payload_for_generate_image(monkeypatch
             "content_types": ["image/png"],
         }
     ]
+
+
+def test_post_chat_extracts_workflow_loaded_payload(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "load_workflow_spec",
+                        "input": {"name": "Migaku_Vocab_Mining"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps(
+                            {"name": "Migaku_Vocab_Mining", "spec": "PURPOSE\n..."}
+                        ),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Loaded the Migaku_Vocab_Mining workflow."}],
+            },
+        ]
+        return {"history": new_history, "reply": "Loaded the Migaku_Vocab_Mining workflow."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "make a card for 猫"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {"type": "workflow_loaded", "name": "Migaku_Vocab_Mining", "spec": "PURPOSE\n..."}
+    ]
+
+
+def test_post_chat_extracts_no_payload_when_workflow_spec_not_found(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "load_workflow_spec",
+                        "input": {"name": "Nonexistent"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps(None),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I couldn't find that workflow."}],
+            },
+        ]
+        return {"history": new_history, "reply": "I couldn't find that workflow."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "load Nonexistent"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payloads"] == []
 
 
 def test_post_chat_extracts_card_payload(monkeypatch):

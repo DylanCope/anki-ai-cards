@@ -46,8 +46,9 @@ def _build_system_prompt(history: list[dict]) -> str:
     known_specs = ", ".join(names)
     return (
         f"{SYSTEM_PROMPT}\n\nKnown workflow specs from past sessions: "
-        f"{known_specs}. Consider offering to reuse one of these (via "
-        f"load_workflow_spec) before starting from scratch."
+        f"{known_specs}. Per the workflow-spec guidance above, check whether "
+        f"one of these matches before starting from scratch on a card "
+        f"creation request."
     )
 
 
