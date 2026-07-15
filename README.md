@@ -1,13 +1,24 @@
-# anki-ai-cards
+# Anjo — AI-powered Anki card creation assistant
 
-A personal chat app that turns Japanese lesson notes into Anki flashcards.
-You chat with a Claude tool-use agent about a Google Doc lesson transcript;
-it finds the teacher's red-marked corrections, proposes Cloze cards with
-furigana and an English translation, generates three ElevenLabs audio takes
-for you to pick from, discovers your real Anki note type's fields live over
-AnkiConnect (no hardcoded field mapping), creates the note, and syncs it to
-your real AnkiWeb account so it shows up on your phone/desktop with zero
-client reconfiguration.
+**Anjo** is a personal chat app that turns any source material into Anki
+flashcards. You chat with a Claude tool-use agent; it helps you create notes
+with audio, images, and example sentences attached, discovers your real Anki
+note type's fields live over AnkiConnect (no hardcoded field mapping), and
+syncs to your AnkiWeb account so cards show up on your phone/desktop immediately.
+
+Source material can be anything: a Google Doc lesson transcript with a
+teacher's corrections, a single word you want to memorise, a sentence you're
+studying, or just a topic you describe in chat. The agent has a flexible
+toolbox — including dictionary lookup, native pronunciation search (Forvo),
+image search (Wikimedia Commons), AI image generation (Gemini), and real
+example sentences (Tatoeba) — rather than a fixed pipeline for one narrow use
+case. The app was originally built for Japanese study and its tooling is still
+strongest there, but the underlying approach is general.
+
+> **This is not an available app** — it's a personal project built for a
+> single Google account. The code is open source so you can fork it and run
+> your own instance. See [Forking this project](#forking-this-project) below
+> for what that involves.
 
 Full requirements and the reasoning behind each architectural choice live in
 [`PRD.md`](PRD.md); a task-by-task log of what was actually built, and every
@@ -18,7 +29,8 @@ file is the practical "how do I run/deploy this" reference.
 - The **Ralph loop** (`ralph/`) is the autonomous Claude harness that *wrote*
   this codebase, one PRD task per iteration.
 - The **inner agent** (`backend/app/agent/`) is the Claude tool-use agent
-  *this codebase implements* — the one you actually chat with at runtime.
+  *this codebase implements* — Anjo, the assistant you actually chat with at
+  runtime.
 
 ## Architecture
 
@@ -31,29 +43,29 @@ file is the practical "how do I run/deploy this" reference.
                                │ /api, /auth
                                │ (server-side proxy, same-origin cookie)
                      ┌─────────▼────────────┐        ┌───────────────┐
-                     │  backend/ (FastAPI)  │──────→ │  Anthropic    │
-                     │  Claude tool-use     │        │  (agent turns)│
-                     │  agent + clients     │        └───────────────┘
-                     └───┬─────────┬────────┘
-                         │         │
-              ┌──────────┘         └───────────┐
-              ▼                                ▼
-     ┌──────────────────┐            ┌───────────────────────────┐
-     │ Google Docs API   │            │ deploy/anki-headless/     │
-     │ (lesson doc)       │            │ headless Anki + AnkiConnect│
-     └──────────────────┘            │ (own Fly app, VNC login   │
-                                       │ once, logged into real    │
-              ┌──────────────────┐    │ AnkiWeb account)           │
-              │ ElevenLabs        │    └────────────┬──────────────┘
-              │ (3 audio takes)   │                 │ AnkiConnect `sync`
-              └──────────────────┘                  ▼
-                                            ┌─────────────────┐
-                                            │  AnkiWeb (real) │
-                                            └────────┬────────┘
-                                                     │ normal sync
-                                                     ▼
-                                     Your phone / desktop Anki apps
-                                     (no reconfiguration needed)
+                     │  backend/ (FastAPI)  │──────→ │  Anthropic /  │
+                     │  Claude tool-use     │        │  Gemini       │
+                     │  agent + clients     │        │  (agent turns)│
+                     └───┬────────┬─────────┘        └───────────────┘
+                         │        │
+           ┌─────────────┘        └─────────────────────┐
+           ▼                                             ▼
+  ┌────────────────────────────────┐       ┌───────────────────────────┐
+  │ External tools/APIs            │       │ deploy/anki-headless/     │
+  │  • Google Docs API             │       │ headless Anki + AnkiConnect│
+  │  • ElevenLabs (TTS audio)      │       │ (own Fly app, VNC login   │
+  │  • Forvo (native audio)        │       │ once, logged into real    │
+  │  • Wikimedia image search      │       │ AnkiWeb account)          │
+  │  • Gemini (image generation)   │       └────────────┬──────────────┘
+  │  • Tatoeba (example sentences) │                    │ AnkiConnect `sync`
+  │  • Jotoba (dictionary)         │                    ▼
+  └────────────────────────────────┘           ┌─────────────────┐
+                                             │  AnkiWeb (real) │
+                                             └────────┬────────┘
+                                                      │ normal sync
+                                                      ▼
+                                      Your phone / desktop Anki apps
+                                      (no reconfiguration needed)
 ```
 
 Three separately-deployed Fly.io apps: `frontend/`, `backend/`, and
@@ -74,6 +86,11 @@ backend/
       google_docs.py     OAuth helpers, fetch_document, flatten_runs
                           (turns freeform doc layout into {text, color} spans)
       elevenlabs.py       generate_audio_options() — 3 varied TTS takes
+      forvo.py            search_word_pronunciations() — native speaker audio
+      wikimedia_image_search.py  search_images() — Wikimedia Commons
+      gemini_images.py    generate_image() — AI image generation
+      tatoeba.py          search_example_sentences() — real example sentences
+      dictionary.py       search_dictionary() — Jotoba word lookup
       ankiconnect.py      invoke() + list_note_type_names/get_note_type_fields/
                           create_note/sync
     agent/
@@ -86,6 +103,7 @@ backend/
       chat.py               /api/chat, /api/chat/history
     scripts/
       smoke_test_ankiconnect.py   CLI smoke test against a real AnkiConnect URL
+      smoke_test_chat.py          end-to-end chat agent smoke test
   tests/                  pytest, everything mocked (respx / mocked Anthropic
                           client) — no test ever makes a real network call
   Dockerfile, fly.toml    backend deploy config
@@ -144,6 +162,19 @@ cp .env.example .env      # then fill in every value below
    production-appropriate key, **Workspace settings → Service Accounts →**
    create a service account and its own API key instead of your personal one).
 3. Copy the key shown there.
+
+**`GEMINI_API_KEY`** *(optional)* — enables Gemini as an alternative agent
+model and powers AI image generation (`generate_image` tool).
+1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+2. Click **Create API key**, copy the result.
+If omitted, Claude remains available as the agent model and image generation
+is disabled (image search via Wikimedia still works without it).
+
+**`FORVO_API_KEY`** *(optional)* — enables native speaker pronunciation lookup
+(`search_word_pronunciations` tool, strongest for Japanese).
+1. Sign up for an API plan at [api.forvo.com](https://api.forvo.com/).
+2. Copy the key from your account dashboard.
+If omitted, ElevenLabs TTS (`generate_audio`) remains available for audio.
 
 **`GOOGLE_CLIENT_ID`** / **`GOOGLE_CLIENT_SECRET`** — Google sign-in +
 read-only Docs access, in one OAuth client. This one has the most steps:
@@ -431,6 +462,43 @@ sign-in, doc reading, live note-type discovery, card proposal, audio
 selection, note creation, AnkiWeb sync, and workflow-spec reuse across
 sessions. This is deliberately manual; it exercises real external services
 the automated test suite never touches.
+
+## Forking this project
+
+Anjo is **not** available as a hosted service — it's a personal project built
+for a single Google account. The code is open source under the MIT licence;
+you're welcome to fork it and run your own instance.
+
+**What you'll need to adapt:**
+
+- **`ALLOWED_EMAIL`** — hardcoded to a single address by design. The app is
+  intentionally single-user; there's no account system or multi-user auth.
+  Change it to your own Gmail address.
+- **Fly.io app names** — `anki-ai-cards-anki`, `anki-ai-cards-backend`, and
+  `anki-ai-cards-frontend` are the app names this repo deploys to. You'll want
+  to rename these (in the `fly.toml` files and the `ANKICONNECT_URL` /
+  `PUBLIC_APP_URL` / `BACKEND_URL` env vars that reference them) to whatever
+  you create with `fly launch`.
+- **Google OAuth redirect URIs** — register your own frontend URL (not
+  `anki-ai-cards-frontend.fly.dev`) as an authorized redirect URI in your
+  Google Cloud OAuth client. See "Getting the secrets" above.
+- **AnkiWeb account** — the headless Anki instance needs to be logged into
+  *your* AnkiWeb account via VNC once after first deploy (see the VNC setup
+  steps in the Deployment section).
+
+**What you don't need to change:**
+
+- The agent's tooling is general (not tied to any specific user, language, or
+  card format) — the system prompt and tools work as-is for any use case.
+- No part of the codebase hard-codes a username, deck name, or note type —
+  the agent discovers your Anki setup live each time.
+- The Wikimedia image search, Tatoeba example sentences, and Jotoba dictionary
+  tools require no API keys.
+
+The app was built iteratively by the **Ralph loop** (`ralph/`), an autonomous
+Claude harness that interprets `PRD.md` tasks and writes/deploys code. If
+you're interested in the build methodology rather than the app itself, that
+directory is the starting point.
 
 ## Known limitations (see PROGRESS.md for full detail)
 
