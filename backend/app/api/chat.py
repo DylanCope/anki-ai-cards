@@ -814,24 +814,46 @@ async def preview_pending_card(
     pending_card_id: int, email: str = Depends(require_auth)
 ) -> dict:
     engine = get_engine()
+    # filename -> data URI for every picked audio clip/image, keyed the same
+    # way `_create_note_in_anki` names them so a real created note's media
+    # filenames match what the preview already showed.
+    media_data_uris: dict[str, str] = {}
     with Session(engine) as session:
         pending_card = _get_pending_card_or_404(session, pending_card_id)
         model_name = pending_card.model_name
-        fields = json.loads(pending_card.fields)
+        preview_fields = json.loads(pending_card.fields)
         # The template renderer (app.agent.anki_template) only substitutes
-        # field text — it has no notion of media — so a picked audio
-        # clip/image doesn't show up in front_html/back_html at all. Rather
-        # than leave that a silent gap, surface the raw picked media
-        # alongside the rendered HTML so a frontend can show a player/
-        # thumbnail next to the preview if it chooses to.
-        audio_input = json.loads(pending_card.audio) if pending_card.audio else None
-        picture_input = json.loads(pending_card.picture) if pending_card.picture else None
-        audio_clip = (
-            session.get(AudioClip, audio_input["clip_id"]) if audio_input else None
-        )
-        image_asset = (
-            session.get(ImageAsset, picture_input["image_id"]) if picture_input else None
-        )
+        # field text as given — it has no notion of media — so mirror what
+        # AnkiConnect's addNote itself does with attached media (see
+        # ankiconnect.create_note's docstring): append `[sound:filename]`/
+        # `<img src="filename">` to each of an attachment's target fields
+        # before rendering. That way a picked audio clip/image shows up
+        # inline in the card exactly where the real created note will show
+        # it, instead of as a separate bolted-on player/thumbnail below the
+        # preview (the previous, weaker approach).
+        audio_entries = json.loads(pending_card.audio) if pending_card.audio else []
+        picture_entries = json.loads(pending_card.picture) if pending_card.picture else []
+        for entry in audio_entries:
+            clip = session.get(AudioClip, entry["clip_id"])
+            if clip is None:
+                continue
+            filename = f"anki-ai-cards-{clip.id}.mp3"
+            for field_name in entry["fields"]:
+                preview_fields[field_name] = preview_fields.get(field_name, "") + f"[sound:{filename}]"
+            media_data_uris[filename] = (
+                f"data:audio/mpeg;base64,{base64.b64encode(clip.audio).decode('ascii')}"
+            )
+        for entry in picture_entries:
+            image = session.get(ImageAsset, entry["image_id"])
+            if image is None:
+                continue
+            extension = mimetypes.guess_extension(image.content_type) or ".jpg"
+            filename = f"anki-ai-cards-{image.id}{extension}"
+            for field_name in entry["fields"]:
+                preview_fields[field_name] = preview_fields.get(field_name, "") + f'<img src="{filename}">'
+            media_data_uris[filename] = (
+                f"data:{image.content_type};base64,{base64.b64encode(image.data).decode('ascii')}"
+            )
 
     templates = await ankiconnect.get_model_templates(model_name)
     css = await ankiconnect.get_model_styling(model_name)
@@ -841,37 +863,35 @@ async def preview_pending_card(
     # scoping the template renderer itself uses for cloze ordinals.
     card_name = next(iter(templates))
     template = templates[card_name]
-    result = anki_template.render_card(template["Front"], template["Back"], css, fields)
+    result = anki_template.render_card(
+        template["Front"], template["Back"], css, preview_fields
+    )
 
     # Some note types' own CSS/HTML reference local Anki collection.media
     # files by bare filename (a custom @font-face, an <img> baked into the
-    # template itself — not a picked/attached asset, which is handled
-    # separately above) — confirmed against Dylan's real "Migaku Japanese
-    # Custom" note type, which loads a custom font this way. The sandboxed
-    # preview iframe has no way to resolve a bare filename, so fetch each one
-    # via AnkiConnect and inline it as a data URI before returning.
-    media_refs = list(
-        anki_template.find_local_media_refs(
-            result["css"], result["front_html"], result["back_html"]
-        )
+    # template itself — not a picked/attached asset, already covered by
+    # media_data_uris above) — confirmed against Dylan's real "Migaku
+    # Japanese Custom" note type, which loads a custom font this way. The
+    # sandboxed preview iframe has no way to resolve a bare filename, so
+    # fetch each remaining one via AnkiConnect and inline it as a data URI.
+    media_refs = anki_template.find_local_media_refs(
+        result["css"], result["front_html"], result["back_html"]
     )
-    if media_refs:
-        media_files = await asyncio.gather(*(ankiconnect.get_media_file(ref) for ref in media_refs))
-        media_data_uris = {
-            ref: f"data:{mimetypes.guess_type(ref)[0] or 'application/octet-stream'};base64,{b64}"
-            for ref, b64 in zip(media_refs, media_files)
-            if b64 is not None
-        }
-        if media_data_uris:
-            result.update(
-                anki_template.inline_local_media(
-                    result["css"], result["front_html"], result["back_html"], media_data_uris
+    missing_refs = [ref for ref in media_refs if ref not in media_data_uris]
+    if missing_refs:
+        media_files = await asyncio.gather(
+            *(ankiconnect.get_media_file(ref) for ref in missing_refs)
+        )
+        for ref, b64 in zip(missing_refs, media_files):
+            if b64 is not None:
+                media_data_uris[ref] = (
+                    f"data:{mimetypes.guess_type(ref)[0] or 'application/octet-stream'};base64,{b64}"
                 )
-            )
 
-    if audio_clip is not None:
-        result["audio_base64"] = base64.b64encode(audio_clip.audio).decode("ascii")
-    if image_asset is not None:
-        result["picture_base64"] = base64.b64encode(image_asset.data).decode("ascii")
-        result["picture_content_type"] = image_asset.content_type
+    if media_data_uris:
+        result.update(
+            anki_template.inline_local_media(
+                result["css"], result["front_html"], result["back_html"], media_data_uris
+            )
+        )
     return result

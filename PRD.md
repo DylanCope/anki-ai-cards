@@ -1401,9 +1401,11 @@ which model the *currently open* conversation uses.
   how it never "hears" a generated audio clip. Considered during the
   interview and explicitly deferred as a real scope increase to the core
   chat loop, not a small addition.
-- More than one image per Anki note, video attachments, or a standalone
-  image gallery/library UI (tasks 35-39) — a single `picture` argument on
-  `create_anki_note` is all that's built.
+- Video attachments or a standalone image gallery/library UI (tasks 35-39) —
+  `create_anki_note`'s `picture` argument only handles images. (Multiple
+  images/audio clips per note, each targeting its own field(s), became in
+  scope afterward — see the array-shaped `audio`/`picture` arguments added
+  post-task-61.)
 - Editing or replacing an image after it's been picked (tasks 35-39) — Dylan
   can create a new card or ask the agent to change it via chat, same
   "request a change" flow already used for card fields.

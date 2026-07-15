@@ -35,6 +35,15 @@ this way. The preview iframe has no way to resolve a bare filename, so
 below. Kept as pure functions here (no AnkiConnect/network dependency, same
 rationale as `render_card` itself) — the actual fetching is the API layer's
 job.
+
+`find_local_media_refs`/`inline_local_media` also handle `[sound:filename]`
+tags in rendered HTML — real Anki shows these as a small inline play
+button exactly where the tag appears in the field. `app.api.chat`'s preview
+endpoint appends this same `[sound:...]`/`<img src="...">` markup to a
+pending card's fields before rendering (mirroring what AnkiConnect's
+`addNote` itself does for attached media — see `ankiconnect.create_note`'s
+docstring), so a picked audio clip/image previews inline in the card
+itself instead of as a separate bolted-on player/thumbnail.
 """
 
 import re
@@ -132,6 +141,7 @@ def render_card(qfmt: str, afmt: str, css: str, fields: dict[str, str]) -> dict:
 
 _CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")]+)['"]?\s*\)""")
 _IMG_SRC_RE = re.compile(r"""<img\b[^>]*\bsrc=["']([^"']+)["']""", re.IGNORECASE)
+_SOUND_TAG_RE = re.compile(r"\[sound:([^\]]+)\]")
 
 
 def _is_local_media_ref(ref: str) -> bool:
@@ -140,13 +150,14 @@ def _is_local_media_ref(ref: str) -> bool:
 
 def find_local_media_refs(css: str, front_html: str, back_html: str) -> set[str]:
     """Local (Anki collection.media) filenames referenced by a rendered
-    card's CSS `url(...)` or HTML `<img src="...">` — anything not already
-    an absolute URL or data URI."""
+    card's CSS `url(...)`, HTML `<img src="...">`, or `[sound:...]` tag —
+    anything not already an absolute URL or data URI."""
 
     refs: set[str] = set()
     refs.update(ref for ref in _CSS_URL_RE.findall(css) if _is_local_media_ref(ref))
     for html in (front_html, back_html):
         refs.update(ref for ref in _IMG_SRC_RE.findall(html) if _is_local_media_ref(ref))
+        refs.update(_SOUND_TAG_RE.findall(html))
     return refs
 
 
@@ -156,8 +167,13 @@ def inline_local_media(
     """Replace local media filename references with their data-URI
     equivalents from `media_data_uris` (filename -> `"data:<mime>;base64,
     <bytes>"`). Substitution is scoped to each matched `url(...)`/`src="..."`
-    span rather than a blind string replace, so a filename that happens to
-    be a substring of unrelated text elsewhere is never touched."""
+    /`[sound:...]` span rather than a blind string replace, so a filename
+    that happens to be a substring of unrelated text elsewhere is never
+    touched. A `[sound:filename]` tag becomes an inline `<audio controls>`
+    element (there's no sandboxed-iframe-safe way to reproduce Anki's own
+    small play-button widget without its JS) positioned exactly where the
+    tag appeared in the field, same as real Anki renders it inline rather
+    than as a separate player below the card."""
 
     def _sub(pattern: re.Pattern[str], text: str) -> str:
         def repl(match: re.Match[str]) -> str:
@@ -167,8 +183,18 @@ def inline_local_media(
 
         return pattern.sub(repl, text)
 
+    def _sub_sound(text: str) -> str:
+        def repl(match: re.Match[str]) -> str:
+            ref = match.group(1)
+            data_uri = media_data_uris.get(ref)
+            if not data_uri:
+                return match.group(0)
+            return f'<audio controls preload="none" src="{data_uri}"></audio>'
+
+        return _SOUND_TAG_RE.sub(repl, text)
+
     return {
         "css": _sub(_CSS_URL_RE, css),
-        "front_html": _sub(_IMG_SRC_RE, front_html),
-        "back_html": _sub(_IMG_SRC_RE, back_html),
+        "front_html": _sub_sound(_sub(_IMG_SRC_RE, front_html)),
+        "back_html": _sub_sound(_sub(_IMG_SRC_RE, back_html)),
     }

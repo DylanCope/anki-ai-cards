@@ -449,8 +449,8 @@ async def test_dispatch_create_anki_note_drafts_a_pending_card_with_picked_media
             "deck_name": "Japanese",
             "model_name": "Cloze+",
             "fields": {"Text": "{{c1::食べる}}"},
-            "audio": {"clip_id": 5, "fields": ["Text Audio"]},
-            "picture": {"image_id": 9, "fields": ["Picture"]},
+            "audio": [{"clip_id": 5, "fields": ["Text Audio"]}],
+            "picture": [{"image_id": 9, "fields": ["Picture"]}],
         },
         instant_creation=False,
     )
@@ -458,8 +458,8 @@ async def test_dispatch_create_anki_note_drafts_a_pending_card_with_picked_media
     create_mock.assert_not_awaited()
     with Session(tools.get_engine()) as session:
         pending = session.get(tools.PendingCard, result["pending_card_id"])
-    assert json.loads(pending.audio) == {"clip_id": 5, "fields": ["Text Audio"]}
-    assert json.loads(pending.picture) == {"image_id": 9, "fields": ["Picture"]}
+    assert json.loads(pending.audio) == [{"clip_id": 5, "fields": ["Text Audio"]}]
+    assert json.loads(pending.picture) == [{"image_id": 9, "fields": ["Picture"]}]
 
 
 @pytest.mark.asyncio
@@ -498,7 +498,7 @@ async def test_dispatch_create_anki_note_attaches_picked_audio_clip(db, monkeypa
             "deck_name": "Japanese",
             "model_name": "Cloze+",
             "fields": {"Text": "{{c1::食べる}}"},
-            "audio": {"clip_id": picked_clip_id, "fields": ["Text Audio"]},
+            "audio": [{"clip_id": picked_clip_id, "fields": ["Text Audio"]}],
         },
         instant_creation=True,
     )
@@ -508,11 +508,61 @@ async def test_dispatch_create_anki_note_attaches_picked_audio_clip(db, monkeypa
         model_name="Cloze+",
         fields={"Text": "{{c1::食べる}}"},
         tags=None,
-        audio={
-            "data": base64.b64encode(b"bbb").decode("ascii"),
-            "filename": f"anki-ai-cards-{picked_clip_id}.mp3",
-            "fields": ["Text Audio"],
+        audio=[
+            {
+                "data": base64.b64encode(b"bbb").decode("ascii"),
+                "filename": f"anki-ai-cards-{picked_clip_id}.mp3",
+                "fields": ["Text Audio"],
+            }
+        ],
+        picture=None,
+    )
+    assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_attaches_multiple_picked_audio_clips(
+    db, monkeypatch
+):
+    generate_mock = AsyncMock(return_value=[b"aaa", b"bbb"])
+    monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", generate_mock)
+    generated = await tools.dispatch_tool("generate_audio", {"text": "食べる"})
+    clip_id_1, clip_id_2 = generated["clip_ids"]
+
+    create_mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", create_mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze+",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "audio": [
+                {"clip_id": clip_id_1, "fields": ["Text Audio"]},
+                {"clip_id": clip_id_2, "fields": ["Sentence Audio"]},
+            ],
         },
+        instant_creation=True,
+    )
+
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        tags=None,
+        audio=[
+            {
+                "data": base64.b64encode(b"aaa").decode("ascii"),
+                "filename": f"anki-ai-cards-{clip_id_1}.mp3",
+                "fields": ["Text Audio"],
+            },
+            {
+                "data": base64.b64encode(b"bbb").decode("ascii"),
+                "filename": f"anki-ai-cards-{clip_id_2}.mp3",
+                "fields": ["Sentence Audio"],
+            },
+        ],
         picture=None,
     )
     assert result == {"note_id": 12345}
@@ -527,7 +577,7 @@ async def test_dispatch_create_anki_note_rejects_unknown_audio_clip(db):
                 "deck_name": "Japanese",
                 "model_name": "Cloze+",
                 "fields": {"Text": "{{c1::食べる}}"},
-                "audio": {"clip_id": 999, "fields": ["Text Audio"]},
+                "audio": [{"clip_id": 999, "fields": ["Text Audio"]}],
             },
             instant_creation=True,
         )
@@ -551,7 +601,7 @@ async def test_dispatch_create_anki_note_attaches_picked_image(db, monkeypatch):
             "deck_name": "Japanese",
             "model_name": "Cloze+",
             "fields": {"Text": "{{c1::食べる}}"},
-            "picture": {"image_id": image_id, "fields": ["Picture"]},
+            "picture": [{"image_id": image_id, "fields": ["Picture"]}],
         },
         instant_creation=True,
     )
@@ -562,11 +612,13 @@ async def test_dispatch_create_anki_note_attaches_picked_image(db, monkeypatch):
         fields={"Text": "{{c1::食べる}}"},
         tags=None,
         audio=None,
-        picture={
-            "data": base64.b64encode(b"pngbytes").decode("ascii"),
-            "filename": f"anki-ai-cards-{image_id}.png",
-            "fields": ["Picture"],
-        },
+        picture=[
+            {
+                "data": base64.b64encode(b"pngbytes").decode("ascii"),
+                "filename": f"anki-ai-cards-{image_id}.png",
+                "fields": ["Picture"],
+            }
+        ],
     )
     assert result == {"note_id": 12345}
 
@@ -580,7 +632,7 @@ async def test_dispatch_create_anki_note_rejects_unknown_image_id(db):
                 "deck_name": "Japanese",
                 "model_name": "Cloze+",
                 "fields": {"Text": "{{c1::食べる}}"},
-                "picture": {"image_id": 999, "fields": ["Picture"]},
+                "picture": [{"image_id": 999, "fields": ["Picture"]}],
             },
             instant_creation=True,
         )

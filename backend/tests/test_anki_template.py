@@ -199,3 +199,31 @@ def test_inline_local_media_leaves_unresolved_refs_untouched():
     result = inline_local_media(css, "", "", {})
 
     assert result["css"] == css
+
+
+def test_find_local_media_refs_finds_sound_tags():
+    front_html = "彼は誘惑に負けた。[sound:anki-ai-cards-5.mp3]"
+    back_html = "<div>no media here</div>"
+
+    refs = find_local_media_refs("", front_html, back_html)
+
+    assert refs == {"anki-ai-cards-5.mp3"}
+
+
+def test_inline_local_media_replaces_sound_tag_with_inline_audio_element():
+    front_html = "食べる[sound:anki-ai-cards-5.mp3]"
+    media_data_uris = {"anki-ai-cards-5.mp3": "data:audio/mpeg;base64,YWFh"}
+
+    result = inline_local_media("", front_html, "", media_data_uris)
+
+    assert result["front_html"] == (
+        '食べる<audio controls preload="none" src="data:audio/mpeg;base64,YWFh"></audio>'
+    )
+
+
+def test_inline_local_media_leaves_unresolved_sound_tag_untouched():
+    front_html = "食べる[sound:missing.mp3]"
+
+    result = inline_local_media("", front_html, "", {})
+
+    assert result["front_html"] == front_html

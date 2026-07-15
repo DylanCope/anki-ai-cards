@@ -37,17 +37,25 @@ interface Props {
 // CSS variable block), so Anki's own dark default shows through. The
 // low-specificity `body`/`html` rule below approximates that same base
 // layer, loaded before the note's own CSS so anything more specific in it
-// still wins.
+// still wins. Unlike the earlier version of this fallback, it's applied in
+// BOTH themes (not just dark) and uses this app's own `--background`/
+// `--foreground` palette (globals.css) rather than a guessed hex, so a card
+// with no background of its own always blends into the surrounding panel
+// instead of standing out as browser-default white.
+const THEME_FALLBACK = {
+  light: { background: "#fafafa", foreground: "#18181b" },
+  dark: { background: "#030712", foreground: "#f4f4f5" },
+};
+
 function buildSrcDoc(preview: PendingCardPreview, side: PreviewSide, nightMode: boolean): string {
   const html = side === "front" ? preview.front_html : preview.back_html;
   const nightClasses = nightMode ? " nightMode night_mode" : "";
-  const nightBase = nightMode
-    ? "html, body { background: #2f2f31; color: #fff; }"
-    : "";
+  const { background, foreground } = nightMode ? THEME_FALLBACK.dark : THEME_FALLBACK.light;
   return `<!DOCTYPE html><html class="${nightMode ? "nightMode night_mode" : ""}"><head><style>
 body { font-family: Arial, Helvetica, "Noto Sans JP", sans-serif; margin: 0; height: 100%; }
 html { height: 100%; }
-${nightBase}
+html, body { background: ${background}; color: ${foreground}; }
+audio { display: block; max-width: 100%; height: 32px; margin: 4px 0; }
 ${preview.css}
 </style></head><body><div class="card${nightClasses}">${html}</div></body></html>`;
 }
@@ -167,27 +175,6 @@ export default function PendingCardPreviewModal({
               title="Card preview"
             />
           </div>
-          {preview.audio_base64 && (
-            <div className="flex w-full max-w-[900px] shrink-0 items-center gap-2">
-              <span className="text-xs text-foreground/60">Attached audio</span>
-              <audio
-                controls
-                className="h-8 flex-1"
-                src={`data:audio/mpeg;base64,${preview.audio_base64}`}
-              />
-            </div>
-          )}
-          {preview.picture_base64 && (
-            <div className="flex w-full max-w-[900px] shrink-0 flex-col items-start gap-1">
-              <span className="text-xs text-foreground/60">Attached image</span>
-              {/* eslint-disable-next-line @next/next/no-img-element -- variable-format base64 data URI, not a fit for next/image */}
-              <img
-                src={`data:${preview.picture_content_type ?? "image/jpeg"};base64,${preview.picture_base64}`}
-                alt="Attached"
-                className="max-h-40 rounded-md border border-border object-contain"
-              />
-            </div>
-          )}
         </div>
 
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border p-3">

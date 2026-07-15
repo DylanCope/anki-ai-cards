@@ -135,54 +135,69 @@ TOOL_SCHEMAS: list[dict] = [
                     "items": {"type": "string"},
                 },
                 "audio": {
-                    "type": "object",
+                    "type": "array",
                     "description": (
-                        "Attach a previously generated audio clip (a clip_id "
-                        "from generate_audio's result, after Dylan picked an "
-                        "option) to this note. AnkiConnect stores the audio in "
-                        "Anki's media collection and appends the [sound:...] "
-                        "reference to each listed field itself."
+                        "Attach one or more previously generated/picked audio "
+                        "clips (clip_ids from generate_audio, "
+                        "search_word_pronunciations, or "
+                        "search_example_sentences results, after Dylan picked "
+                        "them) to this note — one entry per clip, each "
+                        "targeting its own field(s), so a card needing "
+                        "several distinct audio files (e.g. a word's audio "
+                        "plus a separate example-sentence audio) can attach "
+                        "all of them in one call. AnkiConnect stores each "
+                        "clip in Anki's media collection and appends the "
+                        "[sound:...] reference to each of its listed fields."
                     ),
-                    "properties": {
-                        "clip_id": {
-                            "type": "integer",
-                            "description": "A clip_id from generate_audio's result.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "clip_id": {
+                                "type": "integer",
+                                "description": "A clip_id from a previous audio tool's result.",
+                            },
+                            "fields": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Field name(s) to attach this clip to, e.g. "
+                                    "the discovered audio field for this note type."
+                                ),
+                            },
                         },
-                        "fields": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Field name(s) to attach the audio to, e.g. the "
-                                "discovered audio field for this note type."
-                            ),
-                        },
+                        "required": ["clip_id", "fields"],
                     },
-                    "required": ["clip_id", "fields"],
                 },
                 "picture": {
-                    "type": "object",
+                    "type": "array",
                     "description": (
-                        "Attach a previously stored image (an image_id from an "
-                        "uploaded, searched, or generated image, after Dylan "
-                        "picked one) to this note. AnkiConnect stores the image "
-                        "in Anki's media collection and appends an <img> "
-                        "reference to each listed field itself."
+                        "Attach one or more previously stored images "
+                        "(image_ids from uploaded, searched, or generated "
+                        "images, after Dylan picked them) to this note — one "
+                        "entry per image, each targeting its own field(s). "
+                        "AnkiConnect stores each image in Anki's media "
+                        "collection and appends an <img> reference to each of "
+                        "its listed fields."
                     ),
-                    "properties": {
-                        "image_id": {
-                            "type": "integer",
-                            "description": "An image_id referencing a stored image.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "image_id": {
+                                "type": "integer",
+                                "description": "An image_id referencing a stored image.",
+                            },
+                            "fields": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Field name(s) to attach this image to, "
+                                    "e.g. the discovered image field for this "
+                                    "note type."
+                                ),
+                            },
                         },
-                        "fields": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Field name(s) to attach the image to, e.g. the "
-                                "discovered image field for this note type."
-                            ),
-                        },
+                        "required": ["image_id", "fields"],
                     },
-                    "required": ["image_id", "fields"],
                 },
             },
             "required": ["deck_name", "model_name", "fields"],
@@ -377,40 +392,49 @@ async def _create_note_in_anki(
     model_name: str,
     fields: dict[str, str],
     tags: list[str] | None,
-    audio_input: dict | None,
-    picture_input: dict | None,
+    audio_input: list[dict] | None,
+    picture_input: list[dict] | None,
 ) -> int:
-    """Resolve a picked audio clip/image (if any) to AnkiConnect's media-
-    attachment shape and actually call `ankiconnect.create_note`. Shared by
-    `dispatch_tool`'s `create_anki_note` branch (when `instant_creation` is
-    True) and `POST /api/pending-cards/{id}/create` (`app.api.chat`), so
-    there's exactly one place that talks to AnkiConnect for note creation."""
+    """Resolve picked audio clip(s)/image(s) (if any) to AnkiConnect's
+    media-attachment shape and actually call `ankiconnect.create_note`.
+    Shared by `dispatch_tool`'s `create_anki_note` branch (when
+    `instant_creation` is True) and `POST /api/pending-cards/{id}/create`
+    (`app.api.chat`), so there's exactly one place that talks to AnkiConnect
+    for note creation."""
 
     audio = None
     if audio_input:
         engine = get_engine()
+        audio = []
         with Session(engine) as session:
-            clip = session.get(AudioClip, audio_input["clip_id"])
-        if clip is None:
-            raise ValueError(f"Unknown audio clip_id: {audio_input['clip_id']!r}")
-        audio = {
-            "data": base64.b64encode(clip.audio).decode("ascii"),
-            "filename": f"anki-ai-cards-{clip.id}.mp3",
-            "fields": audio_input["fields"],
-        }
+            for entry in audio_input:
+                clip = session.get(AudioClip, entry["clip_id"])
+                if clip is None:
+                    raise ValueError(f"Unknown audio clip_id: {entry['clip_id']!r}")
+                audio.append(
+                    {
+                        "data": base64.b64encode(clip.audio).decode("ascii"),
+                        "filename": f"anki-ai-cards-{clip.id}.mp3",
+                        "fields": entry["fields"],
+                    }
+                )
     picture = None
     if picture_input:
         engine = get_engine()
+        picture = []
         with Session(engine) as session:
-            image = session.get(ImageAsset, picture_input["image_id"])
-        if image is None:
-            raise ValueError(f"Unknown image image_id: {picture_input['image_id']!r}")
-        extension = mimetypes.guess_extension(image.content_type) or ".jpg"
-        picture = {
-            "data": base64.b64encode(image.data).decode("ascii"),
-            "filename": f"anki-ai-cards-{image.id}{extension}",
-            "fields": picture_input["fields"],
-        }
+            for entry in picture_input:
+                image = session.get(ImageAsset, entry["image_id"])
+                if image is None:
+                    raise ValueError(f"Unknown image image_id: {entry['image_id']!r}")
+                extension = mimetypes.guess_extension(image.content_type) or ".jpg"
+                picture.append(
+                    {
+                        "data": base64.b64encode(image.data).decode("ascii"),
+                        "filename": f"anki-ai-cards-{image.id}{extension}",
+                        "fields": entry["fields"],
+                    }
+                )
     return await ankiconnect.create_note(
         deck_name=deck_name,
         model_name=model_name,
