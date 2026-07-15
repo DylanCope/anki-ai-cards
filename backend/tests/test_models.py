@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -42,6 +43,63 @@ def test_conversation_model_can_be_set_explicitly(engine) -> None:
     with Session(engine) as session:
         conversation = session.exec(select(Conversation)).one()
         assert conversation.model == "gemini-2.5-flash"
+
+
+def test_conversation_instant_creation_defaults_to_false(engine) -> None:
+    with Session(engine) as session:
+        session.add(Conversation(title="Lesson doc cards"))
+        session.commit()
+
+    with Session(engine) as session:
+        conversation = session.exec(select(Conversation)).one()
+        assert conversation.instant_creation is False
+
+
+def test_conversation_instant_creation_can_be_set_explicitly(engine) -> None:
+    with Session(engine) as session:
+        session.add(Conversation(instant_creation=True))
+        session.commit()
+
+    with Session(engine) as session:
+        conversation = session.exec(select(Conversation)).one()
+        assert conversation.instant_creation is True
+
+
+def test_init_db_migrates_a_pre_instant_creation_database(tmp_path, monkeypatch) -> None:
+    # Simulate a database from before instant_creation existed: a real
+    # conversation table (with the model column already present) but no
+    # instant_creation column. init_db() must add it and backfill existing
+    # rows to 0 (off) rather than erroring.
+    db_path = tmp_path / "pre_instant_creation.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE conversation ("
+            "id INTEGER PRIMARY KEY, title TEXT, model TEXT, "
+            "created_at TEXT, updated_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO conversation (title, model, created_at, updated_at) "
+            "VALUES ('Old conversation', 'gemini-3.1-flash-lite', "
+            "'2026-07-01T00:00:00', '2026-07-01T00:00:00')"
+        )
+        conn.commit()
+
+    engine = init_db()
+
+    with Session(engine) as session:
+        conversation = session.exec(select(Conversation)).one()
+        assert conversation.instant_creation is False
+
+    # Idempotent, and doesn't clobber a value already set on a real row.
+    with Session(engine) as session:
+        conversation.instant_creation = True
+        session.add(conversation)
+        session.commit()
+    init_db()
+    with Session(engine) as session:
+        assert session.exec(select(Conversation)).one().instant_creation is True
 
 
 def test_conversation_message_roundtrip(engine) -> None:
@@ -162,17 +220,179 @@ def test_pending_card_roundtrip(engine) -> None:
     with Session(engine) as session:
         session.add(
             PendingCard(
-                japanese_cloze="{{c1::食べます}}",
-                furigana="たべます",
-                english="to eat",
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}", "Extra": "to eat"}),
+                tags=json.dumps(["lesson-doc"]),
             )
         )
         session.commit()
 
     with Session(engine) as session:
         card = session.exec(select(PendingCard)).one()
-        assert card.japanese_cloze == "{{c1::食べます}}"
+        assert json.loads(card.fields) == {"Text": "{{c1::食べます}}", "Extra": "to eat"}
+        assert json.loads(card.tags) == ["lesson-doc"]
         assert card.status == "pending"
+        assert card.note_id is None
+
+
+def test_pending_card_audio_and_picture_roundtrip(engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            PendingCard(
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}"}),
+                audio=json.dumps({"clip_id": 5, "fields": ["Text Audio"]}),
+                picture=json.dumps({"image_id": 9, "fields": ["Picture"]}),
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert json.loads(card.audio) == {"clip_id": 5, "fields": ["Text Audio"]}
+        assert json.loads(card.picture) == {"image_id": 9, "fields": ["Picture"]}
+
+
+def test_pending_card_audio_and_picture_default_to_none(engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            PendingCard(
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}"}),
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert card.audio is None
+        assert card.picture is None
+
+
+def test_init_db_migrates_a_pre_pendingcard_audio_picture_database(
+    tmp_path, monkeypatch
+) -> None:
+    # Simulate a database from after task 51's rebuild but before task 60's
+    # audio/picture columns existed. init_db() must add them (backfilling
+    # existing rows to NULL) without dropping the table — unlike
+    # _rebuild_pendingcard_table_if_stale, this migration must preserve real
+    # pre-existing PendingCard rows.
+    db_path = tmp_path / "pre_pendingcard_audio_picture.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE pendingcard ("
+            "id INTEGER PRIMARY KEY, deck_name TEXT, model_name TEXT, "
+            "fields TEXT, tags TEXT, status TEXT, note_id INTEGER, "
+            "created_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO pendingcard "
+            "(deck_name, model_name, fields, status, created_at) "
+            "VALUES ('Japanese', 'Cloze', '{\"Text\": \"food\"}', 'pending', "
+            "'2026-07-01T00:00:00')"
+        )
+        conn.commit()
+
+    engine = init_db()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert card.deck_name == "Japanese"
+        assert card.audio is None
+        assert card.picture is None
+
+    # Idempotent, and doesn't clobber a value already set on a real row.
+    with Session(engine) as session:
+        card.audio = json.dumps({"clip_id": 1, "fields": ["Text Audio"]})
+        session.add(card)
+        session.commit()
+    init_db()
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert json.loads(card.audio) == {"clip_id": 1, "fields": ["Text Audio"]}
+
+
+def test_pending_card_tags_default_to_none(engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            PendingCard(
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}"}),
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert card.tags is None
+
+
+def test_pending_card_status_can_be_set_to_created(engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            PendingCard(
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}"}),
+                status="created",
+                note_id=12345,
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert card.status == "created"
+        assert card.note_id == 12345
+
+
+def test_init_db_rebuilds_a_stale_pendingcard_table(tmp_path, monkeypatch) -> None:
+    # Simulate a database with the old task-2 PendingCard schema
+    # (japanese_cloze/furigana/english/note, no deck_name column at all).
+    # Since no real app code ever wrote to that shape, init_db() must drop
+    # and recreate the table with the new schema rather than erroring.
+    db_path = tmp_path / "pre_rebuild_pendingcard.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE pendingcard ("
+            "id INTEGER PRIMARY KEY, japanese_cloze TEXT, furigana TEXT, "
+            "english TEXT, note TEXT, status TEXT, created_at TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO pendingcard (japanese_cloze, furigana, english, status, created_at) "
+            "VALUES ('{{c1::食べます}}', 'たべます', 'to eat', 'pending', '2026-07-01T00:00:00')"
+        )
+        conn.commit()
+
+    engine = init_db()
+
+    with Session(engine) as session:
+        assert session.exec(select(PendingCard)).all() == []
+        session.add(
+            PendingCard(
+                deck_name="Japanese",
+                model_name="Cloze",
+                fields=json.dumps({"Text": "{{c1::食べます}}"}),
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        card = session.exec(select(PendingCard)).one()
+        assert card.deck_name == "Japanese"
+
+    # Idempotent: running it again on an already-rebuilt database is a no-op.
+    init_db()
+    with Session(engine) as session:
+        assert len(session.exec(select(PendingCard)).all()) == 1
 
 
 def test_oauth_token_roundtrip(engine) -> None:

@@ -5,16 +5,19 @@ import { Menu, Paperclip, X } from "lucide-react";
 import type {
   ChatErrorBody,
   ChatHistoryResponseEntry,
+  ChatPayload,
   ChatResponseBody,
   ChatTurn,
   Conversation,
   ImageAttachmentPayload,
   ModelInfo,
+  UserSettings,
 } from "@/app/lib/types";
 import MessageBubble from "@/app/components/MessageBubble";
 import AudioOptionsCard from "@/app/components/AudioOptionsCard";
 import CardPayloadCard from "@/app/components/CardPayloadCard";
 import ImageOptionsCard from "@/app/components/ImageOptionsCard";
+import WorkflowLoadedCard from "@/app/components/WorkflowLoadedCard";
 import ConversationSidebar from "@/app/components/ConversationSidebar";
 import AiSettingsButton from "@/app/components/AiSettingsButton";
 import WorkflowsButton from "@/app/components/WorkflowsButton";
@@ -30,6 +33,7 @@ export default function ChatApp() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -44,6 +48,13 @@ export default function ChatApp() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Set right before the history-load effect calls setTurns, and consumed
+  // (then reset) by the scroll effect below — lets it tell "a conversation's
+  // history just loaded" (jump instantly) apart from "a new message arrived
+  // in the conversation already on screen" (animate smoothly), instead of
+  // always animating, which made every conversation open visibly scroll
+  // from the top.
+  const historyJustLoadedRef = useRef(false);
 
   const MAX_TEXTAREA_HEIGHT_PX = 200;
 
@@ -68,11 +79,16 @@ export default function ChatApp() {
     let cancelled = false;
     (async () => {
       try {
-        const [conversationsRes, modelsRes] = await Promise.all([
+        const [conversationsRes, modelsRes, settingsRes] = await Promise.all([
           fetch("/api/conversations"),
           fetch("/api/models"),
+          fetch("/api/settings"),
         ]);
-        if (conversationsRes.status === 401 || modelsRes.status === 401) {
+        if (
+          conversationsRes.status === 401 ||
+          modelsRes.status === 401 ||
+          settingsRes.status === 401
+        ) {
           if (!cancelled) setAuth("signed_out");
           return;
         }
@@ -80,8 +96,10 @@ export default function ChatApp() {
           throw new Error(`Conversation list request failed (${conversationsRes.status})`);
         }
         if (!modelsRes.ok) throw new Error(`Model list request failed (${modelsRes.status})`);
+        if (!settingsRes.ok) throw new Error(`Settings request failed (${settingsRes.status})`);
         let list = (await conversationsRes.json()) as Conversation[];
         const modelList = (await modelsRes.json()) as ModelInfo[];
+        const settings = (await settingsRes.json()) as UserSettings;
         if (list.length === 0) {
           const created = await fetch("/api/conversations", { method: "POST" });
           list = [(await created.json()) as Conversation];
@@ -89,6 +107,7 @@ export default function ChatApp() {
         if (!cancelled) {
           setConversations(list);
           setModels(modelList);
+          setDefaultModelId(settings.default_model_id);
           setConversationId(list[0].id);
           setAuth("signed_in");
         }
@@ -115,6 +134,7 @@ export default function ChatApp() {
         if (!res.ok) throw new Error(`History request failed (${res.status})`);
         const history = (await res.json()) as ChatHistoryResponseEntry[];
         if (!cancelled) {
+          historyJustLoadedRef.current = true;
           setTurns(
             history.map((entry) => ({
               message: { role: entry.role, text: entry.text },
@@ -132,7 +152,9 @@ export default function ChatApp() {
   }, [conversationId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const instant = historyJustLoadedRef.current;
+    historyJustLoadedRef.current = false;
+    bottomRef.current?.scrollIntoView({ behavior: instant ? "auto" : "smooth" });
   }, [turns]);
 
   // Auto-resize the composer to fit its content, up to a max height.
@@ -235,6 +257,47 @@ export default function ChatApp() {
     }
   }
 
+  async function setDefaultModel(modelId: string) {
+    setError(null);
+    try {
+      const res = await fetch("/api/settings/default-model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId }),
+      });
+      if (res.status === 401) {
+        setAuth("signed_out");
+        return;
+      }
+      if (!res.ok) throw new Error(`Default-model update failed (${res.status})`);
+      const updated = (await res.json()) as UserSettings;
+      setDefaultModelId(updated.default_model_id);
+    } catch {
+      setError("Could not set the default model.");
+    }
+  }
+
+  async function toggleInstantCreation(checked: boolean) {
+    if (conversationId === null || sending) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instant_creation: checked }),
+      });
+      if (res.status === 401) {
+        setAuth("signed_out");
+        return;
+      }
+      if (!res.ok) throw new Error(`Instant-creation update failed (${res.status})`);
+      const updated = (await res.json()) as Conversation;
+      setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+    } catch {
+      setError("Could not update instant-creation setting.");
+    }
+  }
+
   async function handleImageSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -271,6 +334,33 @@ export default function ChatApp() {
       if (prev) URL.revokeObjectURL(prev.previewUrl);
       return null;
     });
+  }
+
+  // Picking an option (audio/image) appends to the composer instead of
+  // sending immediately — with multiple choice cards showing at once (e.g.
+  // pronunciation audio + a generated image in the same turn), auto-sending
+  // on the first pick advanced the conversation before the second pick
+  // could happen at all. Appending lets Dylan pick from several cards, then
+  // send once.
+  function appendPickToComposer(text: string) {
+    setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+  }
+
+  // Card creation/discard/preview are separate REST calls the pending-card
+  // components make themselves (not new agent turns) — this just reflects
+  // the resulting status back into local state so the card re-renders
+  // without a full history reload.
+  function updateTurnPayload(turnIndex: number, payloadIndex: number, updated: ChatPayload) {
+    setTurns((prev) =>
+      prev.map((turn, i) =>
+        i !== turnIndex
+          ? turn
+          : {
+              ...turn,
+              payloads: turn.payloads.map((payload, j) => (j === payloadIndex ? updated : payload)),
+            }
+      )
+    );
   }
 
   async function sendMessage(text: string) {
@@ -432,7 +522,7 @@ export default function ChatApp() {
             >
               <Menu size={20} />
             </button>
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent font-jp text-lg font-bold text-accent-foreground">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent font-jp text-base leading-none font-bold whitespace-nowrap text-accent-foreground">
               暗助
             </div>
             <div className="leading-tight">
@@ -447,6 +537,8 @@ export default function ChatApp() {
                 selectedId={activeConversation.model}
                 onSelect={changeModel}
                 disabled={sending}
+                defaultModelId={defaultModelId}
+                onSetDefault={setDefaultModel}
               />
             )}
             <WorkflowsButton />
@@ -478,7 +570,7 @@ export default function ChatApp() {
                         <AudioOptionsCard
                           key={payloadIndex}
                           payload={payload}
-                          onPick={sendMessage}
+                          onPick={appendPickToComposer}
                           disabled={sending}
                         />
                       );
@@ -488,16 +580,22 @@ export default function ChatApp() {
                         <ImageOptionsCard
                           key={payloadIndex}
                           payload={payload}
-                          onPick={sendMessage}
+                          onPick={appendPickToComposer}
                           disabled={sending}
                         />
                       );
+                    }
+                    if (payload.type === "workflow_loaded") {
+                      return <WorkflowLoadedCard key={payloadIndex} payload={payload} />;
                     }
                     return (
                       <CardPayloadCard
                         key={payloadIndex}
                         payload={payload}
                         onRequestChange={setInput}
+                        onUpdatePayload={(updated) =>
+                          updateTurnPayload(index, payloadIndex, updated)
+                        }
                         disabled={sending}
                       />
                     );
@@ -538,7 +636,7 @@ export default function ChatApp() {
                 </button>
               </div>
             )}
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -551,10 +649,22 @@ export default function ChatApp() {
                 onClick={() => fileInputRef.current?.click()}
                 disabled={sending || uploadingImage}
                 aria-label="Attach an image"
-                className="self-end rounded-lg p-2 text-foreground/60 hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+                className="rounded-lg p-2 text-foreground/60 hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
               >
                 <Paperclip size={20} />
               </button>
+              <label className="flex select-none items-center gap-1.5 text-xs text-foreground/60">
+                <input
+                  type="checkbox"
+                  checked={activeConversation?.instant_creation ?? false}
+                  onChange={(event) => toggleInstantCreation(event.target.checked)}
+                  disabled={sending || !activeConversation}
+                  className="h-3.5 w-3.5 rounded border-border accent-accent"
+                />
+                Create cards instantly
+              </label>
+            </div>
+            <div className="flex gap-2">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -571,7 +681,7 @@ export default function ChatApp() {
                 disabled={sending}
                 rows={1}
                 style={{ maxHeight: MAX_TEXTAREA_HEIGHT_PX }}
-                className="flex-1 resize-none overflow-y-auto rounded-lg border border-border bg-surface px-4 py-2 text-sm disabled:opacity-50"
+                className="flex-1 resize-none overflow-y-auto rounded-lg border border-border bg-surface px-4 py-2 text-base disabled:opacity-50 md:text-sm"
               />
               <button
                 type="submit"

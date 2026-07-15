@@ -184,7 +184,7 @@ export default function MessageBubble({
               rows={1}
               autoFocus
               style={{ maxHeight: EDIT_TEXTAREA_MAX_HEIGHT_PX }}
-              className="w-full resize-none overflow-y-auto rounded-lg border border-accent-foreground/30 bg-accent-foreground/10 px-2 py-1 text-sm text-accent-foreground outline-none"
+              className="w-full resize-none overflow-y-auto rounded-lg border border-accent-foreground/30 bg-accent-foreground/10 px-2 py-1 text-base text-accent-foreground outline-none md:text-sm"
             />
             <div className="flex justify-end gap-2">
               <button

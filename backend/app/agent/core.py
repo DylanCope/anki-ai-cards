@@ -46,8 +46,9 @@ def _build_system_prompt(history: list[dict]) -> str:
     known_specs = ", ".join(names)
     return (
         f"{SYSTEM_PROMPT}\n\nKnown workflow specs from past sessions: "
-        f"{known_specs}. Consider offering to reuse one of these (via "
-        f"load_workflow_spec) before starting from scratch."
+        f"{known_specs}. Per the workflow-spec guidance above, check whether "
+        f"one of these matches before starting from scratch on a card "
+        f"creation request."
     )
 
 
@@ -57,6 +58,7 @@ async def run_turn(
     *,
     get_access_token: Callable[[], Awaitable[str]] | None = None,
     model_id: str,
+    instant_creation: bool = False,
 ) -> dict:
     """Run one user turn to completion, returning the updated history and
     the assistant's final text reply.
@@ -68,6 +70,9 @@ async def run_turn(
     never pays for (or can fail on) a token refresh. It is never read from
     the model's tool input. `model_id` selects which model (and therefore
     which provider adapter) drives this turn — see `app.agent.model_registry`.
+    `instant_creation` mirrors the conversation's own setting and is passed
+    straight through to every `dispatch_tool` call this turn (see that
+    function's docstring for what it controls on `create_anki_note`).
     """
 
     provider_module = _PROVIDER_MODULES[get_model(model_id).provider]
@@ -96,7 +101,10 @@ async def run_turn(
                 continue
             try:
                 result = await dispatch_tool(
-                    block.name, block.input, get_access_token=get_access_token
+                    block.name,
+                    block.input,
+                    get_access_token=get_access_token,
+                    instant_creation=instant_creation,
                 )
             except Exception as exc:
                 # Surface the failure back to the model as an error tool_result

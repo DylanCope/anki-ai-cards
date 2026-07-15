@@ -241,14 +241,76 @@ card created via the usual "propose → confirm → create" flow.
   mapping from scratch (e.g. it doesn't re-ask "what note type should I
   use?" if the spec already answers that).
 
+## 11. Preview-before-creation and the instant-creation toggle
+
+Exercises tasks 51-56. By default, `create_anki_note` no longer writes to
+Anki immediately — it drafts a `PendingCard` (`backend/app/agent/tools.py`)
+that you explicitly Preview and then Create or Discard. A per-conversation
+"Create cards instantly" checkbox reverts to the old immediate-write
+behavior when you want it.
+
+### 11a. Draft flow (instant-creation off, the default)
+
+- [ ] Start a new conversation. Confirm the **Create cards instantly**
+  checkbox (`frontend/app/components/ChatApp.tsx`) is unchecked by default.
+- [ ] Go through the propose → confirm flow same as section 4 (optionally
+  picking audio and/or an image along the way), then let the agent call
+  `create_anki_note`. Confirm the chat shows a **Card draft** card
+  (`frontend/app/components/CardPayloadCard.tsx`), not "Card added to Anki"
+  — the agent's own reply text should say something like "I've drafted this
+  card for you to preview," never "I've created it in Anki."
+- [ ] Click **Preview**. Confirm it renders your note type's actual front
+  template — fields substituted, the cloze deletion masked, your real card
+  CSS applied (`backend/app/agent/anki_template.py` + AnkiConnect's live
+  `modelTemplates`/`modelStyling`) — not a generic field list.
+- [ ] Toggle to **Back**. Confirm the cloze answer is revealed, matching
+  Anki's real front/back behavior.
+- [ ] Toggle between the mobile/PC width buttons. Confirm the preview
+  visibly reflows (narrower/wider container) using the same CSS at both
+  widths, not a different stylesheet per width.
+- [ ] **Known gap (task 60, not yet built as of this writing):** if you
+  picked audio or an image for this card, the draft does not yet retain
+  that pick — expect Preview to show only text fields regardless. Check
+  whether task 60 is checked off in PRD.md before treating a missing
+  audio/image in preview as a new bug.
+- [ ] Click **Create**. Confirm the card switches to the normal "Card added
+  to Anki" display with a real note id, then open Anki via VNC
+  (`fly proxy 5900 -a anki-ai-cards-anki`) and confirm the note now actually
+  exists in your collection (i.e. it wasn't created earlier, at proposal
+  time).
+- [ ] Propose a second card in the same conversation, get it to the draft
+  stage, and click **Discard** instead of Create. Confirm it shows "Draft
+  discarded" and never appears in Anki (check via VNC) — and confirm the
+  first card's Create from the previous step is unaffected by this second
+  draft.
+- [ ] **Reload caveat (known, deliberate — not a new bug):** reload the page
+  after creating/discarding a draft in this session. A drafted card you
+  already clicked Create/Discard on will show back up as "pending" with
+  working-but-stale buttons after the reload — payloads are re-derived from
+  the original stored tool call, not the live `PendingCard.status`, per
+  PROGRESS.md's task 55 entry.
+
+### 11b. Instant-creation toggle (opt back into the original immediate-write behavior)
+
+- [ ] Check **Create cards instantly** in the composer area. Reload the
+  page and confirm it's still checked (persisted on the `Conversation` row,
+  not just local state).
+- [ ] Propose and confirm a card. Confirm `create_anki_note` now writes to
+  Anki immediately — the chat shows "Card added to Anki" directly, with no
+  draft/Preview/Create/Discard step in between.
+- [ ] Uncheck it again and confirm the draft flow (11a) resumes for the next
+  card.
+
 ## If something doesn't match
 
 This doc was written by cross-checking PRD.md tasks 1-12 and the actual code
 in `backend/app/` and `frontend/app/` as of the task-13 commit, then extended
 for image support (section 8) by cross-checking tasks 33-39 as of the task-40
-commit, and again for Tatoeba/Forvo/dictionary support (section 9) by
-cross-checking tasks 43-46 as of the task-47 commit. If a step above doesn't
-match what the running system actually does:
+commit, again for Tatoeba/Forvo/dictionary support (section 9) by
+cross-checking tasks 43-46 as of the task-47 commit, and again for
+preview-before-creation (section 11) by cross-checking tasks 51-56 as of the
+task-57 commit. If a step above doesn't match what the running system
+actually does:
 
 - If the **code** has moved on (e.g. a later change added a real
   `propose_card` tool or persisted payloads across reloads), this doc is

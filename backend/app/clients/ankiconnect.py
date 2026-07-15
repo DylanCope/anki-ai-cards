@@ -77,6 +77,22 @@ async def get_note_type_fields(name: str) -> list[str]:
     return await invoke("modelFieldNames", modelName=name)
 
 
+async def get_model_templates(name: str) -> dict[str, dict[str, str]]:
+    """Wraps `modelTemplates` — result is `{card_name: {"Front": qfmt, "Back":
+    afmt}}` per card template defined on the note type, confirmed against
+    AnkiConnect's real documented example response."""
+
+    return await invoke("modelTemplates", modelName=name)
+
+
+async def get_model_styling(name: str) -> str:
+    """Wraps `modelStyling` — result is `{"css": <str>}`, confirmed against
+    AnkiConnect's real documented example response."""
+
+    result = await invoke("modelStyling", modelName=name)
+    return result["css"]
+
+
 async def create_note(
     deck_name: str,
     model_name: str,

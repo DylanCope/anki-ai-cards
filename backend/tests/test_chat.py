@@ -19,6 +19,7 @@ from app.models import (
     ConversationMessage,
     ImageAsset,
     OAuthToken,
+    PendingCard,
     get_engine,
     init_db,
 )
@@ -74,7 +75,7 @@ def _new_conversation_id() -> int:
 
 
 def _text_only_run_turn(reply_text: str):
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -134,7 +135,7 @@ def test_post_chat_with_image_id_appends_a_machine_readable_reference(monkeypatc
     conversation_id = _new_conversation_id()
     captured_messages = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_messages.append(message)
         new_history = [
             *history,
@@ -165,7 +166,7 @@ def test_post_chat_without_image_id_leaves_message_unchanged(monkeypatch):
     conversation_id = _new_conversation_id()
     captured_messages = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_messages.append(message)
         new_history = [
             *history,
@@ -286,7 +287,7 @@ def test_post_chat_second_call_only_persists_new_messages_and_reuses_history(mon
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -324,7 +325,7 @@ def test_post_chat_keeps_separate_conversations_isolated(monkeypatch):
     conversation_b = _new_conversation_id()
     captured_histories = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_histories.append(history)
         new_history = [
             *history,
@@ -365,7 +366,7 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
         session.refresh(clip_two)
         clip_ids = [clip_one.id, clip_two.id]
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -415,6 +416,75 @@ def test_post_chat_extracts_audio_options_payload(monkeypatch):
     ]
 
 
+def test_post_chat_extracts_audio_options_payload_for_search_word_pronunciations(monkeypatch):
+    # Regression test: search_word_pronunciations returns the same
+    # {"clip_ids": [...]} shape as generate_audio, but the extraction below
+    # originally only matched on block name "generate_audio", so Forvo
+    # results never got turned into a playable audio_options payload — the
+    # frontend just showed clip_ids/usernames as text with no way to hear
+    # them before picking.
+    _seed_token()
+    conversation_id = _new_conversation_id()
+    with Session(get_engine()) as session:
+        clip_one = AudioClip(text="猫", voice="Nekomata", audio=b"aaa", source="forvo")
+        clip_two = AudioClip(text="猫", voice="Kyoko", audio=b"bbb", source="forvo")
+        session.add(clip_one)
+        session.add(clip_two)
+        session.commit()
+        session.refresh(clip_one)
+        session.refresh(clip_two)
+        clip_ids = [clip_one.id, clip_two.id]
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "search_word_pronunciations",
+                        "input": {"word": "猫"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"clip_ids": clip_ids}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Here are 2 options."}]},
+        ]
+        return {"history": new_history, "reply": "Here are 2 options."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "find pronunciations"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {
+            "type": "audio_options",
+            "text": "猫",
+            "clip_ids": clip_ids,
+            "options": [
+                base64.b64encode(b"aaa").decode("ascii"),
+                base64.b64encode(b"bbb").decode("ascii"),
+            ],
+        }
+    ]
+
+
 def test_post_chat_extracts_image_options_payload_for_search_images(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
@@ -428,7 +498,7 @@ def test_post_chat_extracts_image_options_payload_for_search_images(monkeypatch)
         session.refresh(image_two)
         image_ids = [image_one.id, image_two.id]
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -489,7 +559,7 @@ def test_post_chat_extracts_image_options_payload_for_generate_image(monkeypatch
         session.refresh(image)
         image_ids = [image.id]
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -537,11 +607,108 @@ def test_post_chat_extracts_image_options_payload_for_generate_image(monkeypatch
     ]
 
 
+def test_post_chat_extracts_workflow_loaded_payload(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "load_workflow_spec",
+                        "input": {"name": "Migaku_Vocab_Mining"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps(
+                            {"name": "Migaku_Vocab_Mining", "spec": "PURPOSE\n..."}
+                        ),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Loaded the Migaku_Vocab_Mining workflow."}],
+            },
+        ]
+        return {"history": new_history, "reply": "Loaded the Migaku_Vocab_Mining workflow."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "make a card for 猫"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {"type": "workflow_loaded", "name": "Migaku_Vocab_Mining", "spec": "PURPOSE\n..."}
+    ]
+
+
+def test_post_chat_extracts_no_payload_when_workflow_spec_not_found(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "load_workflow_spec",
+                        "input": {"name": "Nonexistent"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps(None),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I couldn't find that workflow."}],
+            },
+        ]
+        return {"history": new_history, "reply": "I couldn't find that workflow."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "load Nonexistent"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payloads"] == []
+
+
 def test_post_chat_extracts_card_payload(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -591,6 +758,68 @@ def test_post_chat_extracts_card_payload(monkeypatch):
             "fields": {"Text": "{{c1::食べます}}"},
             "tags": ["lesson"],
             "note_id": 42,
+            "status": "created",
+            "pending_card_id": None,
+        }
+    ]
+
+
+def test_post_chat_extracts_pending_card_payload(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-3",
+                        "name": "create_anki_note",
+                        "input": {
+                            "deck_name": "Japanese",
+                            "model_name": "Cloze",
+                            "fields": {"Text": "{{c1::食べます}}"},
+                            "tags": ["lesson"],
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-3",
+                        "content": json.dumps({"pending_card_id": 7, "status": "pending"}),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Drafted."}]},
+        ]
+        return {"history": new_history, "reply": "Drafted."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "create it"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert payloads == [
+        {
+            "type": "card",
+            "deck_name": "Japanese",
+            "model_name": "Cloze",
+            "fields": {"Text": "{{c1::食べます}}"},
+            "tags": ["lesson"],
+            "note_id": None,
+            "status": "pending",
+            "pending_card_id": 7,
         }
     ]
 
@@ -633,7 +862,7 @@ def test_post_chat_edit_rejects_when_a_card_was_already_created(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -741,7 +970,7 @@ def test_post_chat_refreshes_expired_access_token_when_google_docs_used(monkeypa
     )
     monkeypatch.setattr(chat_module.google_docs, "refresh_access_token", refresh_mock)
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         # Simulate the turn actually invoking fetch_google_doc, which is the
         # only tool that needs a Google token.
         token = await get_access_token()
@@ -765,7 +994,7 @@ def test_post_chat_saves_bug_report_and_returns_500_without_traceback(monkeypatc
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise httpx.HTTPStatusError(
             "Bad response", request=httpx.Request("POST", "http://x"), response=httpx.Response(500)
         )
@@ -799,7 +1028,7 @@ def test_post_chat_failure_still_persists_the_turn(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -837,7 +1066,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
     conversation_id = _new_conversation_id()
     captured_histories = []
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -846,7 +1075,7 @@ def test_post_chat_retry_after_failure_keeps_roles_alternating(monkeypatch):
         "/api/chat", json={"conversation_id": conversation_id, "message": "first try"}
     )
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_histories.append(history)
         return {
             "history": [
@@ -878,7 +1107,7 @@ def test_list_and_get_bug_reports(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def failing_run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         raise ValueError("boom")
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", failing_run_turn)
@@ -919,7 +1148,7 @@ def test_get_chat_history_returns_text_only_transcript(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -974,7 +1203,7 @@ def test_get_chat_history_returns_payloads_alongside_the_turn_that_produced_them
         session.refresh(clip)
         clip_id = clip.id
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1046,7 +1275,7 @@ def test_get_chat_history_returns_image_options_payload_alongside_the_turn_that_
         session.refresh(image)
         image_id = image.id
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1109,7 +1338,7 @@ def test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_
     _seed_token()
     conversation_id = _new_conversation_id()
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         new_history = [
             *history,
             {"role": "user", "content": message},
@@ -1165,6 +1394,8 @@ def test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_
                     "fields": {"Text": "{{c1::食べます}}"},
                     "tags": ["lesson"],
                     "note_id": 42,
+                    "status": "created",
+                    "pending_card_id": None,
                 }
             ],
         },
@@ -1231,7 +1462,7 @@ def test_update_conversation_model_switches_which_provider_a_later_turn_uses(mon
     conversation_id = _new_conversation_id()
     captured_model_ids = []
 
-    async def run_turn(history, message, *, get_access_token=None, model_id=None):
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
         captured_model_ids.append(model_id)
         return {"history": [], "reply": "ok"}
 
@@ -1269,6 +1500,287 @@ def test_update_conversation_title_404s_for_unknown_conversation():
         "/api/conversations/999", json={"title": "New title"}
     )
     assert response.status_code == 404
+
+
+def test_create_conversation_defaults_to_instant_creation_off():
+    _seed_token()
+    response = _authed_client().post("/api/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["instant_creation"] is False
+
+
+def test_create_conversation_with_instant_creation_on():
+    _seed_token()
+    response = _authed_client().post("/api/conversations", json={"instant_creation": True})
+
+    assert response.status_code == 200
+    assert response.json()["instant_creation"] is True
+
+
+def test_update_conversation_instant_creation():
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    response = _authed_client().patch(
+        f"/api/conversations/{conversation_id}", json={"instant_creation": True}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["instant_creation"] is True
+
+
+def test_post_chat_passes_conversation_instant_creation_to_run_turn(monkeypatch):
+    _seed_token()
+    captured_instant_creation = []
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        captured_instant_creation.append(instant_creation)
+        return {"history": [], "reply": "ok"}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    authed = _authed_client()
+
+    create_response = authed.post("/api/conversations", json={"instant_creation": True})
+    conversation_id = create_response.json()["id"]
+
+    authed.post("/api/chat", json={"conversation_id": conversation_id, "message": "hi"})
+
+    assert captured_instant_creation == [True]
+
+
+# --- Pending-card endpoints ---
+
+
+def _new_pending_card(
+    *,
+    status: str = "pending",
+    tags: list[str] | None = ["lesson"],
+    audio: dict | None = None,
+    picture: dict | None = None,
+) -> int:
+    with Session(get_engine()) as session:
+        pending = PendingCard(
+            deck_name="Japanese",
+            model_name="Cloze",
+            fields=json.dumps({"Text": "{{c1::食べます}}"}),
+            tags=json.dumps(tags) if tags else None,
+            audio=json.dumps(audio) if audio else None,
+            picture=json.dumps(picture) if picture else None,
+            status=status,
+        )
+        session.add(pending)
+        session.commit()
+        session.refresh(pending)
+        return pending.id
+
+
+def test_create_pending_card_requires_auth(client):
+    response = client.post("/api/pending-cards/1/create")
+    assert response.status_code == 401
+
+
+def test_create_pending_card_404s_for_unknown_card():
+    _seed_token()
+    response = _authed_client().post("/api/pending-cards/999/create")
+    assert response.status_code == 404
+
+
+def test_create_pending_card_calls_ankiconnect_and_marks_created(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card()
+
+    create_mock = AsyncMock(return_value=99)
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", create_mock)
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 200
+    assert response.json() == {"note_id": 99}
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze",
+        fields={"Text": "{{c1::食べます}}"},
+        tags=["lesson"],
+        audio=None,
+        picture=None,
+    )
+
+    with Session(get_engine()) as session:
+        pending = session.get(PendingCard, pending_card_id)
+    assert pending.status == "created"
+    assert pending.note_id == 99
+
+
+def test_create_pending_card_attaches_stored_audio_and_picture(monkeypatch):
+    _seed_token()
+    with Session(get_engine()) as session:
+        clip = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
+        session.add(clip)
+        image = ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(clip)
+        session.refresh(image)
+        clip_id, image_id = clip.id, image.id
+
+    pending_card_id = _new_pending_card(
+        audio={"clip_id": clip_id, "fields": ["Text Audio"]},
+        picture={"image_id": image_id, "fields": ["Picture"]},
+    )
+
+    create_mock = AsyncMock(return_value=99)
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", create_mock)
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 200
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze",
+        fields={"Text": "{{c1::食べます}}"},
+        tags=["lesson"],
+        audio={
+            "data": base64.b64encode(b"aaa").decode("ascii"),
+            "filename": f"anki-ai-cards-{clip_id}.mp3",
+            "fields": ["Text Audio"],
+        },
+        picture={
+            "data": base64.b64encode(b"pngbytes").decode("ascii"),
+            "filename": f"anki-ai-cards-{image_id}.png",
+            "fields": ["Picture"],
+        },
+    )
+
+
+def test_create_pending_card_409s_when_not_pending(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(status="created")
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 409
+
+
+def test_discard_pending_card_requires_auth(client):
+    response = client.post("/api/pending-cards/1/discard")
+    assert response.status_code == 401
+
+
+def test_discard_pending_card_404s_for_unknown_card():
+    _seed_token()
+    response = _authed_client().post("/api/pending-cards/999/discard")
+    assert response.status_code == 404
+
+
+def test_discard_pending_card_marks_discarded():
+    _seed_token()
+    pending_card_id = _new_pending_card()
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/discard")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "discarded"}
+    with Session(get_engine()) as session:
+        pending = session.get(PendingCard, pending_card_id)
+    assert pending.status == "discarded"
+
+
+def test_discard_pending_card_409s_when_not_pending():
+    _seed_token()
+    pending_card_id = _new_pending_card(status="discarded")
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/discard")
+
+    assert response.status_code == 409
+
+
+def test_preview_pending_card_requires_auth(client):
+    response = client.get("/api/pending-cards/1/preview")
+    assert response.status_code == 401
+
+
+def test_preview_pending_card_404s_for_unknown_card():
+    _seed_token()
+    response = _authed_client().get("/api/pending-cards/999/preview")
+    assert response.status_code == 404
+
+
+def test_preview_pending_card_renders_the_note_type_template(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    templates_mock.assert_awaited_once_with("Cloze")
+    styling_mock.assert_awaited_once_with("Cloze")
+    assert body["css"] == ".cloze { font-weight: bold; }"
+    assert "食べます" not in body["front_html"]
+    assert "[...]" in body["front_html"]
+    assert "食べます" in body["back_html"]
+
+
+def test_preview_pending_card_includes_picked_media(monkeypatch):
+    _seed_token()
+    with Session(get_engine()) as session:
+        clip = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
+        session.add(clip)
+        image = ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(clip)
+        session.refresh(image)
+        clip_id, image_id = clip.id, image.id
+
+    pending_card_id = _new_pending_card(
+        tags=None,
+        audio={"clip_id": clip_id, "fields": ["Text Audio"]},
+        picture={"image_id": image_id, "fields": ["Picture"]},
+    )
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["audio_base64"] == base64.b64encode(b"aaa").decode("ascii")
+    assert body["picture_base64"] == base64.b64encode(b"pngbytes").decode("ascii")
+    assert body["picture_content_type"] == "image/png"
+
+
+def test_preview_pending_card_omits_media_keys_when_none_picked(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "audio_base64" not in body
+    assert "picture_base64" not in body
+    assert "picture_content_type" not in body
 
 
 def test_delete_conversation_requires_auth(client):
@@ -1406,3 +1918,73 @@ def test_content_block_to_dict_omits_gemini_thought_signature_when_absent():
     result = chat_module._content_block_to_dict(block)
 
     assert "gemini_thought_signature" not in result
+
+
+def test_get_settings_requires_auth(client):
+    response = client.get("/api/settings")
+    assert response.status_code == 401
+
+
+def test_get_settings_defaults_to_no_default_model():
+    _seed_token()
+    response = _authed_client().get("/api/settings")
+
+    assert response.status_code == 200
+    assert response.json() == {"default_model_id": None}
+
+
+def test_set_default_model_requires_auth(client):
+    response = client.put("/api/settings/default-model", json={"model_id": "claude-sonnet-5"})
+    assert response.status_code == 401
+
+
+def test_set_default_model_rejects_an_unknown_model():
+    _seed_token()
+    response = _authed_client().put(
+        "/api/settings/default-model", json={"model_id": "gpt-4o"}
+    )
+    assert response.status_code == 400
+
+
+def test_set_default_model_then_get_settings_reflects_it():
+    _seed_token()
+    authed = _authed_client()
+
+    put_response = authed.put(
+        "/api/settings/default-model", json={"model_id": "claude-sonnet-5"}
+    )
+    assert put_response.status_code == 200
+    assert put_response.json()["default_model_id"] == "claude-sonnet-5"
+
+    get_response = authed.get("/api/settings")
+    assert get_response.json()["default_model_id"] == "claude-sonnet-5"
+
+
+def test_create_conversation_uses_stored_default_model_when_none_specified():
+    _seed_token()
+    authed = _authed_client()
+    authed.put("/api/settings/default-model", json={"model_id": "claude-haiku-4-5"})
+
+    response = authed.post("/api/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "claude-haiku-4-5"
+
+
+def test_create_conversation_explicit_model_wins_over_stored_default():
+    _seed_token()
+    authed = _authed_client()
+    authed.put("/api/settings/default-model", json={"model_id": "claude-haiku-4-5"})
+
+    response = authed.post("/api/conversations", json={"model": "claude-opus-4-8"})
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "claude-opus-4-8"
+
+
+def test_create_conversation_falls_back_to_hardcoded_default_when_no_stored_default():
+    _seed_token()
+    response = _authed_client().post("/api/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["model"] == DEFAULT_MODEL_ID

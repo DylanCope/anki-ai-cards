@@ -14,6 +14,630 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-14 — Task 60: persist picked audio/image on a drafted PendingCard
+- Did: This was the last unchecked task in PRD.md — all 60 tasks are now
+  checked.
+  - `backend/app/models.py`: added `audio: str | None` / `picture: str |
+    None` columns to `PendingCard` (JSON-serialized `{"clip_id"/"image_id":
+    ..., "fields": [...]}`, same shape `create_anki_note`'s tool schema
+    already uses), plus an additive
+    `_add_pendingcard_audio_picture_columns_if_missing` migration (two plain
+    `ALTER TABLE ... ADD COLUMN` calls, each independently guarded — NOT the
+    drop-and-recreate approach task 51's `_rebuild_pendingcard_table_if_stale`
+    used, since real `PendingCard` rows exist by now and must survive).
+  - `backend/app/agent/tools.py`: `dispatch_tool`'s `create_anki_note` draft
+    branch (`instant_creation=False`) now reads `tool_input.get("audio")`/
+    `tool_input.get("picture")` and stores them JSON-serialized on the new
+    `PendingCard` row (previously silently dropped — see task 54's
+    PROGRESS.md entry that first flagged this gap).
+  - `backend/app/api/chat.py`: `POST /api/pending-cards/{id}/create` now
+    deserializes `pending_card.audio`/`.picture` and passes them into
+    `agent_tools._create_note_in_anki` instead of hardcoded `None, None`.
+  - Decided the open question the task raised ("should preview reflect
+    picked media too?") — yes, minimally: `GET /api/pending-cards/{id}/preview`
+    now also fetches the referenced `AudioClip`/`ImageAsset` rows (if any)
+    and adds `audio_base64` / `picture_base64` + `picture_content_type` keys
+    to the response alongside the existing `front_html`/`back_html`/`css`
+    (omitted entirely when nothing was picked, not sent as `null`). This is
+    backend-only — no frontend change, since the task's own Verify section
+    only asked for backend coverage and didn't list a frontend task. A
+    future task should decide how `CardPayloadCard`'s Preview UI (task 55)
+    surfaces these two new optional fields (e.g. an `<audio>` player /
+    `<img>` thumbnail next to the sandboxed iframe) — flagging this as a
+    natural follow-up rather than adding it here, since PRD.md's task 60
+    text explicitly scoped the frontend side as optional ("worth deciding
+    rather than leaving... as a silent gap in the preview too", not "build
+    the UI for it").
+  - Template rendering itself (`app/agent/anki_template.py`) is untouched —
+    it only ever substitutes field *text*, so this is additive metadata
+    alongside the rendered HTML, not a template-engine change.
+- Verified: `cd backend && uv run pytest` → 273 passed (was 265 before this
+  task; 8 new tests: 3 in `test_models.py` for the new columns'
+  round-trip/default-None/migration-idempotency-and-backfill, 2 in
+  `test_agent.py` for `dispatch_tool` persisting/omitting audio+picture on a
+  draft, 3 in `test_chat.py` for `create_pending_card` attaching stored
+  media through to the `ankiconnect.create_note` mock, and the preview
+  endpoint including/omitting the new media keys).
+- Learned:
+  - **PRD.md now has zero unchecked tasks** — `grep -n "^\- \[ \]"
+    PRD.md` returns nothing. Per the Ralph loop's completion rule, this
+    means the next iteration (or this one, since verification already
+    passed) should output `<promise>RALPH_DONE</promise>` rather than
+    picking a new task — there isn't one.
+  - Test gotcha: don't hardcode plausible-looking `clip_id`/`image_id`
+    values in a `PendingCard.audio`/`.picture` fixture — each test gets a
+    fresh SQLite file via the `_set_env` autouse fixture, so real
+    `AudioClip`/`ImageAsset` rows created in the same test start their
+    autoincrement at 1. Create the referenced rows first, capture their
+    actual `.id` after `session.refresh(...)`, and use those in the
+    `PendingCard`'s JSON — this is exactly what
+    `test_create_pending_card_attaches_stored_audio_and_picture` and
+    `test_preview_pending_card_includes_picked_media` do.
+
+## 2026-07-14 — Task 59: "mark as default" checkbox in the model panel
+- Did: `frontend/app/lib/types.ts`: added a `UserSettings` type
+  (`{ default_model_id: string | null }`) matching task 58's `GET
+  /api/settings` response shape. `frontend/app/components/ChatApp.tsx`: the
+  bootstrap effect now fetches `GET /api/settings` in parallel with the
+  existing conversations/models fetches (also checks its `401` alongside the
+  other two), holding the result in a new `defaultModelId` state var. Added
+  `setDefaultModel(modelId)` (mirrors `changeModel`'s fetch/error-handling
+  shape) calling `PUT /api/settings/default-model` with `{model_id: ...}` and
+  updating `defaultModelId` from the response on success.
+  `frontend/app/components/AiSettingsButton.tsx`: added `defaultModelId:
+  string | null` and `onSetDefault: (modelId: string) => void` props; each
+  model row now renders a `lucide-react` `Star` icon button (filled +
+  accent-colored when `model.id === defaultModelId`) alongside the existing
+  display name/price/description text, calling `onSetDefault(model.id)` with
+  `event.stopPropagation()` so clicking the star doesn't also fire the row's
+  existing "select this model for the current conversation" click handler.
+- Verified: `cd frontend && npm run build && npm run lint` — both pass, no
+  new warnings. `cd backend && uv run pytest` — 265 passed, unchanged (no
+  backend code touched by this task; ran as a regression check per the loop
+  convention of verifying both stacks even on frontend-only tasks).
+- Learned:
+  - The model row was originally a single `<button>` wrapping the whole
+    card (select-on-click). Nesting a second `<button>` (the star) inside it
+    for the "set default" action isn't valid HTML/React (a `<button>` can't
+    contain interactive descendants) — changed the outer element from
+    `<button>` to a `<div role="button" tabIndex={0} onClick={...}
+    onKeyDown={...}>` (Enter/Space trigger the same select action) so the
+    inner star `<button>` with its own `stopPropagation`'d click handler
+    stays valid and keyboard-accessible. Future rows-with-a-secondary-action
+    patterns in this codebase should use this same div+inner-button shape
+    rather than nested buttons.
+  - `GET /api/settings` was added to the bootstrap `Promise.all` rather than
+    fetched lazily inside `AiSettingsButton` (which only mounts its dropdown
+    contents when opened) — `defaultModelId` needs to be known up front so
+    the star renders correctly filled the very first time the panel opens,
+    not just after a re-fetch.
+  - Manual browser verification still needed (per PRD's note on this task):
+    Dylan should confirm marking a model as default persists across reload,
+    renders visually distinct from (and independent of) the current
+    conversation's selected model highlight, and that a brand new chat
+    actually opens using the marked default (already covered logically by
+    task 58's backend precedence order — this task only adds the UI to set
+    it).
+
+## 2026-07-14 — Task 58: `UserSettings` table + default-model endpoint
+- Did: Added a `UserSettings` table (`backend/app/models.py`): `id`,
+  `default_model_id: str | None`, `updated_at` — a brand-new table (no
+  migration needed, `create_all()` handles it) rather than an ALTER TABLE,
+  since nothing previously wrote to it. Added `_get_user_settings(session)`
+  in `backend/app/api/chat.py` (get-or-create the single row, `id=1`, same
+  single-row pattern the task description asked for). New
+  `settings_router` (`/api/settings`) with `GET /api/settings` (returns
+  `{"default_model_id": ...}`) and `PUT /api/settings/default-model`
+  (`{"model_id": str}` body, validates via `get_model()` → 400 on unknown
+  id, otherwise upserts and returns the updated value) — both behind
+  `require_auth`, registered in `backend/app/main.py` alongside the other
+  routers. Changed `CreateConversationRequest.model` from
+  `str = DEFAULT_MODEL_ID` to `str | None = None` (a hardcoded Pydantic
+  default would always shadow a DB-stored one, since "unset" and "explicitly
+  DEFAULT_MODEL_ID" would be indistinguishable) and reworked
+  `create_conversation` to resolve `body.model or
+  _get_user_settings(session).default_model_id or DEFAULT_MODEL_ID` before
+  validating/constructing the `Conversation` row, giving the exact
+  precedence order the task asked for (explicit request body wins over
+  stored default wins over hardcoded fallback).
+- Verified: `cd backend && uv run pytest` → 265 passed (was 257 before this
+  task; 8 new tests in `test_chat.py` covering: `GET`/`PUT /api/settings`
+  both require auth, `GET /api/settings` defaults to
+  `{"default_model_id": None}` on a fresh DB, `PUT .../default-model` 400s on
+  an unknown model id and 200s + persists on a known one (checked via a
+  follow-up `GET`), and all three precedence cases for
+  `POST /api/conversations` — stored default used when no body model given,
+  explicit body model wins over a stored default, and the hardcoded
+  `DEFAULT_MODEL_ID` is used when neither is set). Also ran `cd frontend &&
+  npm run build` as a sanity check since this task touches shared
+  conversation-creation logic — passed unchanged (no frontend files touched
+  by this task, task 59 is the frontend half).
+- Learned:
+  - No Fly deploy for this task — it's backend-only and PRD/AGENTS.md's
+    deploy-and-verify convention is scoped to tasks 20-32 and the
+    image/Tatoeba/Forvo/dictionary batches (35-39, 44-46); tasks 51+ don't
+    carry that requirement explicitly and this one is low-risk (additive
+    table, new routes, one changed default that's covered by tests), so left
+    it for a later batch deploy rather than deploying every single-task
+    commit — flag to Dylan if he wants task 58/59 deployed sooner.
+  - Task 59 (frontend "mark as default" checkbox in `AiSettingsButton`) is
+    the natural next task — it's the only remaining task depending on this
+    one being done first.
+
+## 2026-07-14 — Task 57: Docs update for preview-before-creation
+- Did: Added a new "## 11. Preview-before-creation and the instant-creation
+  toggle" section to `docs/manual_verification.md`, cross-checked against
+  tasks 51-56 and their PROGRESS.md entries (not just the PRD text) so it
+  reflects what was actually built, not just what was asked for:
+  - 11a covers the default (instant-creation off) draft flow: proposing a
+    card now yields a "Card draft" (not "Card added to Anki"), Preview
+    rendering the real per-note-type template/CSS via the sandboxed iframe,
+    the front/back toggle, the mobile/PC width toggle, Create turning the
+    draft into a real Anki note (verified via VNC), and Discard on a
+    second draft leaving the first Create untouched.
+  - Explicitly flagged two known, already-documented gaps inline rather than
+    presenting them as new bugs to find: (a) task 60 (not yet done) means a
+    picked audio/image never reaches the draft/preview yet — told Dylan to
+    check PRD.md task 60's checkbox before treating a missing
+    audio/image in Preview as new; (b) the reload-shows-stale-"pending"
+    quirk from task 55's PROGRESS entry (payloads are re-derived from the
+    frozen original tool_result, not live `PendingCard.status`).
+  - 11b covers toggling "Create cards instantly" on: persists across reload,
+    makes the next card write to Anki immediately with no draft step, then
+    toggling off resumes the draft flow.
+  - Updated the closing "If something doesn't match" provenance paragraph to
+    mention section 11 / tasks 51-56 / the task-57 commit, matching the
+    existing pattern for sections 8 and 9.
+  - No code changes — confirmed no new env vars or AGENTS.md updates were
+    needed for tasks 51-56 (no new external services in this batch, unlike
+    tasks 36-40/43-47 which each got a matching docs task).
+- Verified: `cd backend && uv run pytest` → 257 passed (unchanged, regression
+  check only). `cd frontend && npm run build && npm run lint` → build and
+  lint both clean (unchanged). This task's actual verification is the doc
+  text matching the built system, which I cross-checked line-by-line against
+  the task 51/54/55/56 PROGRESS.md entries above.
+- Learned:
+  - PRD.md's tasks 58-59 (default AI model) and 60 (persist picked
+    audio/image on a `PendingCard`) remain unchecked and are independent of
+    this task — 58/59 don't touch anything this doc covers; 60 is
+    specifically called out inline in the new section 11a as a forward
+    reference so Dylan doesn't mistake its current absence for a bug.
+
+
+## 2026-07-14 — Task 56: Frontend instant-creation checkbox
+- Did:
+  - `frontend/app/lib/types.ts`: added `instant_creation: boolean` to
+    `Conversation` (backend's `_conversation_to_dict` in `chat.py` already
+    returned this field from task 54 — the frontend type just hadn't
+    caught up).
+  - `frontend/app/components/ChatApp.tsx`: added `toggleInstantCreation(checked)`
+    (mirrors `changeModel`'s pattern exactly — `PATCH
+    /api/conversations/{id}` with `{instant_creation: checked}`, then merges
+    the returned `Conversation` into local `conversations` state). Added a
+    labeled checkbox ("Create cards instantly") in its own row directly above
+    the textarea/send row, alongside the existing attach-image button (moved
+    the file input + paperclip button out of the row that also contains the
+    textarea/send button, into this new row, since keeping them inline with
+    the auto-growing multi-line textarea via `self-end` no longer read well
+    next to a checkbox+label). Checked state reads
+    `activeConversation?.instant_creation ?? false`; disabled while `sending`
+    or before any conversation has loaded.
+- Verified:
+  - `cd frontend && npm run build && npm run lint` — both pass.
+  - `cd backend && uv run pytest` — 257 passed (regression check only, no
+    backend changes this task; task 54 already built the
+    `instant_creation` field/endpoints).
+  - Deploy-and-verify (frontend only, per convention): `fly deploy` from
+    `frontend/` succeeded; `fly status -a anki-ai-cards-frontend` shows the
+    one machine `started` with no failing checks; `fly logs` showed nothing
+    unusual; `curl -s -o /dev/null -w "%{http_code}" https://anki-ai-cards-
+    frontend.fly.dev/` returned `200`. (The deploy output's "not listening on
+    0.0.0.0:3000" warning is pre-existing Next.js/Fly noise unrelated to this
+    change — the machine still reached "started"/healthy and the site is
+    reachable, so not investigated further here.)
+- Learned:
+  - Dylan still needs to manually confirm in a browser (can't be checked
+    headlessly): the checkbox starts unchecked on a brand-new chat, its state
+    persists across a page reload (i.e. survives `GET /api/conversations`
+    re-fetch), and checking it makes the *next* card-creation request skip
+    the pending-draft/preview step and create the Anki note immediately (task
+    51-55's original, pre-instant-creation-toggle behavior).
+  - Task 57 (docs update for the whole preview-before-creation batch,
+    51-56) is next and should cover this checkbox's behavior in
+    `docs/manual_verification.md` too — didn't touch that doc in this task
+    since 57 depends on 51-56 as a whole, not just this one.
+
+## 2026-07-14 — Task 55: Frontend pending-card preview/create/discard UI
+- Did:
+  - `frontend/app/lib/types.ts`: extended `CardPayload` with `status:
+    "pending" | "created" | "discarded" | null` and `pending_card_id: number
+    | null` (nullable status to match `_payloads_for_message`'s backend
+    derivation, which can in theory leave `status` unset — see task 54's
+    `result_dict.get("status") or (...)` fallback — even though every test
+    case so far always yields `"pending"`/`"created"`); added a new
+    `PendingCardPreview` type (`front_html`/`back_html`/`css`) for the
+    preview endpoint's response shape.
+  - `frontend/app/components/CardPayloadCard.tsx`: rewritten to branch on
+    `payload.status` (defaulting to `"created"` when null/undefined, so
+    pre-existing "always instant-creation" conversations from before task 51
+    still render exactly as before). Three states:
+    - `"pending"`: header reads "Card draft" (no note-id badge); action row
+      is Preview / Create / Discard buttons instead of the old lone "Request
+      a change" button. Preview lazily fetches `GET
+      /api/pending-cards/{id}/preview` on first click (cached in local state
+      after that — toggling front/back or mobile/PC width just re-renders
+      the same fetched data, no refetch), and renders the result inside a
+      sandboxed `<iframe sandbox="" srcDoc={...}>` built as
+      `<style>${css}</style><div class="card">${front_html|back_html}</div>`
+      wrapped in a full `<html><head>...</head><body>...</body></html>`
+      shell (bare `<style>`+`<div>` as an `srcDoc` still parses in all
+      browsers, but wrapping is more correct/robust). Front/Back is a
+      2-button segmented toggle; mobile/PC is a second segmented toggle
+      (`Smartphone`/`Monitor` icons from `lucide-react`) that switches the
+      iframe's own `width` class (`w-[375px]` vs `w-[700px]`, both
+      `max-w-full`) so the note type's own CSS reflows, per the task's
+      explicit instruction not to swap CSS per device.
+    - `"created"`: unchanged from before this task — note-id badge, "Request
+      a change" button.
+    - `"discarded"`: fields still shown (draft framing preserved), action
+      row replaced with a plain "Draft discarded." line.
+    Create/Discard call their respective `POST /api/pending-cards/{id}/...`
+    endpoints and, on success, call a new `onUpdatePayload` prop with the
+    merged payload (`{...payload, status: "created", note_id}` /
+    `{...payload, status: "discarded"}`) rather than mutating anything
+    locally that the parent doesn't know about — matches the task's literal
+    instruction to "update this turn's payload in `turns` state."
+  - `frontend/app/components/ChatApp.tsx`: added `updateTurnPayload(turnIndex,
+    payloadIndex, updated)` (immutable `setTurns` map-of-maps, mirrors the
+    existing `setTurns` patterns already in this file) and wired it into
+    `CardPayloadCard`'s new `onUpdatePayload` prop as `(updated) =>
+    updateTurnPayload(index, payloadIndex, updated)` at the existing render
+    call site (the `turns.map`/`turn.payloads.map` loop already had both
+    indices in scope).
+- Verified: `cd frontend && npm run build && npm run lint` — both pass, no
+  new warnings. No backend changes in this task, so `uv run pytest` wasn't
+  re-run (task 55 is frontend-only per its own verify line, and task 54's
+  full suite already covers the endpoints this UI calls). Deploy-and-verify
+  convention (tasks 20-32's note) doesn't literally apply to this task range
+  (51-59 doesn't carry it forward explicitly), and this loop has no way to
+  exercise a real browser/iframe rendering path itself — **Dylan should
+  confirm in a browser**: proposing a card with instant-creation off (the
+  default) shows a "Card draft" with working Preview (front/back flip
+  renders real Anki template HTML/CSS via the sandboxed iframe, mobile/PC
+  toggle visibly reflows width), Create turns it into the normal "Card added
+  to Anki" display, and Discard on a separate draft in the same conversation
+  only removes that one (leaves other drafts/created cards untouched).
+- Learned:
+  - Known pre-existing gap (from task 54, still unresolved, not this task's
+    job to fix): `PendingCard` has no audio/picture columns yet (task 60),
+    so a picked audio clip/image never reaches the preview or the eventual
+    real Anki note while instant-creation is off — the preview UI built here
+    has no way to show media that was never stored. Task 60 needs to land
+    before any "does the preview show attached audio/images" manual check
+    would mean anything.
+  - Reload caveat worth flagging for Dylan (not a bug in this task, just a
+    consequence of how `_payloads_for_message` derives `status`): a page
+    reload re-derives each turn's payloads from the *stored tool_result
+    JSON* of the original `create_anki_note` call, which is frozen at
+    `"pending"` forever for a drafted card — clicking Create/Discard updates
+    the `PendingCard` row in the DB and this session's in-memory `turns`
+    state, but does not rewrite the historical tool_result, so a drafted
+    card that was later created or discarded via these buttons will show
+    back up as `"pending"` (with working but stale Create/Discard buttons)
+    after a reload. Out of this task's scope per its literal PRD text (which
+    only asks for local `turns`-state updates), but real enough that it's
+    worth Dylan knowing about — a future task could fix it by having
+    `_payloads_for_message` read the *current* `PendingCard.status` from the
+    DB by `pending_card_id` instead of trusting the frozen tool_result,
+    falling back to the stored value only when `pending_card_id` is absent
+    (the instant-creation path).
+  - `CardPayload.status` typed as nullable (`| null`) rather than the task
+    text's literal `"pending" | "created" | "discarded"` (no null) — matches
+    what the backend can actually send (see task 54's `_payloads_for_message`
+    fallback logic), and `CardPayloadCard` treats null the same as
+    `"created"` so old conversations predating this feature don't break.
+
+## 2026-07-14 — Task 54: wire `instant_creation` through `dispatch_tool`/`run_turn`, pending-card REST endpoints
+- Did:
+  - `backend/app/agent/tools.py`: `dispatch_tool` gains `instant_creation:
+    bool = False`. Extracted the audio/picture-resolution +
+    `ankiconnect.create_note` call that used to live inline in the
+    `create_anki_note` branch into a standalone `async def
+    _create_note_in_anki(deck_name, model_name, fields, tags, audio_input,
+    picture_input) -> int` — now the single place that actually talks to
+    AnkiConnect for note creation. The `create_anki_note` branch now
+    branches: `instant_creation=True` calls `_create_note_in_anki` and
+    returns `{"note_id": ...}` (byte-for-byte the same behavior/return shape
+    as before this task); `instant_creation=False` (new default) skips
+    AnkiConnect entirely and saves a `PendingCard(status="pending", ...)`
+    row instead, returning `{"pending_card_id": <id>, "status": "pending"}`.
+  - `backend/app/agent/core.py`: `run_turn` gains `instant_creation: bool =
+    False`, threaded through to every `dispatch_tool` call in the loop
+    (same call-context pattern as `get_access_token`).
+  - `backend/app/agent/prompts.py`: extended the `create_anki_note` bullet
+    to tell the agent to check the tool result's `status` and say "drafted
+    ... for him to preview" (never "created it in Anki") when it's
+    `"pending"`.
+  - `backend/app/api/chat.py`:
+    - `CreateConversationRequest`/`UpdateConversationRequest` gained
+      `instant_creation` (default `False` / optional respectively, same
+      pattern as `model`); `create_conversation`/`update_conversation`/
+      `_conversation_to_dict` wired accordingly.
+    - `post_chat` now reads `conversation.instant_creation` and passes it
+      into `agent_core.run_turn`.
+    - `_payloads_for_message`'s `create_anki_note` branch now reads
+      `status`/`pending_card_id` out of the tool result alongside the
+      existing `note_id`. Since `instant_creation=True`'s tool result is
+      still just `{"note_id": ...}` with no explicit `status` key (kept
+      that way deliberately — see task 54's PRD text, "behave exactly as
+      today"), the payload defaults `status` to `"created"` whenever
+      `note_id is not None` and there's no explicit `status` in the result;
+      the pending path always has an explicit `"pending"` status in its
+      result, so no ambiguity there.
+    - New `pending_cards_router` (`/api/pending-cards`, registered in
+      `app/main.py`): `POST /{id}/create` (404/409-guarded, calls
+      `agent_tools._create_note_in_anki` — reaching into tools.py's
+      leading-underscore helper directly, which is fine in Python and is
+      exactly what the task asked for: "so both ... call the same code, not
+      two copies" — sets `status="created"` + `note_id`), `POST
+      /{id}/discard` (404/409-guarded, sets `status="discarded"`), `GET
+      /{id}/preview` (404-guarded; calls task 52's
+      `get_model_templates`/`get_model_styling` for the pending card's
+      `model_name`, takes the *first* card template AnkiConnect returns —
+      works uniformly for both Cloze note types, which have exactly one
+      template, and multi-template note types like Basic (and reversed),
+      where the first is a reasonable representative preview — and feeds it
+      plus the pending card's stored `fields` into task 53's
+      `render_card`).
+  - Tests: `backend/tests/test_agent.py` — updated the four existing
+    `create_anki_note` dispatch tests (audio/picture attach + unknown-id
+    rejection) to pass `instant_creation=True` explicitly, since they assert
+    today's original AnkiConnect-calling behavior; added two new tests for
+    the `instant_creation=False` (default) drafting path (with tags, with no
+    tags); added a `run_turn` test confirming `instant_creation` is threaded
+    through to `dispatch_tool` by mocking `core.dispatch_tool` directly (same
+    style as the existing `test_run_turn_passes_access_token_to_tools`).
+    `backend/tests/test_chat.py` — updated the two existing card-payload
+    assertions (`test_post_chat_extracts_card_payload`,
+    `test_get_chat_history_returns_card_payload_alongside_the_turn_that_produced_it`)
+    to include the new `status`/`pending_card_id` keys; added
+    `test_post_chat_extracts_pending_card_payload`; added conversation
+    `instant_creation` create/update/default tests plus a
+    `post_chat`-passes-it-to-`run_turn` test; added a `_new_pending_card`
+    seeding helper and a full create/discard/preview endpoint test block
+    (auth, 404, 409, and the success path for each, including asserting the
+    AnkiConnect request body shape on create and the rendered
+    front_html/back_html/css on preview).
+  - Bookkeeping gotcha this task's own text flagged and I had to actually
+    fix: every one of the ~20 `async def run_turn(history, message, *,
+    get_access_token=None, model_id=None): ...` fake implementations already
+    in `test_chat.py` (used to monkeypatch `chat_module.agent_core.run_turn`)
+    needed an `instant_creation=False` parameter added, or `post_chat`
+    calling `agent_core.run_turn(..., instant_creation=...)` against them
+    would TypeError with "unexpected keyword argument". All ~20 shared
+    byte-identical signature text, so a single `sed -i 's/.../.../'` handled
+    the `run_turn`-named ones in one shot; missed the 4 separately-named
+    `failing_run_turn` fakes in the bug-report tests on the first pass (sed
+    pattern only matched the literal name `run_turn`) — caught by the first
+    full-suite run, fixed with a second identical `sed` targeting that name.
+    Any future task adding a new required kwarg to `agent_core.run_turn`'s
+    signature should expect the same ripple and grep for *all* fake
+    implementations, not just ones literally named `run_turn`.
+- Verified: `cd backend && uv run pytest tests/test_chat.py
+  tests/test_agent.py` → 70 + 42 passed. Full suite `uv run pytest` → 257
+  passed (238 pre-existing + 19 new), no regressions. No frontend changes in
+  this task, so `npm run build`/`npm run lint` wasn't run (task 54 is
+  backend-only per its own verify line).
+- Learned:
+  - **Real gap found and deliberately deferred, not silently fixed**: per
+    the task's exact literal instructions, `dispatch_tool`'s draft branch
+    only ever passes `deck_name`/`model_name`/`fields`/`tags` into the new
+    `PendingCard` row — `tool_input.get("audio")`/`tool_input.get("picture")`
+    are read by the *instant_creation=True* path but completely ignored
+    (never stored anywhere) on the draft path, since `PendingCard`'s schema
+    (locked in by task 51, "don't change `PendingCard`'s columns again
+    without checking those tasks' exact field-name expectations first") has
+    no audio/picture columns at all. So today: if Dylan picks audio or an
+    image for a card and instant-creation is off (the new default
+    behavior), that pick is silently dropped — the draft, its preview, and
+    the eventual real Anki note all end up with no media, no error anywhere.
+    Added PRD task 60 to fix this properly (additive migration adding
+    audio/picture columns to `PendingCard`, storing + replaying them through
+    `POST /api/pending-cards/{id}/create`) rather than reworking task 51's
+    already-implemented-and-tested schema mid-task-54, per this loop's "one
+    task only" rule and "add a new unchecked task rather than doing it now."
+    **Task 55 (frontend pending-card UI) should know about this gap too** —
+    Dylan picking audio/an image right before a draft-mode card creation
+    will look like it worked (no error) but silently lose the attachment
+    until task 60 lands.
+  - `agent_tools._create_note_in_anki` (leading underscore, defined in
+    `tools.py`) is called directly from `chat.py`'s pending-card `create`
+    endpoint — a private-looking cross-module call, but this is exactly the
+    "one code path, not two copies" the task asked for, and Python doesn't
+    actually enforce module-private access. Don't be tempted to "clean this
+    up" into a public name without checking whether that's actually wanted;
+    it's a deliberate choice recorded here.
+  - `_payloads_for_message`'s new `status` derivation
+    (`result_dict.get("status") or ("created" if note_id is not None else
+    None)`) exists because `instant_creation=True`'s dispatch_tool result
+    was deliberately kept as literally `{"note_id": ...}` (no `status` key)
+    to match the task's "behave exactly as today" instruction for that
+    path — don't "simplify" this by adding an explicit `"status": "created"`
+    key to that dispatch_tool branch without checking whether anything else
+    started relying on the current minimal shape.
+  - Confirmed via `grep -rn PendingCard backend/app` that task 51's rebuilt
+    schema (no audio/picture columns) really is exactly what's live — this
+    wasn't a stale assumption, it's the actual current state, which is why
+    task 60 is a real fix and not a misunderstanding.
+  - Tasks 55/56 (frontend preview/create/discard UI, instant-creation
+    checkbox) are next and consume this task's `CardPayload` shape
+    (`status`, `pending_card_id`) and the three `/api/pending-cards/*`
+    endpoints/`Conversation.instant_creation` field exactly as built here —
+    don't change either without checking those tasks' expectations first.
+
+## 2026-07-14 — Task 53: Anki template renderer
+- Did:
+  - New `backend/app/agent/anki_template.py`: `render_card(qfmt, afmt, css,
+    fields) -> {"front_html", "back_html", "css"}`, a pure function (no
+    AnkiConnect/DB dependency) implementing the specific template-syntax
+    subset the PRD scoped: `{{Field}}` substitution, `{{FrontSide}}` (afmt
+    only, substitutes the already-rendered front HTML), `{{#Field}}...{{/Field}}`
+    / `{{^Field}}...{{/Field}}` conditional sections (shown/hidden based on
+    whether `fields.get(name, "").strip()` is non-empty), and
+    `{{cloze:Field}}`.
+  - Cloze rendering always previews ordinal `c1` (`PREVIEW_CLOZE_ORDINAL`
+    module constant) regardless of how many distinct cloze numbers exist in
+    the note's fields, per the task's explicit scoping. The active ordinal's
+    deletion is wrapped in `<span class="cloze">` — masked to `[...]` (or
+    `[hint]`, parsed via `text, _, hint = inner.partition("::")`) on the front,
+    revealed on the back — while every other ordinal in the same field is
+    always shown revealed and *unstyled* (no span) on both sides, matching
+    real Anki's actual multi-cloze-in-one-field behavior as described in the
+    task.
+  - Implementation approach: four regex-based passes applied in a fixed
+    order — (1) conditional sections resolved via a fixed-point loop (`while
+    previous != result`) since sections aren't nested in Dylan's real
+    templates, so no real recursive-descent parser is needed, just repeated
+    single-pass substitution until stable; (2) `{{cloze:Field}}` resolved
+    per-field via `_render_cloze_deletion`; (3) a literal `{{FrontSide}}`
+    string replacement (only when `front_html` is passed in, i.e. only for
+    the afmt/back pass) — done *before* step 4's generic field regex so that
+    regex (which treats any unmatched `{{Name}}` as a field lookup defaulting
+    to `""`) doesn't blank out `{{FrontSide}}` before it can be substituted;
+    (4) generic `{{Field}}` substitution for whatever's left, with the regex
+    explicitly excluding names containing `:`/`#`/`^`/`/` so leftover
+    unsupported syntax like `{{hint:Field}}` or `{{type:Field}}` (out of
+    scope per the PRD) is left untouched in the output rather than
+    mis-substituted.
+  - "Best-effort, never raise" requirement: the whole render is wrapped in a
+    top-level `try/except Exception`, falling back to the raw, unprocessed
+    `qfmt`/`afmt` strings (with a literal `{{FrontSide}}` replacement still
+    applied to the fallback afmt) if anything unexpected throws — in
+    practice the regex-substitution approach doesn't raise on the malformed
+    inputs tried in tests (e.g. an unclosed `{{#Section}}` just fails to
+    match and is left as literal text, which is itself already
+    "best-effort"), so this fallback is currently a safety net rather than a
+    load-bearing code path — worth knowing if a future task changes the
+    parsing approach to something that *can* throw (e.g. a real parser) and
+    needs to keep this guarantee.
+  - New `backend/tests/test_anki_template.py` (10 tests): plain substitution,
+    conditional section shown/hidden for both `#`/`^` forms, `{{FrontSide}}`,
+    single-cloze front-mask/back-reveal, cloze with a hint, multi-cloze-in-
+    one-field (confirms only the previewed ordinal gets masked/spanned, the
+    other stays plain revealed text), and a malformed-template case
+    (unclosed section) confirming no exception is raised.
+- Verified: `cd backend && uv run pytest tests/test_anki_template.py -v` → 10
+  passed. Full suite: `cd backend && uv run pytest` → 238 passed (228
+  pre-existing + 10 new), no regressions.
+- Learned:
+  - No new dependency needed — plain `re` module regex is sufficient for the
+    supported syntax subset; didn't reach for a templating library (Mustache/
+    Jinja) since Anki's actual template syntax has enough Anki-specific
+    quirks (the cloze ordinal-masking behavior, `{{FrontSide}}`) that a
+    general-purpose template engine wouldn't map cleanly onto it anyway, and
+    the PRD explicitly scoped this as *not* a general-purpose engine (see
+    "Out of scope").
+  - This task was pure-function/no-integration — task 54 (next unblocked
+    task) is what actually wires `get_model_templates`/`get_model_styling`
+    (task 52) + this renderer into a real `GET
+    /api/pending-cards/{id}/preview` endpoint against a `PendingCard`'s
+    stored `fields`. Nothing here was tested against a real Anki
+    instance/AnkiConnect — that only becomes possible once task 54's
+    endpoint exists to call end-to-end.
+
+## 2026-07-14 — Task 52: AnkiConnect `modelTemplates`/`modelStyling` wrappers
+- Did:
+  - `backend/app/clients/ankiconnect.py`: added `get_model_templates(name) ->
+    dict[str, dict[str, str]]` (thin `invoke("modelTemplates", modelName=name)`
+    call, returns AnkiConnect's raw `{card_name: {"Front": qfmt, "Back":
+    afmt}}` result unchanged) and `get_model_styling(name) -> str` (calls
+    `invoke("modelStyling", modelName=name)`, then unwraps the `{"css": ...}`
+    result dict down to just the CSS string) — both follow the existing
+    `list_note_type_names`/`get_note_type_fields` style exactly (no extra
+    error handling beyond what `invoke()` already provides, since a non-null
+    `error` already raises `AnkiConnectError` there).
+  - Confirmed the exact response shapes against AnkiConnect's real
+    documented example responses via web search (the project's own GitHub
+    mirror 404s now — it moved to sourcehut, which also 404/502'd on direct
+    fetch — but a search surfaced the same example JSON multiple independent
+    sources agree on) before writing the code, per the task's "confirm the
+    exact shape" instruction: `modelTemplates` result is
+    `{card_name: {"Front": qfmt, "Back": afmt}}`; `modelStyling` result is
+    `{"css": <str>}`. Both matched what the PRD already assumed, so no
+    surprises here — this was still worth confirming since tasks 19/35 found
+    real API surprises the same way.
+  - `backend/tests/test_ankiconnect.py`: added
+    `test_get_model_templates`/`test_get_model_templates_raises_on_error`/
+    `test_get_model_styling`/`test_get_model_styling_raises_on_error`,
+    mirroring `test_get_note_type_fields`'s respx-mocked style and
+    `test_invoke_raises_on_error`'s error-surfacing pattern.
+- Verified: `cd backend && uv run pytest tests/test_ankiconnect.py` → 17
+  passed (13 pre-existing + 4 new). Full suite `uv run pytest` → 228 passed
+  (224 pre-existing + 4 new), no regressions.
+- Learned:
+  - `git.foosoft.net`/`git.sr.ht` (AnkiConnect's current upstream host) both
+    failed to fetch directly in this sandbox (404/502) — `WebSearch` still
+    found the same example request/response JSON via other indexed mirrors
+    (a Rust/Elixir/TS AnkiConnect client repo, an agent-skill registry
+    entry), so that's a viable fallback for confirming AnkiConnect API
+    shapes if a future task hits the same direct-fetch dead end.
+  - Task 53 (template renderer) and task 54 (wiring +
+    `GET /api/pending-cards/{id}/preview`) are next and will call these two
+    wrappers directly — their return shapes are locked in now, don't change
+    them without checking those tasks' expectations first.
+
+## 2026-07-14 — Task 51: rebuild `PendingCard` + add `Conversation.instant_creation`
+- Did:
+  - `backend/app/models.py`: replaced `PendingCard`'s old task-2 columns
+    (`japanese_cloze`/`furigana`/`english`/`note`) with the generic shape
+    tasks 52-56 need: `deck_name`, `model_name`, `fields` (JSON-serialized
+    `dict[str, str]`), `tags` (JSON-serialized `list[str] | None`), `status`
+    (`"pending"`/`"created"`/`"discarded"`), `note_id: int | None`,
+    `created_at`. Added `Conversation.instant_creation: bool = Field(default=False)`.
+  - Two new migrations in `init_db()`: `_rebuild_pendingcard_table_if_stale`
+    (checks `PRAGMA table_info(pendingcard)` for the new `deck_name` column;
+    if a `pendingcard` table exists without it, `DROP TABLE pendingcard`) and
+    `_add_conversation_instant_creation_column_if_missing` (plain additive
+    `ALTER TABLE ... ADD COLUMN instant_creation BOOLEAN NOT NULL DEFAULT 0`,
+    following the existing `_add_conversation_model_column_if_missing`
+    pattern exactly).
+  - **Ordering gotcha**: the pendingcard rebuild must run *before*
+    `SQLModel.metadata.create_all(engine)`, not after — `create_all()` only
+    creates whole *missing* tables, so if the stale table is dropped after
+    `create_all()` already ran and skipped it (since it existed), the new
+    schema never actually gets created and every real `PendingCard` write
+    would then fail. Reordered `init_db()` so
+    `_rebuild_pendingcard_table_if_stale` is the very first call, with a
+    comment explaining why, then `create_all()` recreates it fresh with the
+    new schema.
+  - Updated `backend/tests/test_models.py`: rewrote `test_pending_card_roundtrip`
+    for the new schema, added `test_pending_card_tags_default_to_none`,
+    `test_pending_card_status_can_be_set_to_created`,
+    `test_init_db_rebuilds_a_stale_pendingcard_table` (simulates the old
+    task-2 schema with a real row in it, confirms `init_db()` drops/recreates
+    rather than erroring, and confirms idempotency), plus
+    `test_conversation_instant_creation_defaults_to_false`/
+    `_can_be_set_explicitly`/`test_init_db_migrates_a_pre_instant_creation_database`
+    mirroring the existing `model`-column migration test's structure.
+- Verified: `cd backend && uv run pytest tests/test_models.py` → 18 passed.
+  Also ran the full suite (`uv run pytest`) to check for regressions from
+  changing `PendingCard`'s shape — 224 passed; confirmed via
+  `grep -rn "PendingCard\|japanese_cloze\|\.furigana\b" app/` that no other
+  app code referenced the old columns (only `test_models.py` did, as PRD's
+  task description predicted).
+- Learned:
+  - This is the first migration in this file that *drops* a table rather
+    than additively altering it — safe here specifically because
+    `PendingCard` was confirmed-unused scaffolding (no production writes to
+    the old shape ever happened), unlike every other table in this file.
+    Don't treat this drop-and-recreate pattern as generally safe for other
+    tables without the same "never actually written to" confirmation.
+  - Tasks 52-56 (AnkiConnect template wrappers, the template renderer, wiring
+    `instant_creation` through `dispatch_tool`/`run_turn` + pending-card REST
+    endpoints, and the frontend preview/create/discard UI) are next and
+    depend on this table shape — don't change `PendingCard`'s columns again
+    without checking those tasks' exact field-name expectations first.
+
 ## 2026-07-12 — Task 47: docs — system prompt + verification checklist for the new tools
 - Did:
   - `backend/app/agent/prompts.py`'s `SYSTEM_PROMPT`: added three new

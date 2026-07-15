@@ -70,6 +70,66 @@ async def test_get_note_type_fields():
 
 
 @respx.mock
+async def test_get_model_templates():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(
+            200,
+            json={
+                "result": {
+                    "Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}<br>{{Extra}}"}
+                },
+                "error": None,
+            },
+        )
+    )
+
+    result = await ankiconnect.get_model_templates("Cloze")
+
+    assert result == {
+        "Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}<br>{{Extra}}"}
+    }
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["action"] == "modelTemplates"
+    assert sent_body["params"] == {"modelName": "Cloze"}
+
+
+@respx.mock
+async def test_get_model_templates_raises_on_error():
+    respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": None, "error": "model was not found"})
+    )
+
+    with pytest.raises(ankiconnect.AnkiConnectError, match="model was not found"):
+        await ankiconnect.get_model_templates("Nonexistent")
+
+
+@respx.mock
+async def test_get_model_styling():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(
+            200, json={"result": {"css": ".card { font-family: arial; }"}, "error": None}
+        )
+    )
+
+    result = await ankiconnect.get_model_styling("Cloze")
+
+    assert result == ".card { font-family: arial; }"
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["action"] == "modelStyling"
+    assert sent_body["params"] == {"modelName": "Cloze"}
+
+
+@respx.mock
+async def test_get_model_styling_raises_on_error():
+    respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": None, "error": "model was not found"})
+    )
+
+    with pytest.raises(ankiconnect.AnkiConnectError, match="model was not found"):
+        await ankiconnect.get_model_styling("Nonexistent")
+
+
+@respx.mock
 async def test_create_note():
     route = respx.post(ANKICONNECT_URL).mock(
         return_value=Response(200, json={"result": 12345, "error": None})

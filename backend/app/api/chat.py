@@ -32,10 +32,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.agent import anki_template
 from app.agent import core as agent_core
+from app.agent import tools as agent_tools
 from app.agent.model_registry import AVAILABLE_MODELS, DEFAULT_MODEL_ID, get_model
 from app.auth import require_auth
-from app.clients import google_docs
+from app.clients import ankiconnect, google_docs
 from app.models import (
     AudioClip,
     BugReport,
@@ -43,12 +45,15 @@ from app.models import (
     ConversationMessage,
     ImageAsset,
     OAuthToken,
+    PendingCard,
+    UserSettings,
     get_engine,
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 conversations_router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 models_router = APIRouter(prefix="/api/models", tags=["models"])
+settings_router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 TITLE_MAX_LENGTH = 60
 
@@ -71,12 +76,23 @@ class ChatResponse(BaseModel):
 
 
 class CreateConversationRequest(BaseModel):
-    model: str = DEFAULT_MODEL_ID
+    # None means "use the resolved default" (Dylan's stored default_model_id
+    # if set, else DEFAULT_MODEL_ID) — see create_conversation. Defaulting
+    # this field to DEFAULT_MODEL_ID directly would shadow a DB-stored
+    # default at the Pydantic level, since an explicit body model always
+    # wins over the stored one.
+    model: str | None = None
+    instant_creation: bool = False
+
+
+class UpdateDefaultModelRequest(BaseModel):
+    model_id: str
 
 
 class UpdateConversationRequest(BaseModel):
     model: str | None = None
     title: str | None = None
+    instant_creation: bool | None = None
 
 
 def _conversation_to_dict(conversation: Conversation) -> dict:
@@ -84,6 +100,7 @@ def _conversation_to_dict(conversation: Conversation) -> dict:
         "id": conversation.id,
         "title": conversation.title,
         "model": conversation.model,
+        "instant_creation": conversation.instant_creation,
         "created_at": conversation.created_at,
         "updated_at": conversation.updated_at,
     }
@@ -101,6 +118,18 @@ def _get_conversation_or_404(session: Session, conversation_id: int) -> Conversa
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
+
+
+def _get_user_settings(session: Session) -> UserSettings:
+    """Get-or-create the single settings row (id=1) — this app is
+    single-user, so there's only ever one."""
+    settings = session.get(UserSettings, 1)
+    if settings is None:
+        settings = UserSettings(id=1)
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
+    return settings
 
 
 def _content_block_to_dict(block) -> dict:
@@ -242,7 +271,7 @@ def _payloads_for_message(
             continue
         result = tool_results.get(block["id"])
         tool_input = block["input"]
-        if block["name"] == "generate_audio":
+        if block["name"] in ("generate_audio", "search_word_pronunciations"):
             clip_ids = result.get("clip_ids", []) if isinstance(result, dict) else []
             options = [
                 base64.b64encode(clips_by_id[cid].audio).decode("ascii")
@@ -252,7 +281,9 @@ def _payloads_for_message(
             payloads.append(
                 {
                     "type": "audio_options",
-                    "text": tool_input.get("text"),
+                    "text": tool_input.get("text")
+                    if block["name"] == "generate_audio"
+                    else tool_input.get("word"),
                     "clip_ids": clip_ids,
                     "options": options,
                 }
@@ -273,7 +304,25 @@ def _payloads_for_message(
                     "content_types": [image.content_type for image in found],
                 }
             )
+        elif block["name"] == "load_workflow_spec":
+            # No payload when the loaded name wasn't found (result is None) —
+            # nothing to surface to Dylan; the agent's own text reply already
+            # has to explain a miss.
+            if isinstance(result, dict):
+                payloads.append(
+                    {
+                        "type": "workflow_loaded",
+                        "name": result.get("name"),
+                        "spec": result.get("spec"),
+                    }
+                )
         elif block["name"] == "create_anki_note":
+            result_dict = result if isinstance(result, dict) else {}
+            note_id = result_dict.get("note_id")
+            # instant_creation=True's tool result is just {"note_id": ...} —
+            # no explicit "status" key (see dispatch_tool) — so a note_id
+            # with no status means "created" here.
+            status = result_dict.get("status") or ("created" if note_id is not None else None)
             payloads.append(
                 {
                     "type": "card",
@@ -281,9 +330,9 @@ def _payloads_for_message(
                     "model_name": tool_input.get("model_name"),
                     "fields": tool_input.get("fields"),
                     "tags": tool_input.get("tags"),
-                    "note_id": (result or {}).get("note_id")
-                    if isinstance(result, dict)
-                    else None,
+                    "note_id": note_id,
+                    "status": status,
+                    "pending_card_id": result_dict.get("pending_card_id"),
                 }
             )
     return payloads
@@ -451,6 +500,7 @@ async def post_chat(body: ChatRequest, email: str = Depends(require_auth)) -> Ch
             effective_message,
             get_access_token=functools.partial(_get_access_token, email),
             model_id=conversation.model,
+            instant_creation=conversation.instant_creation,
         )
     except Exception as exc:
         detail = f"{traceback.format_exc()}\n\nUser message: {body.message}"
@@ -555,14 +605,17 @@ async def create_conversation(
     body: CreateConversationRequest = CreateConversationRequest(),
     email: str = Depends(require_auth),
 ) -> dict:
-    try:
-        get_model(body.model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     engine = get_engine()
     with Session(engine) as session:
-        conversation = Conversation(model=body.model)
+        resolved_model = (
+            body.model or _get_user_settings(session).default_model_id or DEFAULT_MODEL_ID
+        )
+        try:
+            get_model(resolved_model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        conversation = Conversation(model=resolved_model, instant_creation=body.instant_creation)
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
@@ -598,6 +651,8 @@ async def update_conversation(
             conversation.model = body.model
         if body.title is not None:
             conversation.title = body.title
+        if body.instant_creation is not None:
+            conversation.instant_creation = body.instant_creation
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
@@ -639,6 +694,34 @@ async def list_models(email: str = Depends(require_auth)) -> list[dict]:
     ]
 
 
+@settings_router.get("")
+async def get_settings(email: str = Depends(require_auth)) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        settings = _get_user_settings(session)
+    return {"default_model_id": settings.default_model_id}
+
+
+@settings_router.put("/default-model")
+async def set_default_model(
+    body: UpdateDefaultModelRequest, email: str = Depends(require_auth)
+) -> dict:
+    try:
+        get_model(body.model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    engine = get_engine()
+    with Session(engine) as session:
+        settings = _get_user_settings(session)
+        settings.default_model_id = body.model_id
+        settings.updated_at = datetime.now(timezone.utc)
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
+    return {"default_model_id": settings.default_model_id}
+
+
 bug_reports_router = APIRouter(prefix="/api/bug-reports", tags=["bug-reports"])
 
 
@@ -667,3 +750,99 @@ async def get_bug_report(bug_report_id: int, email: str = Depends(require_auth))
         "message": bug_report.message,
         "detail": bug_report.detail,
     }
+
+
+pending_cards_router = APIRouter(prefix="/api/pending-cards", tags=["pending-cards"])
+
+
+def _get_pending_card_or_404(session: Session, pending_card_id: int) -> PendingCard:
+    pending_card = session.get(PendingCard, pending_card_id)
+    if pending_card is None:
+        raise HTTPException(status_code=404, detail="Pending card not found")
+    return pending_card
+
+
+@pending_cards_router.post("/{pending_card_id}/create")
+async def create_pending_card(
+    pending_card_id: int, email: str = Depends(require_auth)
+) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        pending_card = _get_pending_card_or_404(session, pending_card_id)
+        if pending_card.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Pending card is already {pending_card.status}",
+            )
+        note_id = await agent_tools._create_note_in_anki(
+            pending_card.deck_name,
+            pending_card.model_name,
+            json.loads(pending_card.fields),
+            json.loads(pending_card.tags) if pending_card.tags else None,
+            json.loads(pending_card.audio) if pending_card.audio else None,
+            json.loads(pending_card.picture) if pending_card.picture else None,
+        )
+        pending_card.status = "created"
+        pending_card.note_id = note_id
+        session.add(pending_card)
+        session.commit()
+    return {"note_id": note_id}
+
+
+@pending_cards_router.post("/{pending_card_id}/discard")
+async def discard_pending_card(
+    pending_card_id: int, email: str = Depends(require_auth)
+) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        pending_card = _get_pending_card_or_404(session, pending_card_id)
+        if pending_card.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Pending card is already {pending_card.status}",
+            )
+        pending_card.status = "discarded"
+        session.add(pending_card)
+        session.commit()
+    return {"status": "discarded"}
+
+
+@pending_cards_router.get("/{pending_card_id}/preview")
+async def preview_pending_card(
+    pending_card_id: int, email: str = Depends(require_auth)
+) -> dict:
+    engine = get_engine()
+    with Session(engine) as session:
+        pending_card = _get_pending_card_or_404(session, pending_card_id)
+        model_name = pending_card.model_name
+        fields = json.loads(pending_card.fields)
+        # The template renderer (app.agent.anki_template) only substitutes
+        # field text — it has no notion of media — so a picked audio
+        # clip/image doesn't show up in front_html/back_html at all. Rather
+        # than leave that a silent gap, surface the raw picked media
+        # alongside the rendered HTML so a frontend can show a player/
+        # thumbnail next to the preview if it chooses to.
+        audio_input = json.loads(pending_card.audio) if pending_card.audio else None
+        picture_input = json.loads(pending_card.picture) if pending_card.picture else None
+        audio_clip = (
+            session.get(AudioClip, audio_input["clip_id"]) if audio_input else None
+        )
+        image_asset = (
+            session.get(ImageAsset, picture_input["image_id"]) if picture_input else None
+        )
+
+    templates = await ankiconnect.get_model_templates(model_name)
+    css = await ankiconnect.get_model_styling(model_name)
+    # Cloze note types have exactly one card template; other note types may
+    # define more than one (e.g. Basic (and reversed)) — the first is enough
+    # for a representative preview, same "preview one representative card"
+    # scoping the template renderer itself uses for cloze ordinals.
+    card_name = next(iter(templates))
+    template = templates[card_name]
+    result = anki_template.render_card(template["Front"], template["Back"], css, fields)
+    if audio_clip is not None:
+        result["audio_base64"] = base64.b64encode(audio_clip.audio).decode("ascii")
+    if image_asset is not None:
+        result["picture_base64"] = base64.b64encode(image_asset.data).decode("ascii")
+        result["picture_content_type"] = image_asset.content_type
+    return result

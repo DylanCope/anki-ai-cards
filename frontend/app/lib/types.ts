@@ -4,6 +4,7 @@ export interface Conversation {
   id: number;
   title: string | null;
   model: string;
+  instant_creation: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -40,6 +41,14 @@ export interface CardPayload {
   fields: Record<string, string> | null;
   tags: string[] | null;
   note_id: number | null;
+  status: "pending" | "created" | "discarded" | null;
+  pending_card_id: number | null;
+}
+
+export interface PendingCardPreview {
+  front_html: string;
+  back_html: string;
+  css: string;
 }
 
 export interface ImageOptionsPayload {
@@ -57,11 +66,18 @@ export interface ImageAttachmentPayload {
   content_type: string;
 }
 
+export interface WorkflowLoadedPayload {
+  type: "workflow_loaded";
+  name: string | null;
+  spec: string | null;
+}
+
 export type ChatPayload =
   | AudioOptionsPayload
   | CardPayload
   | ImageOptionsPayload
-  | ImageAttachmentPayload;
+  | ImageAttachmentPayload
+  | WorkflowLoadedPayload;
 
 export interface ChatTurn {
   message: ChatHistoryEntry;
@@ -88,4 +104,8 @@ export interface WorkflowSpec {
   spec: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface UserSettings {
+  default_model_id: string | null;
 }
