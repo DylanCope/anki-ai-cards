@@ -207,11 +207,11 @@ One-time AnkiWeb login via VNC, after that first deploy:
 
 Config lives at `deploy/devagent/` — a Dockerfile that installs Claude Code
 CLI (npm), Python/`uv`, git, `flyctl`, and `tmux` on top of a Node base image,
-plus an `entrypoint.sh` that supervises `claude --remote-control` against a
-persistent checkout of this repo. The point: Dylan can pair to this session
-from browser/phone (same Remote Control mechanism as any Claude Code session)
-without needing his own laptop running. Like the other three apps, deploy
-from *inside* `deploy/devagent/`, not the repo root with `--config`.
+plus an `entrypoint.sh` that supervises `claude remote-control --continue`
+against a persistent checkout of this repo. The point: Dylan can pair to this
+session from browser/phone (same Remote Control mechanism as any Claude Code
+session) without needing his own laptop running. Like the other three apps,
+deploy from *inside* `deploy/devagent/`, not the repo root with `--config`.
 
 **Remote Control has a hard constraint that shapes this whole setup: it
 requires interactive subscription OAuth login (`/login` via browser) and does
