@@ -411,7 +411,7 @@ async def _create_note_in_anki(
             "filename": f"anki-ai-cards-{image.id}{extension}",
             "fields": picture_input["fields"],
         }
-    return await ankiconnect.create_note(
+    note_id = await ankiconnect.create_note(
         deck_name=deck_name,
         model_name=model_name,
         fields=fields,
@@ -419,6 +419,17 @@ async def _create_note_in_anki(
         audio=audio,
         picture=picture,
     )
+    try:
+        await ankiconnect.sync()
+    except Exception:
+        # The note is already created at this point — don't fail the whole
+        # call over a sync hiccup, since that would leave the PendingCard
+        # stuck "pending" (or the chat turn reporting an error) even though
+        # the note exists, and a retry would then hit a duplicate-note error
+        # from AnkiConnect. Anki's own periodic/on-open sync (or a manual
+        # sync_anki call) will pick up the note later regardless.
+        pass
+    return note_id
 
 
 async def dispatch_tool(

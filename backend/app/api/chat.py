@@ -774,14 +774,38 @@ async def create_pending_card(
                 status_code=409,
                 detail=f"Pending card is already {pending_card.status}",
             )
-        note_id = await agent_tools._create_note_in_anki(
-            pending_card.deck_name,
-            pending_card.model_name,
-            json.loads(pending_card.fields),
-            json.loads(pending_card.tags) if pending_card.tags else None,
-            json.loads(pending_card.audio) if pending_card.audio else None,
-            json.loads(pending_card.picture) if pending_card.picture else None,
-        )
+        try:
+            note_id = await agent_tools._create_note_in_anki(
+                pending_card.deck_name,
+                pending_card.model_name,
+                json.loads(pending_card.fields),
+                json.loads(pending_card.tags) if pending_card.tags else None,
+                json.loads(pending_card.audio) if pending_card.audio else None,
+                json.loads(pending_card.picture) if pending_card.picture else None,
+            )
+        except Exception as exc:
+            # Same diagnosability pattern as POST /api/chat: an AnkiConnect
+            # failure here (duplicate note, unknown deck/model/field, the
+            # headless container mid-crash-restart, ...) used to propagate as
+            # a bare unhandled 500 — no BugReport filed, no detail reaching
+            # the frontend beyond "Could not create the card in Anki.",
+            # leaving Dylan unable to tell a duplicate-note rejection from
+            # AnkiConnect being unreachable. The PendingCard row itself is
+            # untouched here (still "pending"), so retrying after fixing the
+            # underlying cause just works.
+            detail = f"{traceback.format_exc()}\n\nPending card id: {pending_card_id}"
+            with Session(engine) as bug_session:
+                bug_report = BugReport(message=str(exc), detail=detail)
+                bug_session.add(bug_report)
+                bug_session.commit()
+                bug_session.refresh(bug_report)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "Could not create the card in Anki.",
+                    "bug_report_id": bug_report.id,
+                },
+            ) from exc
         pending_card.status = "created"
         pending_card.note_id = note_id
         session.add(pending_card)

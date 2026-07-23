@@ -71,11 +71,25 @@ export default function CardPayloadCard({
       const res = await fetch(`/api/pending-cards/${payload.pending_card_id}/create`, {
         method: "POST",
       });
-      if (!res.ok) throw new Error(`Create failed (${res.status})`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const detail = body?.detail;
+        const bugReportId =
+          detail && typeof detail === "object" ? detail.bug_report_id : undefined;
+        const message =
+          detail && typeof detail === "object" && typeof detail.error === "string"
+            ? detail.error
+            : `Create failed (${res.status})`;
+        throw new Error(
+          bugReportId != null ? `${message} (bug report #${bugReportId} filed)` : message
+        );
+      }
       const data = (await res.json()) as { note_id: number };
       onUpdatePayload({ ...payload, status: "created", note_id: data.note_id });
-    } catch {
-      setActionError("Could not create the card in Anki.");
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Could not create the card in Anki."
+      );
     } finally {
       setCreating(false);
     }

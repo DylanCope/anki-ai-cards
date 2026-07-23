@@ -1591,7 +1591,9 @@ def test_create_pending_card_calls_ankiconnect_and_marks_created(monkeypatch):
     pending_card_id = _new_pending_card()
 
     create_mock = AsyncMock(return_value=99)
+    sync_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", create_mock)
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "sync", sync_mock)
 
     response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
 
@@ -1605,6 +1607,30 @@ def test_create_pending_card_calls_ankiconnect_and_marks_created(monkeypatch):
         audio=None,
         picture=None,
     )
+    sync_mock.assert_awaited_once()
+
+    with Session(get_engine()) as session:
+        pending = session.get(PendingCard, pending_card_id)
+    assert pending.status == "created"
+    assert pending.note_id == 99
+
+
+def test_create_pending_card_sync_failure_does_not_fail_creation(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card()
+
+    create_mock = AsyncMock(return_value=99)
+
+    async def failing_sync():
+        raise chat_module.agent_tools.ankiconnect.AnkiConnectError("sync failed")
+
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", create_mock)
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "sync", failing_sync)
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 200
+    assert response.json() == {"note_id": 99}
 
     with Session(get_engine()) as session:
         pending = session.get(PendingCard, pending_card_id)
@@ -1631,6 +1657,7 @@ def test_create_pending_card_attaches_stored_audio_and_picture(monkeypatch):
 
     create_mock = AsyncMock(return_value=99)
     monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", create_mock)
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "sync", AsyncMock(return_value=None))
 
     response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
 
@@ -1651,6 +1678,37 @@ def test_create_pending_card_attaches_stored_audio_and_picture(monkeypatch):
             "fields": ["Picture"],
         },
     )
+
+
+def test_create_pending_card_files_bug_report_on_ankiconnect_failure(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card()
+
+    async def failing_create_note(**kwargs):
+        raise chat_module.agent_tools.ankiconnect.AnkiConnectError(
+            "AnkiConnect action 'addNote' failed: cannot create note because it is a duplicate"
+        )
+
+    monkeypatch.setattr(chat_module.agent_tools.ankiconnect, "create_note", failing_create_note)
+
+    response = _authed_client().post(f"/api/pending-cards/{pending_card_id}/create")
+
+    assert response.status_code == 500
+    body = response.json()["detail"]
+    assert body["error"] == "Could not create the card in Anki."
+    assert "bug_report_id" in body
+
+    with Session(get_engine()) as session:
+        reports = session.exec(select(BugReport)).all()
+        pending = session.get(PendingCard, pending_card_id)
+    assert len(reports) == 1
+    assert reports[0].id == body["bug_report_id"]
+    assert "duplicate" in reports[0].message
+    assert str(pending_card_id) in reports[0].detail
+    # Left retryable — not marked created, no note_id, since the AnkiConnect
+    # call itself never actually succeeded.
+    assert pending.status == "pending"
+    assert pending.note_id is None
 
 
 def test_create_pending_card_409s_when_not_pending(monkeypatch):

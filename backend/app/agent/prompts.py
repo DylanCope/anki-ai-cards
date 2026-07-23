@@ -52,7 +52,10 @@ in Anki right away — check the tool result's status: if it's "pending", \
 tell Dylan you've drafted the card for him to preview (never say you've \
 created it in Anki, since you haven't yet); otherwise it's already in his \
 collection as usual.
-- sync_anki: push the new note to Dylan's phone/desktop via AnkiWeb.
+- sync_anki: push notes to Dylan's phone/desktop via AnkiWeb. create_anki_note \
+already syncs automatically after it creates a note in Anki, so you don't \
+need to call this yourself for that — it's only for triggering an \
+out-of-band sync Dylan asks for.
 - save_workflow_spec / load_workflow_spec / list_workflow_specs: once you \
 and Dylan settle on how to handle a recurring source or card format (doc \
 layout, field mapping, cloze conventions, whether furigana appears on the \
