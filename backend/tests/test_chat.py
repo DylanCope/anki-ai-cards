@@ -1775,6 +1775,50 @@ def test_preview_pending_card_inlines_picked_audio_and_picture_into_the_card(mon
     assert f'<img src="{picture_data_uri}">' in body["back_html"]
 
 
+def test_preview_pending_card_tolerates_bare_object_audio_and_picture(monkeypatch):
+    """Regression test: a pending card whose audio/picture was stored as a
+    bare object instead of a one-element array (the model occasionally sends
+    it that way; see agent.tools._as_entry_list) must still preview instead
+    of 500ing while iterating over the object's keys as if they were
+    entries."""
+    _seed_token()
+    with Session(get_engine()) as session:
+        clip = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
+        session.add(clip)
+        image = ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(clip)
+        session.refresh(image)
+        clip_id, image_id = clip.id, image.id
+
+    pending_card_id = _new_pending_card(
+        tags=None,
+        audio={"clip_id": clip_id, "fields": ["Text Audio"]},
+        picture={"image_id": image_id, "fields": ["Picture"]},
+    )
+
+    templates_mock = AsyncMock(
+        return_value={
+            "Cloze": {
+                "Front": "{{cloze:Text}}",
+                "Back": "{{cloze:Text}}<br>{{Text Audio}}<br>{{Picture}}",
+            }
+        }
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    audio_data_uri = f"data:audio/mpeg;base64,{base64.b64encode(b'aaa').decode('ascii')}"
+    picture_data_uri = f"data:image/png;base64,{base64.b64encode(b'pngbytes').decode('ascii')}"
+    assert f'<audio controls preload="none" src="{audio_data_uri}"></audio>' in response.json()["back_html"]
+    assert f'<img src="{picture_data_uri}">' in response.json()["back_html"]
+
+
 def test_preview_pending_card_inlines_multiple_audio_and_picture_attachments(monkeypatch):
     _seed_token()
     with Session(get_engine()) as session:

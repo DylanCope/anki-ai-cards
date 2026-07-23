@@ -387,6 +387,17 @@ TOOL_SCHEMAS: list[dict] = [
 ]
 
 
+def _as_entry_list(value: list[dict] | dict | None) -> list[dict] | None:
+    """The model occasionally sends a single audio/picture attachment as a
+    bare object instead of a one-element array, even though the tool schema
+    declares an array — Anthropic tool inputs aren't schema-validated
+    server-side, so this shape slips through as-is. Normalize it here rather
+    than at every call site."""
+    if isinstance(value, dict):
+        return [value]
+    return value
+
+
 async def _create_note_in_anki(
     deck_name: str,
     model_name: str,
@@ -402,6 +413,8 @@ async def _create_note_in_anki(
     (`app.api.chat`), so there's exactly one place that talks to AnkiConnect
     for note creation."""
 
+    audio_input = _as_entry_list(audio_input)
+    picture_input = _as_entry_list(picture_input)
     audio = None
     if audio_input:
         engine = get_engine()
@@ -523,8 +536,8 @@ async def dispatch_tool(
         # create (app.api.chat) can attach it once Dylan confirms the draft —
         # see task 60's PROGRESS.md entry for why this wasn't the case
         # originally.
-        audio_input = tool_input.get("audio")
-        picture_input = tool_input.get("picture")
+        audio_input = _as_entry_list(tool_input.get("audio"))
+        picture_input = _as_entry_list(tool_input.get("picture"))
         engine = get_engine()
         with Session(engine) as session:
             pending = PendingCard(

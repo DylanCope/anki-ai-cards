@@ -463,6 +463,35 @@ async def test_dispatch_create_anki_note_drafts_a_pending_card_with_picked_media
 
 
 @pytest.mark.asyncio
+async def test_dispatch_create_anki_note_normalizes_bare_object_audio_and_picture(
+    db, monkeypatch
+):
+    """The model sometimes sends a single attachment as a bare object instead
+    of a one-element array (schema declares an array, but tool inputs aren't
+    server-side validated) — this must be normalized rather than stored as-is
+    and blow up downstream (preview/create) trying to iterate over it."""
+    create_mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", create_mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze+",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "audio": {"clip_id": 5, "fields": ["Text Audio"]},
+            "picture": {"image_id": 9, "fields": ["Picture"]},
+        },
+        instant_creation=False,
+    )
+
+    with Session(tools.get_engine()) as session:
+        pending = session.get(tools.PendingCard, result["pending_card_id"])
+    assert json.loads(pending.audio) == [{"clip_id": 5, "fields": ["Text Audio"]}]
+    assert json.loads(pending.picture) == [{"image_id": 9, "fields": ["Picture"]}]
+
+
+@pytest.mark.asyncio
 async def test_dispatch_create_anki_note_drafts_a_pending_card_with_no_picked_media(
     db, monkeypatch
 ):
@@ -499,6 +528,46 @@ async def test_dispatch_create_anki_note_attaches_picked_audio_clip(db, monkeypa
             "model_name": "Cloze+",
             "fields": {"Text": "{{c1::食べる}}"},
             "audio": [{"clip_id": picked_clip_id, "fields": ["Text Audio"]}],
+        },
+        instant_creation=True,
+    )
+
+    create_mock.assert_awaited_once_with(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        tags=None,
+        audio=[
+            {
+                "data": base64.b64encode(b"bbb").decode("ascii"),
+                "filename": f"anki-ai-cards-{picked_clip_id}.mp3",
+                "fields": ["Text Audio"],
+            }
+        ],
+        picture=None,
+    )
+    assert result == {"note_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_instant_creation_normalizes_bare_object_audio(
+    db, monkeypatch
+):
+    generate_mock = AsyncMock(return_value=[b"aaa", b"bbb"])
+    monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", generate_mock)
+    generated = await tools.dispatch_tool("generate_audio", {"text": "食べる"})
+    picked_clip_id = generated["clip_ids"][1]
+
+    create_mock = AsyncMock(return_value=12345)
+    monkeypatch.setattr(tools.ankiconnect, "create_note", create_mock)
+
+    result = await tools.dispatch_tool(
+        "create_anki_note",
+        {
+            "deck_name": "Japanese",
+            "model_name": "Cloze+",
+            "fields": {"Text": "{{c1::食べる}}"},
+            "audio": {"clip_id": picked_clip_id, "fields": ["Text Audio"]},
         },
         instant_creation=True,
     )

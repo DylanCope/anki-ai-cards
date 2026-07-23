@@ -831,8 +831,12 @@ async def preview_pending_card(
         # inline in the card exactly where the real created note will show
         # it, instead of as a separate bolted-on player/thumbnail below the
         # preview (the previous, weaker approach).
-        audio_entries = json.loads(pending_card.audio) if pending_card.audio else []
-        picture_entries = json.loads(pending_card.picture) if pending_card.picture else []
+        audio_entries = agent_tools._as_entry_list(
+            json.loads(pending_card.audio) if pending_card.audio else []
+        )
+        picture_entries = agent_tools._as_entry_list(
+            json.loads(pending_card.picture) if pending_card.picture else []
+        )
         for entry in audio_entries:
             clip = session.get(AudioClip, entry["clip_id"])
             if clip is None:
