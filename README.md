@@ -424,6 +424,37 @@ forever and its logs show `ECONNREFUSED 127.0.0.1:8000`, that means it was
 built without the `BACKEND_URL` build arg (e.g. an image built before this
 fix) — `fly deploy` again to rebuild with it.
 
+### 4. Dev-agent (optional)
+
+Persistent Claude Code session, paired to browser/phone via Remote Control,
+running against a checkout of this repo — so you can drive development
+without your own laptop running. Same rule — run from inside
+`deploy/devagent/`:
+
+```bash
+cd deploy/devagent
+fly launch --no-deploy   # first time only, creates the app
+fly volumes create devagent_data --region iad --size 5 -a anki-ai-cards-devagent
+fly secrets set -a anki-ai-cards-devagent \
+  GITHUB_TOKEN=...   # fine-grained PAT scoped to just this repo, contents:write
+fly secrets set -a anki-ai-cards-devagent \
+  FLY_API_TOKEN=...  # ideally scoped to just the anki/backend/frontend apps
+fly deploy
+```
+
+**Remote Control requires an interactive OAuth login and does not work with
+`ANTHROPIC_API_KEY`** — see AGENTS.md's "Dev-agent deployment" section for
+why. After deploying, complete it (and repeat every few days when it expires):
+
+```bash
+fly ssh console -a anki-ai-cards-devagent
+tmux attach -t devagent   # shows the login URL; Ctrl-b d to detach without killing it
+```
+
+Once paired, this session shows up in claude.ai/code/the mobile app like any
+other. Unlike the other three apps, there's no `[http_service]` here — Remote
+Control is outbound-only, nothing needs to reach this app over the network.
+
 ### After deploying
 
 Run through [`docs/manual_verification.md`](docs/manual_verification.md) —
