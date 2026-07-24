@@ -36,6 +36,25 @@ _IMAGE_MAGIC_BYTES: list[tuple[bytes, str]] = [
 ]
 
 
+def _validate_media_input(kind: str, value: dict | None, id_key: str) -> None:
+    """The model occasionally sends `audio`/`picture` as something other than
+    the object the tool schema declares (e.g. wrapping it in a list) — tool
+    schemas aren't enforced server-side. Catching that here, right where the
+    model's input is read, turns it into an immediate is_error tool result
+    the model can see and self-correct from (see app.agent.core's dispatch_tool
+    try/except), instead of the bad shape getting persisted onto a PendingCard
+    and only surfacing as an opaque AnkiConnect failure much later when Dylan
+    clicks "create" — see bug report #30."""
+
+    if value is None:
+        return
+    if not isinstance(value, dict) or id_key not in value or "fields" not in value:
+        raise ValueError(
+            f"{kind} must be an object with '{id_key}' and 'fields' keys, "
+            f"got {value!r}"
+        )
+
+
 def _guess_image_content_type(data: bytes) -> str:
     for magic, content_type in _IMAGE_MAGIC_BYTES:
         if data.startswith(magic):
@@ -494,6 +513,8 @@ async def dispatch_tool(
         model_name = tool_input["model_name"]
         fields = tool_input["fields"]
         tags = tool_input.get("tags")
+        _validate_media_input("audio", tool_input.get("audio"), "clip_id")
+        _validate_media_input("picture", tool_input.get("picture"), "image_id")
         if instant_creation:
             note_id = await _create_note_in_anki(
                 deck_name,

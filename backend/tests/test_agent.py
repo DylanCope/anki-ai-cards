@@ -534,6 +534,42 @@ async def test_dispatch_create_anki_note_rejects_unknown_audio_clip(db):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_create_anki_note_rejects_list_shaped_audio(db):
+    # Bug report #30 in production: the model sent `audio` as a list
+    # (`[{"clip_id": 178, "fields": [...]}]`) instead of the object the tool
+    # schema declares. Unvalidated, that got persisted onto the PendingCard
+    # as-is and only blew up with an opaque AnkiConnect failure much later
+    # when Dylan clicked "create" — this should be rejected immediately
+    # instead, as an is_error tool result the model can self-correct from.
+    with pytest.raises(ValueError, match="audio must be an object"):
+        await tools.dispatch_tool(
+            "create_anki_note",
+            {
+                "deck_name": "Japanese",
+                "model_name": "Cloze+",
+                "fields": {"Text": "{{c1::食べる}}"},
+                "audio": [{"clip_id": 178, "fields": ["Text Audio"]}],
+            },
+            instant_creation=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_create_anki_note_rejects_list_shaped_picture(db):
+    with pytest.raises(ValueError, match="picture must be an object"):
+        await tools.dispatch_tool(
+            "create_anki_note",
+            {
+                "deck_name": "Japanese",
+                "model_name": "Cloze+",
+                "fields": {"Text": "{{c1::食べる}}"},
+                "picture": [{"image_id": 9, "fields": ["Picture"]}],
+            },
+            instant_creation=False,
+        )
+
+
+@pytest.mark.asyncio
 async def test_dispatch_create_anki_note_attaches_picked_image(db, monkeypatch):
     with Session(tools.get_engine()) as session:
         image = tools.ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
