@@ -151,6 +151,30 @@ re-deriving this cost a long debugging session):
    than 80/443** — that port always belongs to the target app's `fly.toml`,
    dialed over genuine loopback/6PN from *inside* that app's own container,
    never from a remote caller.
+5. **A second, distinct instability from point 3's segfault: Anki's main
+   thread can wedge for hours (not crash) after a stalled AnkiWeb sync,
+   with no further log output and no automatic recovery** — first seen
+   2026-07-10, recurred 2026-07-24 as bug reports #30/#31 (see
+   PROGRESS.md for both). `fly logs -a anki-ai-cards-anki` shows this as a
+   `"Connection timed out..."` sync error followed by a `blocked main
+   thread for <N>ms` stack dump, then nothing — unlike point 3's segfault,
+   the process is still running, just unresponsive, so the base image's own
+   crash-restart loop never fires. `sync_anki` (and the auto-sync
+   `_create_note_in_anki` runs after every note creation) is what triggers
+   Anki's real AnkiWeb sync and can hit this. Three mitigations, all in
+   place: `_create_note_in_anki`'s post-creation sync is fire-and-forget
+   (doesn't stall the create-card response on a stuck sync, though it can't
+   stop Anki itself from wedging); `deploy/anki-headless/fly.toml` has an
+   `[[http_service.checks]]` block so the wedge is visible in `fly
+   status`/`fly checks list` (confirmed this does **not** trigger an
+   auto-restart by itself — Fly's checks only affect proxy routing, moot for
+   this Flycast-only app); and `backend/app/watchdog.py` polls AnkiConnect's
+   `version` action every 60s and calls the Fly Machines API
+   (`backend/app/clients/fly_api.py`) to restart `anki-ai-cards-anki` if
+   it's unresponsive, needing the `FLY_API_TOKEN` secret below. If this
+   recurs again despite the watchdog, check `fly secrets list -a
+   anki-ai-cards-backend` first — a missing/expired `FLY_API_TOKEN` makes
+   the watchdog poll-only with every restart attempt silently swallowed.
 
 Setup needs: a private IPv6 allocated for the app (`fly ips allocate-v6
 --private -a anki-ai-cards-anki`), an `[http_service]` block in
@@ -209,8 +233,17 @@ One-time AnkiWeb login via VNC, after that first deploy:
 `frontend/Dockerfile` build/deploy the two main apps. Neither fly.toml
 declares secrets (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `ELEVENLABS_API_KEY`,
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAIL`,
-`SESSION_SECRET_KEY`, `DEV_API_KEY`) — push those once via `fly secrets set -a
-anki-ai-cards-backend KEY=value` before the first deploy. `backend/fly.toml`'s
+`SESSION_SECRET_KEY`, `DEV_API_KEY`, `FLY_API_TOKEN`) — push those once via
+`fly secrets set -a anki-ai-cards-backend KEY=value` before the first
+deploy. `FLY_API_TOKEN` (see point 5 above) must be an app-scoped token for
+`anki-ai-cards-anki` specifically (`fly tokens create deploy -a
+anki-ai-cards-anki`, run from Dylan's own `fly auth login` session, not the
+loop's) — **the loop's own `fly` CLI session in this sandbox authenticates
+via scoped tokens itself (`fly auth whoami` shows `...@tokens.fly.io`
+identities), and Fly refuses to mint a new token from a token-authenticated
+session** (`Not authorized to access this createlimitedaccesstoken`), so
+minting or rotating this secret is Dylan-only and cannot be delegated to a
+future loop iteration. `backend/fly.toml`'s
 `[env]` points `ANKICONNECT_URL` at the headless Anki app's private
 `.internal` address, `PUBLIC_APP_URL` at the frontend's public URL, and
 mounts a volume for `DATABASE_PATH`. `frontend/fly.toml`'s `[env]` points

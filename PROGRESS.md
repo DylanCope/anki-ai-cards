@@ -14,6 +14,168 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-24 — Ad hoc fix: bug report #31, Anki wedges for hours after a failed sync, no auto-recovery
+- Did: Dylan tried to preview and then create a card and got "Could not
+  create the card in Anki." again, right after the bug report #30 fix below
+  shipped — reported as persistent, so investigated end to end (root cause
+  first, no guessing) rather than patching the symptom:
+  - `GET /api/bug-reports/31` (via `fly ssh console -a anki-ai-cards-backend`
+    + a raw `sqlite3` query, since this session had no browser access) showed
+    a *different* error from #30: `AnkiConnectError: ... 'addNote' failed
+    after 3 attempts ... ReadTimeout` for pending card 13 — not a data-shape
+    bug this time.
+  - `fly logs -a anki-ai-cards-anki --no-tail` showed Anki's last log line
+    was hours old: a sync-triggered `after_backup_started` callback blocked
+    the main thread for 13102ms after `"Connection timed out"`. Confirmed
+    live that the container was still wedged at diagnosis time — even a
+    plain `echo` over `fly ssh console` hung for 30-40s.
+  - This is the *same* failure mode already root-caused and deliberately
+    left unfixed on 2026-07-10 (see that entry below): Anki's single-
+    threaded process can wedge for hours on a stalled AnkiWeb sync, with no
+    crash and (at the time) no health check to auto-recover it. What's new:
+    the immediately-preceding commit (d3e5b3f, "auto-sync after creation")
+    made every single card creation trigger a real AnkiWeb sync, instead of
+    only on explicit `sync_anki` request — turning a rare edge case into a
+    recurring one.
+  - `fly apps restart anki-ai-cards-anki` recovered it immediately (same
+    manual recovery as 2026-07-10).
+  - Fix, in three parts (all discussed and approved by Dylan via
+    AskUserQuestion before implementing, since "auto-restart" wasn't a
+    single obvious mechanism — see Learned):
+    1. `backend/app/agent/tools.py`'s `_create_note_in_anki`: the
+       post-creation `ankiconnect.sync()` call is now fire-and-forget
+       (`asyncio.create_task`, tracked in a module-level `set` per asyncio's
+       own guidance so it can't be GC'd mid-flight) instead of `await`ed
+       inline. The note is already created by that point, so a slow/stuck
+       sync shouldn't hold up the response — this doesn't stop Anki from
+       wedging (that happens inside Anki's own process, independent of how
+       long *we* wait for a reply), but it stops one wedged sync from also
+       stalling the create-card request itself.
+    2. `deploy/anki-headless/fly.toml`: added an `[[http_service.checks]]`
+       block (GET `/`, since AnkiConnect answers a plain GET with a static
+       `{"apiVersion": ...}` and fly.toml checks can't send a custom POST
+       body for the `version` action) so the wedge is now visible in `fly
+       status`/`fly checks list`. Deliberately does NOT rely on this for
+       recovery — see Learned.
+    3. `backend/app/watchdog.py` (new) + `backend/app/clients/fly_api.py`
+       (new): the actual auto-recovery. A background `asyncio` task, started
+       from `app/main.py`'s `lifespan`, polls AnkiConnect's `version` action
+       every 60s and calls the Fly Machines API to restart
+       `anki-ai-cards-anki` if it's unresponsive, with a 5-minute cooldown
+       between restarts (`Watchdog.check_once()` is split out from the
+       polling loop specifically so it's unit-testable without fighting
+       `asyncio.sleep`). Needs a `FLY_API_TOKEN` secret (an app-scoped
+       `fly tokens create deploy -a anki-ai-cards-anki` token) — without it,
+       `fly_api.restart_anki_machines()` raises `KeyError` on the missing
+       env var, which `Watchdog.check_once()` swallows the same as any other
+       restart failure, so the watchdog degrades to polling-only rather than
+       crashing anything.
+  - `.env.example`: documented `FLY_API_TOKEN`.
+- Verified:
+  - `cd backend && uv run pytest` → 284 passed (7 new: 2 in
+    `test_fly_api.py` for `restart_anki_machines` listing+restarting every
+    machine and propagating a list-call failure; 5 in `test_watchdog.py` for
+    `Watchdog.check_once()`'s responsive/unresponsive/cooldown/
+    cooldown-elapsed/restart-failure-swallowed behavior, using a fake
+    `time.monotonic` so cooldown assertions don't depend on wall clock).
+  - A first draft of `Watchdog` initialized `_last_restart = 0.0`; the fake-
+    clock test caught a real bug before it ever shipped — `time.monotonic()`
+    starting near zero right after a fresh process boot (plausible on
+    Linux, where its reference point is often since-boot) would make the
+    *very first* wedge look like it's still within a restart cooldown that
+    never happened. Fixed by initializing to `float("-inf")` instead.
+  - `fly config validate` (from `deploy/anki-headless/`) after adding the
+    health check: valid, but warned `grace_period` >1 minute gets silently
+    lowered to 60s — set it to `60s` explicitly instead of the `90s` first
+    tried, to match what Fly actually enforces rather than documenting a
+    number it silently overrides.
+  - `fly deploy` for both `backend/` and `deploy/anki-headless/`; confirmed
+    the new health check shows `1 total, 1 passing` in `fly status`, and
+    that the backend can reach AnkiConnect over the real production path
+    (`fly ssh console -a anki-ai-cards-backend` +
+    `httpx.post("http://anki-ai-cards-anki.flycast", ...)` → `{"result": 6,
+    "error": null}`).
+  - Did NOT run `scripts/smoke_test_chat.py` against the real deployed
+    backend — blocked by this session's own auto-mode classifier as too
+    impactful to run without confirmation (it drives the real LLM agent
+    against production). Direct AnkiConnect/Flycast checks above were used
+    as the verification path instead.
+- Learned:
+  - **Fly's `[[http_service.checks]]` does NOT auto-restart a machine on
+    failure** — confirmed via `WebSearch` against Fly's own docs/community
+    answers. It only affects Fly Proxy traffic routing, which is a no-op
+    for `anki-ai-cards-anki` since it has no public traffic (Flycast-only,
+    no public IP). A first draft of this fix's commentary claimed the check
+    itself would restart the machine — wrong, caught before shipping by
+    actually researching Fly's behavior instead of assuming. Any future
+    "add a health check to fix X" request needs the same "does this
+    mechanism actually do what I think" check before relying on it.
+  - This session's sandboxed `fly` CLI session authenticates via scoped
+    tokens (`fly auth whoami` shows `...@tokens.fly.io` identities, not a
+    real personal login), and Fly refuses `fly tokens create ...` from a
+    token-authenticated session (`Not authorized to access this
+    createlimitedaccesstoken`) — minting the `FLY_API_TOKEN` the watchdog
+    needs had to be left as a manual step for Dylan, run from his own `fly
+    auth login` session. Any future task needing a *new* Fly token runs into
+    this same wall; it isn't fixable from inside a Ralph loop / agent
+    session.
+  - Bug report history (`GET /api/bug-reports` or a direct `sqlite3` query
+    over `fly ssh console`) was again the fastest path to root-causing this
+    — same lesson 2026-07-10 already recorded, worth repeating since it
+    keeps paying off.
+  - When a user reports "this seems persistent," check `fly logs`/`fly
+    status` for the actual current live state before assuming the visible
+    symptom (an opaque frontend error) is the whole story — in this case the
+    live SSH-hang test was what actually confirmed the wedge was ongoing,
+    not just historical.
+
+## 2026-07-24 — Ad hoc fix: bug report #30, `create_anki_note`'s audio/picture accepted a malformed shape unvalidated
+- Did: Dylan reported "Could not create the card in Anki. (bug report #30
+  filed)". `GET /api/bug-reports/30`-equivalent (direct `sqlite3` query over
+  `fly ssh console -a anki-ai-cards-backend`, no browser access this
+  session) showed `TypeError: list indices must be integers or slices, not
+  str` in `_create_note_in_anki` doing `audio_input["clip_id"]` — the
+  pending card's stored `audio` was `[{"clip_id": 178, "fields": [...]}]`, a
+  **list** containing one object, not the object itself the tool schema
+  declares. The model had called `create_anki_note` with the wrong shape;
+  nothing validates a tool call's input against its own schema server-side,
+  so `dispatch_tool`'s draft branch (`instant_creation=False`, the default)
+  just `json.dumps`'d whatever it got straight onto `PendingCard.audio` —
+  the mistake wasn't caught until Dylan clicked "create" much later,
+  completely disconnected from the turn where the model actually erred.
+  - `backend/app/agent/tools.py`: added `_validate_media_input(kind, value,
+    id_key)`, called on `tool_input.get("audio")`/`tool_input.get(
+    "picture")` immediately in `create_anki_note`'s dispatch, before either
+    the `instant_creation` or draft branch. A malformed shape now raises
+    `ValueError` immediately, which `app/agent/core.py`'s `run_turn` already
+    catches per-tool-call and turns into an `is_error` tool_result (see the
+    2026-07-10 entry below) — so the model sees its own mistake in the same
+    turn and can self-correct, instead of it silently persisting.
+  - Pending card 12 (the one from bug report #30) still has the bad
+    list-shaped data in production; Dylan chose to discard it and recreate
+    from scratch rather than have this session patch prod data directly
+    (writing to the production DB got blocked by this session's own
+    auto-mode classifier as a destructive action needing explicit sign-off).
+- Verified:
+  - `cd backend && uv run pytest` → 277 passed (2 new in `test_agent.py`:
+    `test_dispatch_create_anki_note_rejects_list_shaped_audio` and
+    `..._picture`, reproducing bug report #30's exact shape).
+  - `fly deploy` from `backend/`; confirmed the machine reached a healthy
+    state (`fly status` → `1 total, 1 passing`) and the backend responded
+    `200` on `/health`.
+- Learned:
+  - Tool schemas passed to the Messages API (`TOOL_SCHEMAS` in
+    `app/agent/tools.py`) are *not* enforced server-side — the model can and
+    occasionally will send a shape that violates its own declared schema
+    (here: an object wrapped in a one-element list). Any tool whose input
+    gets persisted (not just immediately consumed) should validate shape at
+    the dispatch boundary, not just at first use — `create_anki_note`'s
+    draft path had skipped straight to `json.dumps` before this fix.
+  - Root-causing via the production `bugreport` table (even without
+    frontend/browser access, a raw `sqlite3` query over `fly ssh console`
+    worked fine) was much faster than trying to reproduce the model's
+    original mistake blind.
+
 ## 2026-07-14 — Task 60: persist picked audio/image on a drafted PendingCard
 - Did: This was the last unchecked task in PRD.md — all 60 tasks are now
   checked.
