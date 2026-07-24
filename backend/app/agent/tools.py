@@ -10,6 +10,7 @@ access token) are passed into `dispatch_tool` as call-context, not read from
 the model's tool input.
 """
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -438,17 +439,35 @@ async def _create_note_in_anki(
         audio=audio,
         picture=picture,
     )
+    # Fire-and-forget, not awaited: the note is already created at this
+    # point, so a slow/failed sync shouldn't hold up the response to Dylan.
+    # This matters more than it sounds — bug report #31 traced back to an
+    # AnkiWeb sync attempt wedging Anki's single-threaded process for hours
+    # (a known, previously-unresolved failure mode, see PROGRESS.md's
+    # 2026-07-10 entry), which was otherwise stalling every single
+    # note-creation request behind it. Anki's own periodic/on-open sync (or
+    # a manual sync_anki call) will pick up the note later regardless if
+    # this one fails or never returns.
+    _fire_and_forget(_sync_best_effort())
+    return note_id
+
+
+# asyncio.create_task only holds a weak reference to the task, so without
+# keeping one here a background sync could be garbage-collected mid-flight.
+_background_sync_tasks: set[asyncio.Task] = set()
+
+
+def _fire_and_forget(coro: Awaitable[None]) -> None:
+    task = asyncio.create_task(coro)
+    _background_sync_tasks.add(task)
+    task.add_done_callback(_background_sync_tasks.discard)
+
+
+async def _sync_best_effort() -> None:
     try:
         await ankiconnect.sync()
     except Exception:
-        # The note is already created at this point — don't fail the whole
-        # call over a sync hiccup, since that would leave the PendingCard
-        # stuck "pending" (or the chat turn reporting an error) even though
-        # the note exists, and a retry would then hit a duplicate-note error
-        # from AnkiConnect. Anki's own periodic/on-open sync (or a manual
-        # sync_anki call) will pick up the note later regardless.
         pass
-    return note_id
 
 
 async def dispatch_tool(

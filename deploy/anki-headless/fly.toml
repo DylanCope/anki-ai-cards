@@ -56,6 +56,31 @@ primary_region = 'iad'
   auto_start_machines = false
   min_machines_running = 1
 
+  # Bug report #31 (2026-07-24): Anki's own AnkiWeb-sync attempt wedged its
+  # single-threaded process for hours with no crash, so nothing here ever
+  # auto-recovered it — a gap already flagged, unfixed, back in this file's
+  # 2026-07-10 incident (see PROGRESS.md). This check makes that wedge
+  # visible in `fly status`/`fly checks list` — it does NOT restart the
+  # machine on its own: confirmed against Fly's own docs/community answers
+  # that `http_service.checks` only ever affects Fly Proxy traffic routing,
+  # never triggers a restart, and this app has no public traffic to route
+  # anyway (Flycast-only). Actual auto-recovery still needs an external
+  # watchdog calling `fly apps restart anki-ai-cards-anki` — not implemented
+  # here yet. Can't send the `version` action's real POST body either —
+  # fly.toml http checks are GET/HEAD-only — but a plain GET still exercises
+  # the same code path: AnkiConnect's HTTP handling runs on Anki's single Qt
+  # main thread (see the blocked-main-thread traces in `fly logs`), so *any*
+  # HTTP response, including AnkiConnect's static `{"apiVersion": ...}` GET
+  # reply, requires that thread to be free. Grace period covers Xvfb/x11vnc/
+  # Anki's own cold-start sequence (observed ~45s end to end after a
+  # restart) — Fly caps grace_period at 60s regardless of what's set here.
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '60s'
+    method = 'GET'
+    path = '/'
+
 [[vm]]
   size = 'shared-cpu-1x'
   memory = '1gb'

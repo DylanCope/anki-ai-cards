@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -14,6 +15,7 @@ from app.api.chat import (
 from app.api.images import router as images_router
 from app.api.workflows import router as workflows_router
 from app.models import init_db
+from app.watchdog import run_watchdog
 
 
 @asynccontextmanager
@@ -24,7 +26,11 @@ async def lifespan(app: FastAPI):
     # init_db() directly in its own fixture setup, so the real deployed app
     # was the first place this ever ran against a genuinely fresh database.
     init_db()
-    yield
+    watchdog_task = asyncio.create_task(run_watchdog())
+    try:
+        yield
+    finally:
+        watchdog_task.cancel()
 
 
 app = FastAPI(title="anki-ai-cards", lifespan=lifespan)
