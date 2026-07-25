@@ -18,6 +18,7 @@ import AudioOptionsCard from "@/app/components/AudioOptionsCard";
 import CardPayloadCard from "@/app/components/CardPayloadCard";
 import ImageOptionsCard from "@/app/components/ImageOptionsCard";
 import WorkflowLoadedCard from "@/app/components/WorkflowLoadedCard";
+import ToolCallsCard from "@/app/components/ToolCallsCard";
 import ConversationSidebar from "@/app/components/ConversationSidebar";
 import AiSettingsButton from "@/app/components/AiSettingsButton";
 import WorkflowsButton from "@/app/components/WorkflowsButton";
@@ -587,6 +588,9 @@ export default function ChatApp() {
                     }
                     if (payload.type === "workflow_loaded") {
                       return <WorkflowLoadedCard key={payloadIndex} payload={payload} />;
+                    }
+                    if (payload.type === "tool_calls") {
+                      return <ToolCallsCard key={payloadIndex} payload={payload} />;
                     }
                     return (
                       <CardPayloadCard

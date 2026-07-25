@@ -266,6 +266,7 @@ def _payloads_for_message(
     if message["role"] != "assistant" or isinstance(message["content"], str):
         return payloads
 
+    generic_calls: list[dict] = []
     for block in message["content"]:
         if block.get("type") != "tool_use":
             continue
@@ -335,7 +336,42 @@ def _payloads_for_message(
                     "pending_card_id": result_dict.get("pending_card_id"),
                 }
             )
+        else:
+            # Every other tool (search_dictionary, ask_multimodal_model,
+            # sync_anki, etc.) has no dedicated rich payload — bundle them
+            # into one "tool_calls" payload below instead of leaving them
+            # invisible in the UI (Dylan previously had no way to see an
+            # ask_multimodal_model call happened short of asking the agent
+            # to repeat itself verbatim).
+            generic_calls.append(
+                {"name": block["name"], "input": tool_input, "result": result}
+            )
+
+    if generic_calls:
+        payloads.append({"type": "tool_calls", "calls": generic_calls})
     return payloads
+
+
+def _merge_tool_call_payloads(payloads: list[dict]) -> list[dict]:
+    """Collapse every "tool_calls" payload in the list into one, in place at
+    the first one's position. A single displayed turn can span several
+    assistant-message tool-use round trips (see `_build_history_entries`),
+    each contributing its own "tool_calls" payload from `_payloads_for_message`
+    — without this, Dylan would see one bundled element per round trip
+    instead of the single element per turn he asked for."""
+
+    merged_calls: list[dict] = []
+    result: list[dict] = []
+    inserted = False
+    for payload in payloads:
+        if payload["type"] != "tool_calls":
+            result.append(payload)
+            continue
+        merged_calls.extend(payload["calls"])
+        if not inserted:
+            result.append({"type": "tool_calls", "calls": merged_calls})
+            inserted = True
+    return result
 
 
 def _extract_payloads(messages: list[dict], engine) -> list[dict]:
@@ -349,7 +385,7 @@ def _extract_payloads(messages: list[dict], engine) -> list[dict]:
     payloads: list[dict] = []
     for message in messages:
         payloads.extend(_payloads_for_message(message, tool_results, clips_by_id, images_by_id))
-    return payloads
+    return _merge_tool_call_payloads(payloads)
 
 
 def _build_history_entries(rows: list[ConversationMessage], engine) -> list[dict]:
@@ -376,7 +412,13 @@ def _build_history_entries(rows: list[ConversationMessage], engine) -> list[dict
         )
         text = _display_text(message["content"])
         if text is not None:
-            entries.append({"role": message["role"], "text": text, "payloads": pending_payloads})
+            entries.append(
+                {
+                    "role": message["role"],
+                    "text": text,
+                    "payloads": _merge_tool_call_payloads(pending_payloads),
+                }
+            )
             pending_payloads = []
     return entries
 

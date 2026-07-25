@@ -72,12 +72,24 @@ export interface WorkflowLoadedPayload {
   spec: string | null;
 }
 
+export interface ToolCall {
+  name: string;
+  input: Record<string, unknown>;
+  result: unknown;
+}
+
+export interface ToolCallsPayload {
+  type: "tool_calls";
+  calls: ToolCall[];
+}
+
 export type ChatPayload =
   | AudioOptionsPayload
   | CardPayload
   | ImageOptionsPayload
   | ImageAttachmentPayload
-  | WorkflowLoadedPayload;
+  | WorkflowLoadedPayload
+  | ToolCallsPayload;
 
 export interface ChatTurn {
   message: ChatHistoryEntry;

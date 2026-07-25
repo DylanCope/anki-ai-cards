@@ -704,6 +704,133 @@ def test_post_chat_extracts_no_payload_when_workflow_spec_not_found(monkeypatch)
     assert response.json()["payloads"] == []
 
 
+def test_post_chat_extracts_tool_calls_payload_for_generic_tool(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "ask_multimodal_model",
+                        "input": {"prompt": "Compare [[audio_clip_1]] and [[audio_clip_2]]"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"response": "Clip 2 sounds more natural."}),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Clip 2 sounds better."}],
+            },
+        ]
+        return {"history": new_history, "reply": "Clip 2 sounds better."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "which sounds better?"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payloads"] == [
+        {
+            "type": "tool_calls",
+            "calls": [
+                {
+                    "name": "ask_multimodal_model",
+                    "input": {"prompt": "Compare [[audio_clip_1]] and [[audio_clip_2]]"},
+                    "result": {"response": "Clip 2 sounds more natural."},
+                }
+            ],
+        }
+    ]
+
+
+def test_post_chat_bundles_generic_tool_calls_across_round_trips_into_one_payload(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "search_dictionary",
+                        "input": {"word": "食べる"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": json.dumps({"readings": ["たべる"]}),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-2",
+                        "name": "sync_anki",
+                        "input": {},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-2",
+                        "content": json.dumps({"status": "synced"}),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Done."}],
+            },
+        ]
+        return {"history": new_history, "reply": "Done."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+
+    response = _authed_client().post(
+        "/api/chat", json={"conversation_id": conversation_id, "message": "look up 食べる and sync"}
+    )
+
+    assert response.status_code == 200
+    payloads = response.json()["payloads"]
+    assert len(payloads) == 1
+    assert payloads[0]["type"] == "tool_calls"
+    assert [call["name"] for call in payloads[0]["calls"]] == ["search_dictionary", "sync_anki"]
+
+
 def test_post_chat_extracts_card_payload(monkeypatch):
     _seed_token()
     conversation_id = _new_conversation_id()
@@ -1152,44 +1279,23 @@ def test_get_chat_history_returns_text_only_transcript(monkeypatch):
         new_history = [
             *history,
             {"role": "user", "content": message},
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "tool-1",
-                        "name": "list_anki_note_types",
-                        "input": {},
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tool-1",
-                        "content": json.dumps(["Cloze"]),
-                    }
-                ],
-            },
-            {"role": "assistant", "content": [{"type": "text", "text": "You have Cloze."}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Sure, what word?"}]},
         ]
-        return {"history": new_history, "reply": "You have Cloze."}
+        return {"history": new_history, "reply": "Sure, what word?"}
 
     monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
     authed = _authed_client()
     authed.post(
         "/api/chat",
-        json={"conversation_id": conversation_id, "message": "what note types do I have?"},
+        json={"conversation_id": conversation_id, "message": "help me make a card"},
     )
 
     response = authed.get("/api/chat/history", params={"conversation_id": conversation_id})
 
     assert response.status_code == 200
     assert response.json() == [
-        {"role": "user", "text": "what note types do I have?", "payloads": []},
-        {"role": "assistant", "text": "You have Cloze.", "payloads": []},
+        {"role": "user", "text": "help me make a card", "payloads": []},
+        {"role": "assistant", "text": "Sure, what word?", "payloads": []},
     ]
 
 
@@ -1260,6 +1366,60 @@ def test_get_chat_history_returns_payloads_alongside_the_turn_that_produced_them
                 }
             ],
         },
+    ]
+
+
+def test_get_chat_history_bundles_generic_tool_calls_across_round_trips(monkeypatch):
+    _seed_token()
+    conversation_id = _new_conversation_id()
+
+    async def run_turn(history, message, *, get_access_token=None, model_id=None, instant_creation=False):
+        new_history = [
+            *history,
+            {"role": "user", "content": message},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tool-1", "name": "search_dictionary", "input": {"word": "猫"}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tool-1", "content": json.dumps({"readings": ["ねこ"]})}
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tool-2", "name": "sync_anki", "input": {}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tool-2", "content": json.dumps({"status": "synced"})}
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
+        ]
+        return {"history": new_history, "reply": "Done."}
+
+    monkeypatch.setattr(chat_module.agent_core, "run_turn", run_turn)
+    authed = _authed_client()
+    authed.post("/api/chat", json={"conversation_id": conversation_id, "message": "look up 猫 and sync"})
+
+    response = authed.get("/api/chat/history", params={"conversation_id": conversation_id})
+
+    assert response.status_code == 200
+    entries = response.json()
+    assistant_entry = entries[-1]
+    assert assistant_entry["role"] == "assistant"
+    assert len(assistant_entry["payloads"]) == 1
+    assert assistant_entry["payloads"][0]["type"] == "tool_calls"
+    assert [c["name"] for c in assistant_entry["payloads"][0]["calls"]] == [
+        "search_dictionary",
+        "sync_anki",
     ]
 
 
