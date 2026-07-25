@@ -130,6 +130,87 @@ async def test_get_model_styling_raises_on_error():
 
 
 @respx.mock
+async def test_find_notes():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": [1502298033753, 1502298036657], "error": None})
+    )
+
+    result = await ankiconnect.find_notes("deck:Japanese front:*食べる*")
+
+    assert result == [1502298033753, 1502298036657]
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["action"] == "findNotes"
+    assert sent_body["params"] == {"query": "deck:Japanese front:*食べる*"}
+
+
+@respx.mock
+async def test_get_notes_info():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(
+            200,
+            json={
+                "result": [
+                    {
+                        "noteId": 1502298033753,
+                        "tags": ["lesson"],
+                        "fields": {
+                            "Text": {"value": "{{c1::食べる}}", "order": 0},
+                            "Extra": {"value": "to eat", "order": 1},
+                        },
+                        "modelName": "Cloze",
+                        "cards": [1502298033753],
+                    }
+                ],
+                "error": None,
+            },
+        )
+    )
+
+    result = await ankiconnect.get_notes_info([1502298033753])
+
+    assert result == [
+        {
+            "noteId": 1502298033753,
+            "tags": ["lesson"],
+            "fields": {
+                "Text": {"value": "{{c1::食べる}}", "order": 0},
+                "Extra": {"value": "to eat", "order": 1},
+            },
+            "modelName": "Cloze",
+            "cards": [1502298033753],
+        }
+    ]
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["action"] == "notesInfo"
+    assert sent_body["params"] == {"notes": [1502298033753]}
+
+
+@respx.mock
+async def test_retrieve_media_file():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": "YWFh", "error": None})
+    )
+
+    result = await ankiconnect.retrieve_media_file("clip-1.mp3")
+
+    assert result == "YWFh"
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["action"] == "retrieveMediaFile"
+    assert sent_body["params"] == {"filename": "clip-1.mp3"}
+
+
+@respx.mock
+async def test_retrieve_media_file_missing_returns_none():
+    respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": False, "error": None})
+    )
+
+    result = await ankiconnect.retrieve_media_file("nonexistent.mp3")
+
+    assert result is None
+
+
+@respx.mock
 async def test_create_note():
     route = respx.post(ANKICONNECT_URL).mock(
         return_value=Response(200, json={"result": 12345, "error": None})

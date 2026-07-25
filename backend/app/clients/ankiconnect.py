@@ -93,6 +93,32 @@ async def get_model_styling(name: str) -> str:
     return result["css"]
 
 
+async def find_notes(query: str) -> list[int]:
+    """Wraps `findNotes` — `query` is Anki's own search syntax (e.g.
+    `deck:Japanese front:*food*` or a plain word), same as the Anki desktop
+    browser's search bar. Returns matching note ids for `get_notes_info`."""
+
+    return await invoke("findNotes", query=query)
+
+
+async def get_notes_info(note_ids: list[int]) -> list[dict]:
+    """Wraps `notesInfo` — result is a list of `{noteId, tags, fields:
+    {fieldName: {value, order}}, modelName, cards}` per note, confirmed
+    against AnkiConnect's real documented example response."""
+
+    return await invoke("notesInfo", notes=note_ids)
+
+
+async def retrieve_media_file(filename: str) -> str | None:
+    """Wraps `retrieveMediaFile` — returns the base64-encoded file contents
+    of `filename` from Anki's media collection folder, or None if no such
+    file exists (AnkiConnect's own documented response is the boolean
+    `false` in that case, not an `error`)."""
+
+    result = await invoke("retrieveMediaFile", filename=filename)
+    return result if result is not False else None
+
+
 async def create_note(
     deck_name: str,
     model_name: str,

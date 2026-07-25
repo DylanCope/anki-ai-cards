@@ -69,6 +69,27 @@ def _guess_image_content_type(data: bytes) -> str:
 # which is ignored — the id is what's actually looked up.
 _MEDIA_PLACEHOLDER_RE = re.compile(r"\[\[(audio_clip|image)_(\d+)(?:\.\w+)?\]\]")
 
+# Matches the media references Anki itself stores inside field HTML/text —
+# [sound:filename] and <img src="filename">  — so search_anki_notes can
+# surface the exact filename get_anki_media_file needs, without the model
+# having to parse Anki's field markup itself.
+_ANKI_SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
+_ANKI_IMG_RE = re.compile(r'<img[^>]*\ssrc="([^"]+)"')
+
+_AUDIO_FILE_EXTENSIONS = {"mp3", "ogg", "wav", "m4a", "flac", "webm", "opus"}
+
+
+def _extract_anki_media_filenames(fields: dict[str, str]) -> list[str]:
+    filenames: list[str] = []
+    for value in fields.values():
+        for match in _ANKI_SOUND_RE.finditer(value):
+            if match.group(1) not in filenames:
+                filenames.append(match.group(1))
+        for match in _ANKI_IMG_RE.finditer(value):
+            if match.group(1) not in filenames:
+                filenames.append(match.group(1))
+    return filenames
+
 
 def _resolve_multimodal_prompt(prompt: str, session: Session) -> list[dict]:
     """Split `prompt` on [[audio_clip_<id>]]/[[image_<id>]] placeholders,
@@ -141,6 +162,58 @@ TOOL_SCHEMAS: list[dict] = [
                 }
             },
             "required": ["note_type"],
+        },
+    },
+    {
+        "name": "search_anki_notes",
+        "description": (
+            "Search Dylan's existing Anki collection for notes matching an "
+            "AnkiConnect search query (Anki's own search syntax, same as the "
+            "desktop browser's search bar, e.g. 'deck:Japanese::07-Cloze "
+            "Deletions front:*彼*' or a plain word to search all fields), so "
+            "an existing card's fields/audio/tags can be found and reused "
+            "instead of recreating them from scratch. Returns each match's "
+            "note_id, model_name, tags, fields (name -> text content), and "
+            "media_files — any [sound:...]/<img> filenames found in those "
+            "fields. Pass a media_files entry into get_anki_media_file to "
+            "actually fetch and reuse it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "AnkiConnect search syntax, e.g. 'deck:X front:*text*' or a plain search term.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "Max number of matching notes to return.",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_anki_media_file",
+        "description": (
+            "Fetch an existing audio or image file from Dylan's Anki "
+            "collection by filename (e.g. one found via search_anki_notes' "
+            "media_files), so it can be reused on a new card instead of "
+            "regenerating it. Returns a clip_id (audio) or image_id (image) "
+            "— same choice-then-attach pattern as generate_audio/"
+            "search_images, pass it into create_anki_note's audio/picture "
+            "argument."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "The exact media filename, e.g. from a [sound:...] or <img src=...> reference.",
+                },
+            },
+            "required": ["filename"],
         },
     },
     {
@@ -618,6 +691,55 @@ async def dispatch_tool(
 
     if name == "get_anki_note_type_fields":
         return await ankiconnect.get_note_type_fields(tool_input["note_type"])
+
+    if name == "search_anki_notes":
+        n = tool_input.get("n", 10)
+        note_ids = (await ankiconnect.find_notes(tool_input["query"]))[:n]
+        notes_info = await ankiconnect.get_notes_info(note_ids) if note_ids else []
+        notes = []
+        for note in notes_info:
+            fields = {
+                field_name: field["value"]
+                for field_name, field in note["fields"].items()
+            }
+            notes.append(
+                {
+                    "note_id": note["noteId"],
+                    "model_name": note["modelName"],
+                    "tags": note["tags"],
+                    "fields": fields,
+                    "media_files": _extract_anki_media_filenames(fields),
+                }
+            )
+        return {"notes": notes}
+
+    if name == "get_anki_media_file":
+        filename = tool_input["filename"]
+        b64_data = await ankiconnect.retrieve_media_file(filename)
+        if b64_data is None:
+            raise ValueError(f"No media file named {filename!r} in Anki's collection")
+        data = base64.b64decode(b64_data)
+        extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        engine = get_engine()
+        if extension in _AUDIO_FILE_EXTENSIONS:
+            with Session(engine) as session:
+                clip = AudioClip(
+                    text=filename,
+                    voice="anki_existing",
+                    audio=data,
+                    source="anki_existing",
+                )
+                session.add(clip)
+                session.commit()
+                session.refresh(clip)
+                return {"clip_id": clip.id}
+        with Session(engine) as session:
+            content_type = mimetypes.guess_type(filename)[0] or _guess_image_content_type(data)
+            image = ImageAsset(content_type=content_type, data=data, source="anki_existing")
+            session.add(image)
+            session.commit()
+            session.refresh(image)
+            return {"image_id": image.id}
 
     if name == "generate_audio":
         n = tool_input.get("n", 3)

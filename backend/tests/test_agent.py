@@ -101,6 +101,116 @@ async def test_dispatch_get_anki_note_type_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_search_anki_notes(monkeypatch):
+    find_mock = AsyncMock(return_value=[1502298033753, 1502298036657])
+    monkeypatch.setattr(tools.ankiconnect, "find_notes", find_mock)
+    info_mock = AsyncMock(
+        return_value=[
+            {
+                "noteId": 1502298033753,
+                "tags": ["lesson"],
+                "fields": {
+                    "Text": {"value": "彼に会えば[sound:existing.mp3]", "order": 0},
+                    "Extra": {"value": "grammar note", "order": 1},
+                },
+                "modelName": "Cloze+",
+                "cards": [1502298033753],
+            }
+        ]
+    )
+    monkeypatch.setattr(tools.ankiconnect, "get_notes_info", info_mock)
+
+    result = await tools.dispatch_tool("search_anki_notes", {"query": "deck:Japanese"})
+
+    find_mock.assert_awaited_once_with("deck:Japanese")
+    info_mock.assert_awaited_once_with([1502298033753, 1502298036657])
+    assert result == {
+        "notes": [
+            {
+                "note_id": 1502298033753,
+                "model_name": "Cloze+",
+                "tags": ["lesson"],
+                "fields": {
+                    "Text": "彼に会えば[sound:existing.mp3]",
+                    "Extra": "grammar note",
+                },
+                "media_files": ["existing.mp3"],
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_anki_notes_respects_n(monkeypatch):
+    find_mock = AsyncMock(return_value=[1, 2, 3])
+    monkeypatch.setattr(tools.ankiconnect, "find_notes", find_mock)
+    info_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.ankiconnect, "get_notes_info", info_mock)
+
+    await tools.dispatch_tool("search_anki_notes", {"query": "deck:Japanese", "n": 2})
+
+    info_mock.assert_awaited_once_with([1, 2])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_search_anki_notes_no_results(monkeypatch):
+    find_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(tools.ankiconnect, "find_notes", find_mock)
+    info_mock = AsyncMock()
+    monkeypatch.setattr(tools.ankiconnect, "get_notes_info", info_mock)
+
+    result = await tools.dispatch_tool("search_anki_notes", {"query": "deck:Nonexistent"})
+
+    info_mock.assert_not_awaited()
+    assert result == {"notes": []}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_get_anki_media_file_audio(db, monkeypatch):
+    mock = AsyncMock(return_value=base64.b64encode(b"mp3-bytes").decode("ascii"))
+    monkeypatch.setattr(tools.ankiconnect, "retrieve_media_file", mock)
+
+    result = await tools.dispatch_tool(
+        "get_anki_media_file", {"filename": "existing.mp3"}
+    )
+
+    mock.assert_awaited_once_with("existing.mp3")
+    assert "clip_id" in result
+    with Session(tools.get_engine()) as session:
+        clip = session.get(tools.AudioClip, result["clip_id"])
+    assert clip.audio == b"mp3-bytes"
+    assert clip.source == "anki_existing"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_get_anki_media_file_image(db, monkeypatch):
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest-of-png"
+    mock = AsyncMock(return_value=base64.b64encode(png_bytes).decode("ascii"))
+    monkeypatch.setattr(tools.ankiconnect, "retrieve_media_file", mock)
+
+    result = await tools.dispatch_tool(
+        "get_anki_media_file", {"filename": "existing.png"}
+    )
+
+    mock.assert_awaited_once_with("existing.png")
+    assert "image_id" in result
+    with Session(tools.get_engine()) as session:
+        image = session.get(tools.ImageAsset, result["image_id"])
+    assert image.data == png_bytes
+    assert image.content_type == "image/png"
+    assert image.source == "anki_existing"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_get_anki_media_file_missing(monkeypatch):
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(tools.ankiconnect, "retrieve_media_file", mock)
+
+    with pytest.raises(ValueError, match="nonexistent.mp3"):
+        await tools.dispatch_tool("get_anki_media_file", {"filename": "nonexistent.mp3"})
+
+
+@pytest.mark.asyncio
 async def test_dispatch_generate_audio(db, monkeypatch):
     mock = AsyncMock(return_value=[b"aaa", b"bbb", b"ccc"])
     monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", mock)
