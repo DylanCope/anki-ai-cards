@@ -14,12 +14,13 @@ import asyncio
 import base64
 import json
 import mimetypes
+import re
 from collections.abc import Awaitable, Callable
 
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, azure_tts, dictionary, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
+from app.clients import ankiconnect, azure_tts, dictionary, elevenlabs, forvo, gemini_images, gemini_multimodal, google_docs, tatoeba, wikimedia_image_search
 from app.models import AudioClip, ImageAsset, PendingCard, get_engine
 
 # Magic-byte prefixes for the image formats a Wikimedia Commons search
@@ -61,6 +62,46 @@ def _guess_image_content_type(data: bytes) -> str:
         if data.startswith(magic):
             return content_type
     return "image/jpeg"
+
+
+# Matches [[audio_clip_<id>]] / [[image_<id>]], with an optional decorative
+# extension the model may add for readability (e.g. [[audio_clip_34.mp3]]),
+# which is ignored — the id is what's actually looked up.
+_MEDIA_PLACEHOLDER_RE = re.compile(r"\[\[(audio_clip|image)_(\d+)(?:\.\w+)?\]\]")
+
+
+def _resolve_multimodal_prompt(prompt: str, session: Session) -> list[dict]:
+    """Split `prompt` on [[audio_clip_<id>]]/[[image_<id>]] placeholders,
+    resolving each against AudioClip/ImageAsset, into the ordered
+    text/media part list gemini_multimodal.ask expects. Raises ValueError
+    (surfaced to the model as an is_error tool_result — see app.agent.core)
+    if a placeholder references an id that doesn't exist, so the model can
+    see its mistake and retry with a real id instead of a clip silently
+    failing later."""
+    parts: list[dict] = []
+    pos = 0
+    for match in _MEDIA_PLACEHOLDER_RE.finditer(prompt):
+        if match.start() > pos:
+            parts.append({"text": prompt[pos : match.start()]})
+
+        kind, id_str = match.group(1), int(match.group(2))
+        if kind == "audio_clip":
+            clip = session.get(AudioClip, id_str)
+            if clip is None:
+                raise ValueError(f"No audio clip with id {id_str}")
+            parts.append({"data": clip.audio, "mime_type": "audio/mpeg"})
+        else:
+            image = session.get(ImageAsset, id_str)
+            if image is None:
+                raise ValueError(f"No image with id {id_str}")
+            parts.append({"data": image.data, "mime_type": image.content_type})
+
+        pos = match.end()
+
+    if pos < len(prompt):
+        parts.append({"text": prompt[pos:]})
+    return parts
+
 
 TOOL_SCHEMAS: list[dict] = [
     {
@@ -430,6 +471,41 @@ TOOL_SCHEMAS: list[dict] = [
         "description": "List the names of all saved workflow specs, so the agent can offer to reuse one.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "ask_multimodal_model",
+        "description": (
+            "Ask a multimodal model a question that can embed existing "
+            "audio clips or images directly in the prompt, not just "
+            "describe them in words — e.g. useful for comparing several "
+            "generate_audio takes for naturalness/pronunciation and asking "
+            "the model to pick a favorite, or for opinions on generated "
+            "images. Not a fixed workflow — construct whatever prompt fits "
+            "what's actually needed. Embed media by id using "
+            "[[audio_clip_<id>]] for an AudioClip id (from generate_audio's "
+            "clip_ids) or [[image_<id>]] for an ImageAsset id (from "
+            "search_images/generate_image), inline wherever they're "
+            "relevant in the prompt text, e.g. 'Option A: [[audio_clip_34]]"
+            "\\nOption B: [[audio_clip_36]]\\nWhich sounds more natural for "
+            "\"これはペンです\"?'. Returns the model's raw text reply — "
+            "read it yourself and decide what to do with it (report back to "
+            "Dylan, auto-pick between two close options, narrow candidates "
+            "down before asking Dylan to choose, etc.) rather than assuming "
+            "a fixed format."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": (
+                        "The question, with [[audio_clip_<id>]]/[[image_<id>]] "
+                        "placeholders embedded wherever a clip/image belongs."
+                    ),
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
 ]
 
 
@@ -728,5 +804,12 @@ async def dispatch_tool(
 
     if name == "list_workflow_specs":
         return [spec.name for spec in workflow_specs.list_workflow_specs()]
+
+    if name == "ask_multimodal_model":
+        engine = get_engine()
+        with Session(engine) as session:
+            parts = _resolve_multimodal_prompt(tool_input["prompt"], session)
+        response_text = await gemini_multimodal.ask(parts)
+        return {"response": response_text}
 
     raise ValueError(f"Unknown tool: {name!r}")

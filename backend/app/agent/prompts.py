@@ -71,6 +71,16 @@ layout, field mapping, cloze conventions, whether furigana appears on the \
 visible card), save it under a short, memorable name so a future session \
 doesn't start from scratch. If known workflow specs are listed below, \
 consider offering to reuse one before re-deriving everything.
+- ask_multimodal_model: ask a multimodal model a question with existing \
+audio clips or images embedded directly in the prompt, by id — \
+[[audio_clip_<id>]] for an id from generate_audio's clip_ids, \
+[[image_<id>]] for an id from search_images/generate_image. Not a fixed \
+workflow, just a tool — use your judgment for when it's useful, e.g. \
+comparing several generate_audio takes for which sounds most natural before \
+offering choices to Dylan (either narrow a big batch down to 1-2 for him to \
+pick between, or ask him first if you're not sure auto-narrowing is what he \
+wants this time), or getting a second opinion on a generated image. Returns \
+the model's raw text reply for you to act on however fits.
 
 General principles:
 - Whenever Dylan asks you to create a card (or a batch of cards), check for \

@@ -14,6 +14,58 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-25 — Ad hoc: add ask_multimodal_model tool (Gemini audio/image judgment, no fixed workflow)
+- Did: following the TTS-quality work below, Dylan wanted the agent to be
+  able to *listen* to and compare audio takes (e.g. pick the more natural-
+  sounding of several generate_audio options) rather than generating blind
+  and letting Dylan judge every time by ear — but explicitly as a general
+  tool, not a hardcoded `compare_audio` pipeline, so the agent and Dylan can
+  work out actual workflows themselves in conversation.
+  - New `app/clients/gemini_multimodal.py`: thin client, `ask(parts) -> str`
+    where `parts` is an ordered list of `{"text": str}` / `{"data": bytes,
+    "mime_type": str}` dicts — sent to Gemini's `generateContent` as
+    interleaved text/inline-data content, same shape `gemini_images.py`
+    already uses (`client.aio.models.generate_content`). Model:
+    `gemini-3.1-flash-lite` (this app's existing chat `DEFAULT_MODEL_ID`,
+    already confirmed reliable on Dylan's key) — confirmed live via `fly ssh
+    console` that it accepts inline audio and gives coherent answers,
+    including a real two-clip comparison (see below); tried
+    `gemini-3.1-pro-preview` too and got an equally good answer, so kept the
+    cheaper model rather than the preview one.
+  - New `ask_multimodal_model` tool (`app/agent/tools.py`): takes a single
+    `prompt` string with `[[audio_clip_<id>]]`/`[[image_<id>]]` placeholders
+    embedded wherever media belongs (id spaces are `AudioClip`/`ImageAsset`
+    primary keys, already returned to the agent as `clip_ids`/image ids by
+    `generate_audio`/`search_images`/`generate_image`). `dispatch_tool`
+    resolves placeholders against the DB via a new `_resolve_multimodal_prompt`
+    helper (regex `_MEDIA_PLACEHOLDER_RE`, tolerates a decorative extension
+    like `.mp3` the model might add), raising `ValueError` on an unknown id
+    so a bad reference surfaces as a normal `is_error` tool_result the model
+    can self-correct from (same shape as the existing "Unknown voice"
+    pattern), not a hard crash. Returns the model's raw text reply — no
+    fixed "pick the best" contract, intentionally, per Dylan's ask.
+  - Real validation, not just plumbing: fed two of the actual
+    before/after ElevenLabs clips from the TTS work below into a real
+    two-option comparison prompt via `fly ssh console`. Gemini correctly
+    picked the new-settings clip and, unprompted, described the old one as
+    having "unnatural stutters, false starts, and repeated words" —
+    independently confirming (via a completely different signal than the
+    earlier byte-length heuristic) that the old settings really were
+    mis-vocalizing the bracket-furigana text.
+- Verified: `cd backend && uv run pytest` — 298 passed (10 new: 3 in
+  `test_gemini_multimodal.py`, 3 dispatch_tool tests in `test_agent.py` for
+  placeholder resolution/unknown-id/plain-text-prompt cases, plus the
+  existing suite). Live Gemini audio-input checks were ad hoc via `fly ssh
+  console`, scratch scripts under `/tmp`, cleaned up after — not part of the
+  automated suite, no live end-to-end dispatch_tool test against the
+  deployed backend since these code changes aren't deployed yet.
+- Learned: no new secret needed — `GEMINI_API_KEY` is already configured on
+  the deployed backend (used by `gemini_images.py`), so this tool should
+  work immediately once deployed, unlike the Azure work below which is
+  still waiting on Dylan's manual key setup.
+
+---
+
 ## 2026-07-25 — Ad hoc: improve Japanese TTS quality (kanji misreads, bad pitch accent, awkward rhythm)
 - Did: Dylan reported ElevenLabs audio is often bad — kanji misread, unclear
   pronunciation, wrong pitch accent, awkward rhythm — and asked for research

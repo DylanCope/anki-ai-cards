@@ -956,3 +956,64 @@ async def test_run_turn_does_not_surface_specs_on_nonempty_history(db, monkeypat
         await core.run_turn(history, "hi", model_id="claude-opus-4-8")
 
     assert call_snapshots[0]["system"] == core.SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ask_multimodal_model_resolves_audio_and_image_placeholders(
+    db, monkeypatch
+):
+    with Session(tools.get_engine()) as session:
+        clip = tools.AudioClip(text="こんにちは", voice="elevenlabs:male", audio=b"clip-bytes", source="generate")
+        image = tools.ImageAsset(content_type="image/png", data=b"png-bytes", source="upload")
+        session.add(clip)
+        session.add(image)
+        session.commit()
+        session.refresh(clip)
+        session.refresh(image)
+        clip_id, image_id = clip.id, image.id
+
+    ask_mock = AsyncMock(return_value="B sounds more natural")
+    monkeypatch.setattr(tools.gemini_multimodal, "ask", ask_mock)
+
+    result = await tools.dispatch_tool(
+        "ask_multimodal_model",
+        {
+            "prompt": (
+                f"Compare [[audio_clip_{clip_id}.mp3]] against this "
+                f"[[image_{image_id}]]. Which fits better?"
+            )
+        },
+    )
+
+    assert result == {"response": "B sounds more natural"}
+    parts = ask_mock.call_args.args[0]
+    assert parts == [
+        {"text": "Compare "},
+        {"data": b"clip-bytes", "mime_type": "audio/mpeg"},
+        {"text": " against this "},
+        {"data": b"png-bytes", "mime_type": "image/png"},
+        {"text": ". Which fits better?"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ask_multimodal_model_rejects_unknown_clip_id(db, monkeypatch):
+    ask_mock = AsyncMock()
+    monkeypatch.setattr(tools.gemini_multimodal, "ask", ask_mock)
+
+    with pytest.raises(ValueError, match="No audio clip with id 999"):
+        await tools.dispatch_tool(
+            "ask_multimodal_model", {"prompt": "Listen to [[audio_clip_999]]"}
+        )
+    ask_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ask_multimodal_model_plain_text_prompt(db, monkeypatch):
+    ask_mock = AsyncMock(return_value="sure")
+    monkeypatch.setattr(tools.gemini_multimodal, "ask", ask_mock)
+
+    result = await tools.dispatch_tool("ask_multimodal_model", {"prompt": "hello"})
+
+    assert result == {"response": "sure"}
+    ask_mock.assert_awaited_once_with([{"text": "hello"}])
