@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from sqlmodel import Session
 
 from app.agent import workflow_specs
-from app.clients import ankiconnect, dictionary, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
+from app.clients import ankiconnect, azure_tts, dictionary, elevenlabs, forvo, gemini_images, google_docs, tatoeba, wikimedia_image_search
 from app.models import AudioClip, ImageAsset, PendingCard, get_engine
 
 # Magic-byte prefixes for the image formats a Wikimedia Commons search
@@ -105,20 +105,34 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "name": "generate_audio",
         "description": (
-            "Generate audio options for a piece of Japanese text via ElevenLabs, "
-            "so Dylan can pick the best-sounding take. Available in a male or "
-            "female voice — pick whichever fits the card (e.g. the speaker in "
-            "the lesson), or ask Dylan if it's not obvious which he wants. "
-            "Returns clip_ids (not the raw audio) — once Dylan picks one, pass "
-            "its clip_id into create_anki_note's audio argument to actually "
-            "attach it to the note; the clip is not saved anywhere on its own."
+            "Generate audio options for a piece of Japanese text, so Dylan "
+            "can pick the best-sounding take. Available in a male or female "
+            "voice — pick whichever fits the card (e.g. the speaker in the "
+            "lesson), or ask Dylan if it's not obvious which he wants. Two "
+            "backends: \"elevenlabs\" (default) and \"azure\". ElevenLabs has "
+            "no way to force Japanese pronunciation — it just reads whatever "
+            "plain text you give it, so kanji misreadings are only avoidable "
+            "by getting the reading right yourself beforehand. Azure instead "
+            "takes a structural `segments` breakdown (surface text + kana "
+            "reading per word) and speaks each word from its reading "
+            "directly, which reliably avoids misreadings ElevenLabs is "
+            "prone to — prefer azure with segments for any text containing "
+            "kanji that has more than one plausible reading. Returns "
+            "clip_ids (not the raw audio) — once Dylan picks one, pass its "
+            "clip_id into create_anki_note's audio argument to actually "
+            "attach it to the note; the clip is not saved anywhere on its "
+            "own."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "text": {
                     "type": "string",
-                    "description": "The Japanese text to synthesize.",
+                    "description": (
+                        "The Japanese text to synthesize. Always required, even "
+                        "when segments is given (used as the AudioClip's stored "
+                        "text/label)."
+                    ),
                 },
                 "n": {
                     "type": "integer",
@@ -130,6 +144,33 @@ TOOL_SCHEMAS: list[dict] = [
                     "enum": ["male", "female"],
                     "description": "Which voice to use.",
                     "default": "male",
+                },
+                "provider": {
+                    "type": "string",
+                    "enum": ["elevenlabs", "azure"],
+                    "description": "Which TTS backend to use.",
+                    "default": "elevenlabs",
+                },
+                "segments": {
+                    "type": "array",
+                    "description": (
+                        "Only used when provider is \"azure\". Breaks `text` "
+                        "into (surface text, kana reading) pairs so each "
+                        "kanji-bearing word is spoken from its reading rather "
+                        "than relying on the voice to read the kanji "
+                        "correctly, e.g. [{\"text\": \"明日\", \"reading\": "
+                        "\"あした\"}, {\"text\": \"行きます\"}] for 明日行きます. "
+                        "Omit `reading` for segments that are already kana or "
+                        "unambiguous."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "reading": {"type": "string"},
+                        },
+                        "required": ["text"],
+                    },
                 },
             },
             "required": ["text"],
@@ -504,22 +545,35 @@ async def dispatch_tool(
 
     if name == "generate_audio":
         n = tool_input.get("n", 3)
-        voice = tool_input.get("voice", elevenlabs.DEFAULT_VOICE)
-        options = await elevenlabs.generate_audio_options(
-            tool_input["text"], n=n, voice=voice
-        )
+        provider = tool_input.get("provider", "elevenlabs")
+        if provider == "azure":
+            voice = tool_input.get("voice", azure_tts.DEFAULT_VOICE)
+            options = await azure_tts.generate_audio_options(
+                tool_input["text"], n=n, voice=voice, segments=tool_input.get("segments")
+            )
+        else:
+            voice = tool_input.get("voice", elevenlabs.DEFAULT_VOICE)
+            options = await elevenlabs.generate_audio_options(
+                tool_input["text"], n=n, voice=voice
+            )
         # Persist the raw audio server-side and hand the model back only
         # small integer ids — not the audio itself. The model can't and
         # shouldn't reproduce large binary blobs in a later tool call; it
         # only needs a stable reference to pass into create_anki_note once
         # Dylan picks one. (This also avoids repeatedly re-sending tens of
         # KB of base64 per clip on every subsequent turn of the conversation.)
+        # `voice` is prefixed with the provider so it's visible which
+        # backend produced a given clip without a schema/column change —
+        # AudioClip.voice is a required str already (see app/models.py).
         engine = get_engine()
         clip_ids = []
         with Session(engine) as session:
             for option in options:
                 clip = AudioClip(
-                    text=tool_input["text"], voice=voice, audio=option, source="generate"
+                    text=tool_input["text"],
+                    voice=f"{provider}:{voice}",
+                    audio=option,
+                    source="generate",
                 )
                 session.add(clip)
                 session.commit()

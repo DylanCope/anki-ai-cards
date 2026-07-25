@@ -51,6 +51,15 @@ PROGRESS.md are the only "memory" between iterations.
   how the exact field names (`username`, `pathmp3`, `num_votes`, etc.) were
   confirmed, since Forvo's own docs page shows example request URLs but not
   a full response body.
+- The `generate_audio` tool's `provider="azure"` path (`app/clients/
+  azure_tts.py`) calls Azure AI Speech's REST TTS endpoint directly via
+  `httpx` (no SDK dependency). Needs `AZURE_SPEECH_KEY` + `AZURE_SPEECH_REGION`
+  — manual setup at portal.azure.com, same category as `ELEVENLABS_API_KEY`/
+  `FORVO_API_KEY` (Dylan's step, don't attempt it). Added specifically
+  because ElevenLabs has no phoneme/pronunciation-forcing support for
+  Japanese (English-only) — Azure's ja-JP voices read a per-word kana
+  `segments` breakdown directly, sidestepping kanji misreadings structurally
+  instead of hoping the model reads plain text correctly.
 
 ## Headless Anki deployment (manual steps for Dylan)
 

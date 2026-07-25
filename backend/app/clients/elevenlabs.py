@@ -10,11 +10,13 @@ import httpx
 
 API_BASE_URL = "https://api.elevenlabs.io/v1"
 
-# Dylan's own ElevenLabs voices (not the shared/library premade ones task 19
-# fell back to). These 402'd with "Free users cannot use library voices via
-# the API" on the free tier, same restriction Rachel hit — confirmed fixed
-# by Dylan upgrading to a paid ElevenLabs plan (Starter tier or above), not
-# by anything in this code. The agent picks one per `voice` ("male"/"female")
+# ElevenLabs' own library voices "Ishibashi" (male) and "Morioki" (female),
+# both marketed by ElevenLabs specifically as Japanese-optimized voices —
+# not ad-hoc clones, despite what an earlier version of this comment claimed.
+# These 402'd with "Free users cannot use library voices via the API" on the
+# free tier, same restriction Rachel hit — confirmed fixed by Dylan
+# upgrading to a paid ElevenLabs plan (Starter tier or above), not by
+# anything in this code. The agent picks one per `voice` ("male"/"female")
 # rather than always using a single fixed voice.
 VOICE_IDS = {
     "male": "Mv8AjrYZCBkdsmDHNwcB",
@@ -22,14 +24,21 @@ VOICE_IDS = {
 }
 DEFAULT_VOICE = "male"
 
-# Explicit multilingual model so Japanese text is synthesized correctly
-# regardless of whatever ElevenLabs defaults `model_id` to server-side.
-# Confirmed directly against the real API: omitting `model_id` and passing
-# "eleven_multilingual_v2" produce comparable Japanese audio today, but the
-# now-deprecated "eleven_monolingual_v1" 401s on this account ("not available
-# on the free tier") — pinning to a current multilingual model avoids
-# depending on which model an unset `model_id` happens to resolve to.
-MODEL_ID = "eleven_multilingual_v2"
+# ElevenLabs doesn't infer language from voice alone for multilingual
+# models — passing this explicitly avoids the model guessing wrong on short
+# or ambiguous strings, one contributor to the kanji-misreading complaints
+# task 18/19 partially addressed via the furigana prompt workaround.
+LANGUAGE_CODE = "ja"
+
+# eleven_v3 (GA since Feb 2026) over the previously-pinned
+# eleven_multilingual_v2: ElevenLabs' own material and third-party Japanese
+# reviews both point to v3 as the more natural-sounding model for Japanese,
+# and v3 is required for `LANGUAGE_CODE` to take effect at all —
+# multilingual_v2 rejects the `language_code` field outright. v3 costs
+# noticeably more per character than multilingual_v2 (see ElevenLabs
+# pricing), which is worth knowing if usage volume grows, but is
+# negligible at this app's flashcard-audio volume.
+MODEL_ID = "eleven_v3"
 
 
 class ElevenLabsError(Exception):
@@ -76,7 +85,12 @@ async def generate_audio_options(
             response = await client.post(
                 f"{API_BASE_URL}/text-to-speech/{voice_id}",
                 headers={"xi-api-key": _api_key()},
-                json={"text": text, "model_id": MODEL_ID, "voice_settings": voice_settings},
+                json={
+                    "text": text,
+                    "model_id": MODEL_ID,
+                    "language_code": LANGUAGE_CODE,
+                    "voice_settings": voice_settings,
+                },
             )
             try:
                 response.raise_for_status()

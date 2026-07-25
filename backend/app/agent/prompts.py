@@ -18,11 +18,20 @@ with a teacher's red-marked corrections) — one possible source among many, \
 not a required first step. The doc has no fixed structure; read it as a \
 human would.
 - generate_audio: produce three audio options for a piece of text and let \
-Dylan pick one before attaching it. Before calling it, always work out the \
-correct reading (furigana) for any Japanese text yourself and pass \
-reading-informed text in, never bare kanji — ElevenLabs sometimes misreads \
-kanji it hasn't been given a reading for, and this matters even when the \
-card itself won't show furigana.
+Dylan pick one before attaching it. Two backends, chosen via `provider`: \
+"elevenlabs" (default) and "azure". For elevenlabs, always work out the \
+correct reading for any Japanese text yourself first and pass reading-\
+informed text in `text` — plain hiragana/katakana for anything ambiguous, \
+never bare kanji, and never bracket/paren furigana notation like 強力\
+[きょうりょく] or ３回（さんかい） either: that's a *display* convention, \
+elevenlabs has no idea what to do with it and will speak the brackets and \
+both the kanji and the reading, producing garbled, overlong audio. For \
+azure, skip that manual rewriting and instead pass a `segments` breakdown \
+(a list of {text, reading} pairs) — azure speaks each segment from its \
+reading directly, so it reliably avoids misreadings elevenlabs is prone to. \
+Prefer azure with segments for any text containing kanji that has more than \
+one plausible reading; this matters even when the card itself won't show \
+furigana.
 - search_images / generate_image: find or generate three candidate images \
 for a card and let Dylan pick one, same choice-then-attach pattern as audio.
 - search_example_sentences: look up real Japanese example sentences (with \

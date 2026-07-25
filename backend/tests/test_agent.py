@@ -115,7 +115,7 @@ async def test_dispatch_generate_audio(db, monkeypatch):
         clips = [session.get(tools.AudioClip, cid) for cid in result["clip_ids"]]
     assert [c.audio for c in clips] == [b"aaa", b"bbb", b"ccc"]
     assert all(c.text == "こんにちは" for c in clips)
-    assert all(c.voice == tools.elevenlabs.DEFAULT_VOICE for c in clips)
+    assert all(c.voice == f"elevenlabs:{tools.elevenlabs.DEFAULT_VOICE}" for c in clips)
     assert all(c.source == "generate" for c in clips)
 
 
@@ -137,6 +137,42 @@ async def test_dispatch_generate_audio_custom_voice(db, monkeypatch):
     await tools.dispatch_tool("generate_audio", {"text": "hi", "voice": "female"})
 
     mock.assert_awaited_once_with("hi", n=3, voice="female")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_audio_azure_provider(db, monkeypatch):
+    elevenlabs_mock = AsyncMock(return_value=[b"should-not-be-called"])
+    azure_mock = AsyncMock(return_value=[b"aaa", b"bbb"])
+    monkeypatch.setattr(tools.elevenlabs, "generate_audio_options", elevenlabs_mock)
+    monkeypatch.setattr(tools.azure_tts, "generate_audio_options", azure_mock)
+
+    result = await tools.dispatch_tool(
+        "generate_audio", {"text": "食べる", "provider": "azure"}
+    )
+
+    elevenlabs_mock.assert_not_awaited()
+    azure_mock.assert_awaited_once_with(
+        "食べる", n=3, voice=tools.azure_tts.DEFAULT_VOICE, segments=None
+    )
+    with Session(tools.get_engine()) as session:
+        clips = [session.get(tools.AudioClip, cid) for cid in result["clip_ids"]]
+    assert all(c.voice == f"azure:{tools.azure_tts.DEFAULT_VOICE}" for c in clips)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_generate_audio_passes_segments_to_azure(db, monkeypatch):
+    azure_mock = AsyncMock(return_value=[b"aaa"])
+    monkeypatch.setattr(tools.azure_tts, "generate_audio_options", azure_mock)
+    segments = [{"text": "明日", "reading": "あした"}, {"text": "行きます"}]
+
+    await tools.dispatch_tool(
+        "generate_audio",
+        {"text": "明日行きます", "provider": "azure", "segments": segments},
+    )
+
+    azure_mock.assert_awaited_once_with(
+        "明日行きます", n=3, voice=tools.azure_tts.DEFAULT_VOICE, segments=segments
+    )
 
 
 @pytest.mark.asyncio

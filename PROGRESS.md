@@ -14,6 +14,68 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-25 — Ad hoc: improve Japanese TTS quality (kanji misreads, bad pitch accent, awkward rhythm)
+- Did: Dylan reported ElevenLabs audio is often bad — kanji misread, unclear
+  pronunciation, wrong pitch accent, awkward rhythm — and asked for research
+  into causes/alternatives (paid, up to ~£5/month). Two-track fix, both
+  shipped:
+  - Track 1 (`app/clients/elevenlabs.py`): switched `MODEL_ID` from
+    `eleven_multilingual_v2` to `eleven_v3` (GA since Feb 2026, reported
+    better for Japanese naturalness) and added `LANGUAGE_CODE = "ja"` to the
+    request body — `multilingual_v2` rejects `language_code` outright, v3
+    supports it. Verified both fields together return 200 against the real
+    API via `fly ssh console -a anki-ai-cards-backend`. Also corrected a
+    stale code comment: `VOICE_IDS`' two voices ("Ishibashi"/"Morioki") are
+    ElevenLabs' own official Japanese-marketed library voices, not ad-hoc
+    clones as the comment claimed — confirmed against elevenlabs.io's own
+    Japanese TTS page and a third-party voice-ID directory. Voice choice is
+    therefore *not* the root cause here.
+  - Track 2 (`app/clients/azure_tts.py`, new): added Azure AI Speech as a
+    second `generate_audio` backend (`provider="azure"`), run alongside
+    ElevenLabs rather than replacing it. Root cause: ElevenLabs has **no**
+    phoneme/pronunciation-dictionary support for Japanese (English-only,
+    confirmed via ElevenLabs' own docs) — there's no way to force correct
+    pronunciation there, only hope the model reads plain text right. Azure's
+    `ja-JP` neural voices read kana correctly natively, so `generate_audio`
+    now accepts an optional `segments` param (`[{text, reading}, ...]`) that
+    `azure_tts.py` substitutes into SSML directly, forcing pronunciation
+    per-word instead of guessing. `dispatch_tool` prefixes `AudioClip.voice`
+    with the provider (`"azure:ja-JP-NanamiNeural"` vs `"elevenlabs:male"`)
+    so takes stay distinguishable without a schema change.
+  - Updated `SYSTEM_PROMPT` (`app/agent/prompts.py`) to describe both
+    backends, and fixed a real bug found while querying real past
+    `generate_audio` calls (`sqlite3` against `/data/anki-ai-cards.db` via
+    `fly ssh console`): the agent sometimes sent bracket/paren furigana
+    notation itself (`強力[きょうりょく]`, `３回（さんかい）`) as the literal
+    ElevenLabs `text` — a *display* convention with no meaning to a TTS API,
+    almost certainly read as garbled extra syllables. Confirmed
+    circumstantially: regenerating one such sentence's audio, the old
+    model_id produced audio ~2.4x longer in bytes than the new model_id on
+    identical bracket-laden text (111KB vs 47KB) — consistent with the old
+    model vocalizing the bracket reading redundantly. `SYSTEM_PROMPT` now
+    explicitly forbids that notation for the elevenlabs path and points at
+    `segments` for azure instead.
+  - Generated 6 real before/after comparison clips (3 sentences pulled from
+    actual past `generate_audio` calls in the production DB × old vs new
+    ElevenLabs settings) for Dylan to listen to — couldn't email them (no
+    email-sending tool available); left them on the backend machine at
+    `/tmp/tts_samples/` (ephemeral — pull with `fly ssh sftp shell -a
+    anki-ai-cards-backend` before a machine restart clears them).
+- Verified: `cd backend && uv run pytest` — 292 passed. Real-API checks (not
+  part of the automated suite) run ad hoc via `fly ssh console`, scripts not
+  committed (used scratch files under `/tmp`, cleaned up after).
+- Learned: Azure isn't configured yet — `AZURE_SPEECH_KEY`/
+  `AZURE_SPEECH_REGION` are undocumented-until-now manual-setup secrets
+  (README.md, same category as `FORVO_API_KEY`), Dylan's step, not set on
+  the deployed backend yet. Until he sets them, `provider="azure"` will
+  raise `KeyError` on `os.environ[...]` if the agent ever picks it — same
+  fail-open-by-exception shape as an unset `FORVO_API_KEY` today, no special
+  handling added. Actual audio-quality judgment (pitch accent, naturalness)
+  needs Dylan's ears — bytes-length deltas and "no phoneme support" are
+  documented evidence, not a substitute for listening.
+
+---
+
 ## 2026-07-24 — Ad hoc fix: bug report #31, Anki wedges for hours after a failed sync, no auto-recovery
 - Did: Dylan tried to preview and then create a card and got "Could not
   create the card in Anki." again, right after the bug report #30 fix below

@@ -176,6 +176,20 @@ is disabled (image search via Wikimedia still works without it).
 2. Copy the key from your account dashboard.
 If omitted, ElevenLabs TTS (`generate_audio`) remains available for audio.
 
+**`AZURE_SPEECH_KEY`** / **`AZURE_SPEECH_REGION`** *(optional)* — enables
+Azure AI Speech as a second `generate_audio` backend (`provider="azure"`),
+which can be given an explicit kana reading per word (`segments`) instead of
+guessing kanji pronunciation from plain text like ElevenLabs has to.
+1. Sign in (or sign up) at [portal.azure.com](https://portal.azure.com).
+2. Create a **Speech service** resource (search "Speech" in the portal;
+   any region works, e.g. `japaneast` or `eastus` — use that region's name,
+   lowercase, as `AZURE_SPEECH_REGION`).
+3. Once created, go to **Keys and Endpoint** and copy **Key 1** as
+   `AZURE_SPEECH_KEY`.
+The free (F0) tier includes 500,000 characters/month, which comfortably
+covers this app's flashcard-audio volume — expect close to £0/month in
+practice. If omitted, ElevenLabs remains the only TTS backend.
+
 **`GOOGLE_CLIENT_ID`** / **`GOOGLE_CLIENT_SECRET`** — Google sign-in +
 read-only Docs access, in one OAuth client. This one has the most steps:
 1. In [Google Cloud Console](https://console.cloud.google.com), create a new
