@@ -1,8 +1,9 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
-import { Loader2, Monitor, Smartphone, X } from "lucide-react";
+import { Fragment, useState } from "react";
+import { Loader2 } from "lucide-react";
 import type { CardPayload, PendingCardPreview } from "@/app/lib/types";
+import PendingCardPreviewModal from "@/app/components/PendingCardPreviewModal";
 
 interface Props {
   payload: CardPayload;
@@ -13,11 +14,6 @@ interface Props {
 
 type PreviewSide = "front" | "back";
 type PreviewWidth = "mobile" | "pc";
-
-function buildSrcDoc(preview: PendingCardPreview, side: PreviewSide): string {
-  const html = side === "front" ? preview.front_html : preview.back_html;
-  return `<!DOCTYPE html><html><head><style>${preview.css}</style></head><body><div class="card">${html}</div></body></html>`;
-}
 
 export default function CardPayloadCard({
   payload,
@@ -38,20 +34,7 @@ export default function CardPayloadCard({
   const [discarding, setDiscarding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!previewOpen) return;
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setPreviewOpen(false);
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [previewOpen]);
-
-  async function togglePreview() {
-    if (previewOpen) {
-      setPreviewOpen(false);
-      return;
-    }
+  async function openPreview() {
     if (preview) {
       setPreviewOpen(true);
       return;
@@ -95,6 +78,7 @@ export default function CardPayloadCard({
       }
       const data = (await res.json()) as { note_id: number };
       onUpdatePayload({ ...payload, status: "created", note_id: data.note_id });
+      setPreviewOpen(false);
     } catch (err) {
       setActionError(
         err instanceof Error ? err.message : "Could not create the card in Anki."
@@ -114,6 +98,7 @@ export default function CardPayloadCard({
       });
       if (!res.ok) throw new Error(`Discard failed (${res.status})`);
       onUpdatePayload({ ...payload, status: "discarded" });
+      setPreviewOpen(false);
     } catch {
       setActionError("Could not discard the draft.");
     } finally {
@@ -157,11 +142,11 @@ export default function CardPayloadCard({
             <button
               type="button"
               disabled={disabled || previewLoading}
-              onClick={togglePreview}
+              onClick={openPreview}
               className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1 text-xs font-medium hover:bg-foreground/5 disabled:opacity-50"
             >
               {previewLoading && <Loader2 size={12} className="animate-spin" />}
-              {previewOpen ? "Hide preview" : "Preview"}
+              Preview
             </button>
             <button
               type="button"
@@ -185,90 +170,19 @@ export default function CardPayloadCard({
           {previewError && <p className="mt-2 text-xs text-red-500">{previewError}</p>}
 
           {previewOpen && preview && (
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6 backdrop-blur-md"
-              onClick={() => setPreviewOpen(false)}
-            >
-              <div
-                className="relative flex max-h-[90vh] w-fit max-w-[95vw] flex-col gap-3 rounded-xl border border-border bg-surface p-4 shadow-2xl"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex gap-1 rounded-lg border border-border p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewSide("front")}
-                      className={`rounded-md px-2 py-1 text-xs font-medium ${
-                        previewSide === "front"
-                          ? "bg-accent text-accent-foreground"
-                          : "text-foreground/60 hover:bg-foreground/5"
-                      }`}
-                    >
-                      Front
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPreviewSide("back")}
-                      className={`rounded-md px-2 py-1 text-xs font-medium ${
-                        previewSide === "back"
-                          ? "bg-accent text-accent-foreground"
-                          : "text-foreground/60 hover:bg-foreground/5"
-                      }`}
-                    >
-                      Back
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex gap-1 rounded-lg border border-border p-0.5">
-                      <button
-                        type="button"
-                        aria-label="Mobile width"
-                        title="Mobile width"
-                        onClick={() => setPreviewWidth("mobile")}
-                        className={`rounded-md p-1.5 ${
-                          previewWidth === "mobile"
-                            ? "bg-accent text-accent-foreground"
-                            : "text-foreground/60 hover:bg-foreground/5"
-                        }`}
-                      >
-                        <Smartphone size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="PC width"
-                        title="PC width"
-                        onClick={() => setPreviewWidth("pc")}
-                        className={`rounded-md p-1.5 ${
-                          previewWidth === "pc"
-                            ? "bg-accent text-accent-foreground"
-                            : "text-foreground/60 hover:bg-foreground/5"
-                        }`}
-                      >
-                        <Monitor size={14} />
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setPreviewOpen(false)}
-                      aria-label="Close preview"
-                      className="rounded-full border border-border p-1.5 text-foreground/70 hover:text-foreground"
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex justify-center overflow-auto rounded-lg border border-border bg-background p-3">
-                  <iframe
-                    sandbox=""
-                    srcDoc={buildSrcDoc(preview, previewSide)}
-                    className={`h-[60vh] rounded-md border border-border bg-white ${
-                      previewWidth === "mobile" ? "w-[375px]" : "w-[700px]"
-                    } max-w-full`}
-                    title="Card preview"
-                  />
-                </div>
-              </div>
-            </div>
+            <PendingCardPreviewModal
+              preview={preview}
+              side={previewSide}
+              onSideChange={setPreviewSide}
+              width={previewWidth}
+              onWidthChange={setPreviewWidth}
+              onClose={() => setPreviewOpen(false)}
+              onCreate={handleCreate}
+              onDiscard={handleDiscard}
+              creating={creating}
+              discarding={discarding}
+              actionError={actionError}
+            />
           )}
         </>
       )}

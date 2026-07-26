@@ -109,11 +109,16 @@ async def get_notes_info(note_ids: list[int]) -> list[dict]:
     return await invoke("notesInfo", notes=note_ids)
 
 
-async def retrieve_media_file(filename: str) -> str | None:
-    """Wraps `retrieveMediaFile` — returns the base64-encoded file contents
-    of `filename` from Anki's media collection folder, or None if no such
-    file exists (AnkiConnect's own documented response is the boolean
-    `false` in that case, not an `error`)."""
+async def get_media_file(filename: str) -> str | None:
+    """Wraps `retrieveMediaFile` — result is the file's base64-encoded
+    content, or `False` if no file by that name exists in the collection
+    (confirmed against the real deployed AnkiConnect instance, both cases).
+    Returns `None` for the missing case instead of `False` so callers get a
+    normal falsy-but-typed Python value.
+
+    Tests `is not False` rather than a plain falsy check so a genuinely empty
+    media file (which base64-encodes to `""`) is reported as the empty string
+    it is, not misreported as missing."""
 
     result = await invoke("retrieveMediaFile", filename=filename)
     return result if result is not False else None
@@ -124,17 +129,21 @@ async def create_note(
     model_name: str,
     fields: dict[str, str],
     tags: list[str] | None = None,
-    audio: dict[str, object] | None = None,
-    picture: dict[str, object] | None = None,
+    audio: list[dict[str, object]] | None = None,
+    picture: list[dict[str, object]] | None = None,
 ) -> int:
-    """`audio`/`picture`, if given, are a single AnkiConnect media-attachment
-    object each (`{"data": <base64>, "filename": ..., "fields": [...]}`) —
-    AnkiConnect stores the media in the collection's media folder and appends
-    the resulting `[sound:filename]`/`<img src="filename">` reference to each
-    named field itself, so callers never need a separate storeMediaFile step.
-    `picture` uses the exact same shape as `audio`, per AnkiConnect's addNote
-    documentation (both accept `data`+`filename`+`fields`, alongside `url` as
-    an alternative to `data` which this client doesn't use)."""
+    """`audio`/`picture`, if given, are lists of AnkiConnect media-attachment
+    objects (`{"data": <base64>, "filename": ..., "fields": [...]}`) — one
+    entry per attached file, each targeting its own field(s), so a note
+    needing several distinct media files (e.g. a word's audio plus a
+    separate example-sentence audio) can attach all of them in one call.
+    AnkiConnect stores each in the collection's media folder and appends the
+    resulting `[sound:filename]`/`<img src="filename">` reference to each of
+    its named fields, so callers never need a separate storeMediaFile step.
+    `picture` uses the exact same per-entry shape as `audio`, per
+    AnkiConnect's addNote documentation (both accept `data`+`filename`+
+    `fields` per entry, alongside `url` as an alternative to `data` which
+    this client doesn't use)."""
 
     note: dict[str, object] = {
         "deckName": deck_name,
@@ -143,9 +152,9 @@ async def create_note(
         "tags": tags or [],
     }
     if audio:
-        note["audio"] = [audio]
+        note["audio"] = audio
     if picture:
-        note["picture"] = [picture]
+        note["picture"] = picture
     return await invoke("addNote", note=note)
 
 

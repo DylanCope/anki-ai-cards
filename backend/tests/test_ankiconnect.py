@@ -186,12 +186,12 @@ async def test_get_notes_info():
 
 
 @respx.mock
-async def test_retrieve_media_file():
+async def test_get_media_file_returns_base64_content():
     route = respx.post(ANKICONNECT_URL).mock(
         return_value=Response(200, json={"result": "YWFh", "error": None})
     )
 
-    result = await ankiconnect.retrieve_media_file("clip-1.mp3")
+    result = await ankiconnect.get_media_file("clip-1.mp3")
 
     assert result == "YWFh"
     sent_body = json.loads(route.calls.last.request.content)
@@ -200,12 +200,12 @@ async def test_retrieve_media_file():
 
 
 @respx.mock
-async def test_retrieve_media_file_missing_returns_none():
+async def test_get_media_file_missing_returns_none():
     respx.post(ANKICONNECT_URL).mock(
         return_value=Response(200, json={"result": False, "error": None})
     )
 
-    result = await ankiconnect.retrieve_media_file("nonexistent.mp3")
+    result = await ankiconnect.get_media_file("_does_not_exist.ttf")
 
     assert result is None
 
@@ -243,12 +243,35 @@ async def test_create_note_with_audio_attachment():
         deck_name="Japanese",
         model_name="Cloze+",
         fields={"Text": "{{c1::食べる}}"},
-        audio={"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]},
+        audio=[{"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]}],
     )
 
     sent_body = json.loads(route.calls.last.request.content)
     assert sent_body["params"]["note"]["audio"] == [
         {"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]}
+    ]
+
+
+@respx.mock
+async def test_create_note_with_multiple_audio_attachments():
+    route = respx.post(ANKICONNECT_URL).mock(
+        return_value=Response(200, json={"result": 12345, "error": None})
+    )
+
+    await ankiconnect.create_note(
+        deck_name="Japanese",
+        model_name="Cloze+",
+        fields={"Text": "{{c1::食べる}}"},
+        audio=[
+            {"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]},
+            {"data": "YmJi", "filename": "clip-2.mp3", "fields": ["Sentence Audio"]},
+        ],
+    )
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["params"]["note"]["audio"] == [
+        {"data": "YWFh", "filename": "clip-1.mp3", "fields": ["Text Audio"]},
+        {"data": "YmJi", "filename": "clip-2.mp3", "fields": ["Sentence Audio"]},
     ]
 
 
@@ -262,7 +285,7 @@ async def test_create_note_with_picture_attachment():
         deck_name="Japanese",
         model_name="Cloze+",
         fields={"Text": "{{c1::食べる}}"},
-        picture={"data": "aW1n", "filename": "image-1.png", "fields": ["Picture"]},
+        picture=[{"data": "aW1n", "filename": "image-1.png", "fields": ["Picture"]}],
     )
 
     sent_body = json.loads(route.calls.last.request.content)

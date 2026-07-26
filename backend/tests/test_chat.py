@@ -1716,8 +1716,8 @@ def _new_pending_card(
     *,
     status: str = "pending",
     tags: list[str] | None = ["lesson"],
-    audio: dict | None = None,
-    picture: dict | None = None,
+    audio: list[dict] | None = None,
+    picture: list[dict] | None = None,
 ) -> int:
     with Session(get_engine()) as session:
         pending = PendingCard(
@@ -1811,8 +1811,8 @@ def test_create_pending_card_attaches_stored_audio_and_picture(monkeypatch):
         clip_id, image_id = clip.id, image.id
 
     pending_card_id = _new_pending_card(
-        audio={"clip_id": clip_id, "fields": ["Text Audio"]},
-        picture={"image_id": image_id, "fields": ["Picture"]},
+        audio=[{"clip_id": clip_id, "fields": ["Text Audio"]}],
+        picture=[{"image_id": image_id, "fields": ["Picture"]}],
     )
 
     create_mock = AsyncMock(return_value=99)
@@ -1827,16 +1827,20 @@ def test_create_pending_card_attaches_stored_audio_and_picture(monkeypatch):
         model_name="Cloze",
         fields={"Text": "{{c1::食べます}}"},
         tags=["lesson"],
-        audio={
-            "data": base64.b64encode(b"aaa").decode("ascii"),
-            "filename": f"anki-ai-cards-{clip_id}.mp3",
-            "fields": ["Text Audio"],
-        },
-        picture={
-            "data": base64.b64encode(b"pngbytes").decode("ascii"),
-            "filename": f"anki-ai-cards-{image_id}.png",
-            "fields": ["Picture"],
-        },
+        audio=[
+            {
+                "data": base64.b64encode(b"aaa").decode("ascii"),
+                "filename": f"anki-ai-cards-{clip_id}.mp3",
+                "fields": ["Text Audio"],
+            }
+        ],
+        picture=[
+            {
+                "data": base64.b64encode(b"pngbytes").decode("ascii"),
+                "filename": f"anki-ai-cards-{image_id}.png",
+                "fields": ["Picture"],
+            }
+        ],
     )
 
 
@@ -1947,7 +1951,54 @@ def test_preview_pending_card_renders_the_note_type_template(monkeypatch):
     assert "食べます" in body["back_html"]
 
 
-def test_preview_pending_card_includes_picked_media(monkeypatch):
+def test_preview_pending_card_inlines_picked_audio_and_picture_into_the_card(monkeypatch):
+    _seed_token()
+    with Session(get_engine()) as session:
+        clip = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
+        session.add(clip)
+        image = ImageAsset(content_type="image/png", data=b"pngbytes", source="upload")
+        session.add(image)
+        session.commit()
+        session.refresh(clip)
+        session.refresh(image)
+        clip_id, image_id = clip.id, image.id
+
+    pending_card_id = _new_pending_card(
+        tags=None,
+        audio=[{"clip_id": clip_id, "fields": ["Text Audio"]}],
+        picture=[{"image_id": image_id, "fields": ["Picture"]}],
+    )
+
+    templates_mock = AsyncMock(
+        return_value={
+            "Cloze": {
+                "Front": "{{cloze:Text}}",
+                "Back": "{{cloze:Text}}<br>{{Text Audio}}<br>{{Picture}}",
+            }
+        }
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "audio_base64" not in body
+    assert "picture_base64" not in body
+    audio_data_uri = f"data:audio/mpeg;base64,{base64.b64encode(b'aaa').decode('ascii')}"
+    picture_data_uri = f"data:image/png;base64,{base64.b64encode(b'pngbytes').decode('ascii')}"
+    assert f'<audio controls preload="none" src="{audio_data_uri}"></audio>' in body["back_html"]
+    assert f'<img src="{picture_data_uri}">' in body["back_html"]
+
+
+def test_preview_pending_card_tolerates_bare_object_audio_and_picture(monkeypatch):
+    """Regression test: a pending card whose audio/picture was stored as a
+    bare object instead of a one-element array (the model occasionally sends
+    it that way; see agent.tools._as_entry_list) must still preview instead
+    of 500ing while iterating over the object's keys as if they were
+    entries."""
     _seed_token()
     with Session(get_engine()) as session:
         clip = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
@@ -1966,7 +2017,12 @@ def test_preview_pending_card_includes_picked_media(monkeypatch):
     )
 
     templates_mock = AsyncMock(
-        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+        return_value={
+            "Cloze": {
+                "Front": "{{cloze:Text}}",
+                "Back": "{{cloze:Text}}<br>{{Text Audio}}<br>{{Picture}}",
+            }
+        }
     )
     styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
     monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
@@ -1975,13 +2031,53 @@ def test_preview_pending_card_includes_picked_media(monkeypatch):
     response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["audio_base64"] == base64.b64encode(b"aaa").decode("ascii")
-    assert body["picture_base64"] == base64.b64encode(b"pngbytes").decode("ascii")
-    assert body["picture_content_type"] == "image/png"
+    audio_data_uri = f"data:audio/mpeg;base64,{base64.b64encode(b'aaa').decode('ascii')}"
+    picture_data_uri = f"data:image/png;base64,{base64.b64encode(b'pngbytes').decode('ascii')}"
+    assert f'<audio controls preload="none" src="{audio_data_uri}"></audio>' in response.json()["back_html"]
+    assert f'<img src="{picture_data_uri}">' in response.json()["back_html"]
 
 
-def test_preview_pending_card_omits_media_keys_when_none_picked(monkeypatch):
+def test_preview_pending_card_inlines_multiple_audio_and_picture_attachments(monkeypatch):
+    _seed_token()
+    with Session(get_engine()) as session:
+        clip_1 = AudioClip(text="食べます", voice="native", audio=b"aaa", source="forvo")
+        clip_2 = AudioClip(text="食べます", voice="native", audio=b"bbb", source="forvo")
+        session.add(clip_1)
+        session.add(clip_2)
+        session.commit()
+        session.refresh(clip_1)
+        session.refresh(clip_2)
+        clip_id_1, clip_id_2 = clip_1.id, clip_2.id
+
+    pending_card_id = _new_pending_card(
+        tags=None,
+        audio=[
+            {"clip_id": clip_id_1, "fields": ["Text Audio"]},
+            {"clip_id": clip_id_2, "fields": ["Sentence Audio"]},
+        ],
+    )
+
+    templates_mock = AsyncMock(
+        return_value={
+            "Cloze": {
+                "Front": "{{cloze:Text}}",
+                "Back": "{{cloze:Text}}<br>{{Text Audio}}<br>{{Sentence Audio}}",
+            }
+        }
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    back_html = response.json()["back_html"]
+    assert f"data:audio/mpeg;base64,{base64.b64encode(b'aaa').decode('ascii')}" in back_html
+    assert f"data:audio/mpeg;base64,{base64.b64encode(b'bbb').decode('ascii')}" in back_html
+
+
+def test_preview_pending_card_omits_media_markup_when_none_picked(monkeypatch):
     _seed_token()
     pending_card_id = _new_pending_card(tags=None)
 
@@ -1998,7 +2094,51 @@ def test_preview_pending_card_omits_media_keys_when_none_picked(monkeypatch):
     body = response.json()
     assert "audio_base64" not in body
     assert "picture_base64" not in body
-    assert "picture_content_type" not in body
+    assert "<audio" not in body["back_html"]
+    assert "<img" not in body["back_html"]
+
+
+def test_preview_pending_card_inlines_local_media_referenced_by_note_css(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(
+        return_value="@font-face { font-family: textbook; src: url('_font.ttf'); }"
+    )
+    media_mock = AsyncMock(return_value="Zm9udGJ5dGVz")
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_media_file", media_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    media_mock.assert_awaited_once_with("_font.ttf")
+    assert "_font.ttf" not in body["css"]
+    assert "data:font/ttf;base64,Zm9udGJ5dGVz" in body["css"]
+
+
+def test_preview_pending_card_skips_media_fetch_when_none_referenced(monkeypatch):
+    _seed_token()
+    pending_card_id = _new_pending_card(tags=None)
+
+    templates_mock = AsyncMock(
+        return_value={"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
+    )
+    styling_mock = AsyncMock(return_value=".cloze { font-weight: bold; }")
+    media_mock = AsyncMock()
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_templates", templates_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_model_styling", styling_mock)
+    monkeypatch.setattr(chat_module.ankiconnect, "get_media_file", media_mock)
+
+    response = _authed_client().get(f"/api/pending-cards/{pending_card_id}/preview")
+
+    assert response.status_code == 200
+    media_mock.assert_not_awaited()
 
 
 def test_delete_conversation_requires_auth(client):

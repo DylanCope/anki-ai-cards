@@ -236,6 +236,50 @@ One-time AnkiWeb login via VNC, after that first deploy:
    own port) from *within* another Fly app in the same org (e.g.
    `fly ssh console -a anki-ai-cards-backend`).
 
+## Dev-agent deployment (manual steps for Dylan)
+
+Config lives at `deploy/devagent/` — a Dockerfile that installs Claude Code
+CLI (npm), Python/`uv`, git, `flyctl`, and `tmux` on top of a Node base image,
+plus an `entrypoint.sh` that supervises `claude remote-control --continue`
+against a persistent checkout of this repo. The point: Dylan can pair to this
+session from browser/phone (same Remote Control mechanism as any Claude Code
+session) without needing his own laptop running. Like the other three apps,
+deploy from *inside* `deploy/devagent/`, not the repo root with `--config`.
+
+**Remote Control has a hard constraint that shapes this whole setup: it
+requires interactive subscription OAuth login (`/login` via browser) and does
+not work with `ANTHROPIC_API_KEY` or the headless `setup-token` flow.** The
+OAuth session also expires (~3-day warning) and needs `/login` re-run to
+renew — this is not a one-time setup step, it recurs. `entrypoint.sh`
+supervises `claude` inside a detached `tmux` session (not the bare
+foreground) specifically so this login/re-login can happen interactively:
+
+1. `fly ssh console -a anki-ai-cards-devagent`
+2. `tmux attach -t devagent`
+3. Complete (or renew) the OAuth login shown in that terminal, from a browser
+   on any device. Detach without killing it: `Ctrl-b d`.
+
+The `devagent_data` volume (repo checkout at `/data/repo` + Claude Code's own
+state at `/data/claude-config`, via `CLAUDE_CONFIG_DIR`) must be created
+before the first deploy — see README.md's Deployment section for the exact
+command. `GITHUB_TOKEN` (fine-grained PAT scoped to just this repo,
+`contents:write`) and `FLY_API_TOKEN` (ideally scoped to just the other three
+apps) must be pushed as secrets before the first deploy too. Deliberately no
+`ANTHROPIC_API_KEY` — billing rides on Dylan's Claude subscription via that
+OAuth login, sharing usage/rate limits with his own everyday Claude Code
+sessions, not a separate quota.
+
+**This app is deliberately not covered by "Autonomous deploy/debug access"
+below.** It holds its own scoped GitHub push token and Fly deploy token and
+is meant as Dylan's personal always-on terminal, not infrastructure the loop
+iterates on — changes to it go through the same explicit-approval flow as any
+conversation that touches it.
+
+`entrypoint.sh` never passes `--dangerously-skip-permissions` or
+`--permission-mode bypassPermissions` to `claude` — Dylan is the human on the
+other end of Remote Control approving tool calls interactively, same as any
+other Claude Code session.
+
 ## Backend/frontend deployment (manual steps for Dylan)
 
 `backend/fly.toml` + `backend/Dockerfile` and `frontend/fly.toml` +
@@ -363,6 +407,10 @@ chat UI does (agent → Docs/AnkiConnect tools → Flycast → relay → Anki).
   manually. It *may* run `fly deploy`/`fly logs`/`fly status`/
   `fly apps restart`/`fly ssh console` (see "Autonomous deploy/debug access"
   above).
+- The loop must never attempt the dev-agent's Remote Control OAuth
+  login/re-login either (see "Dev-agent deployment" above) — same category as
+  the VNC login, except this one recurs every few days rather than being
+  truly one-time.
 - No automated test may make a real network call to Google, Anthropic,
   ElevenLabs, or AnkiConnect — mock everything at the `httpx`/SDK-client
   boundary. `backend/scripts/smoke_test_chat.py` and

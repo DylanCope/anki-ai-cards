@@ -153,6 +153,37 @@ def test_to_internal_response_has_no_thought_signature_attribute_when_absent():
     assert not hasattr(result.content[0], "gemini_thought_signature")
 
 
+def test_to_internal_response_shares_thought_signature_across_parallel_function_calls():
+    # Confirmed empirically against the real API: when a response contains
+    # multiple parallel function_call parts, Gemini only attaches a
+    # thought_signature to the first one. Replaying the later, unsigned
+    # parts as-is 400s ("Function call is missing a thought_signature") —
+    # every tool_use block from this response must carry the one signature
+    # Gemini did give us.
+    response = _make_response(
+        [
+            types.Part(
+                function_call=types.FunctionCall(id="call-1", name="search_dictionary", args={}),
+                thought_signature=b"opaque-bytes",
+            ),
+            types.Part(
+                function_call=types.FunctionCall(id="call-2", name="list_workflow_specs", args={})
+            ),
+            types.Part(
+                function_call=types.FunctionCall(id="call-3", name="list_anki_note_types", args={})
+            ),
+        ]
+    )
+
+    result = gemini_provider._to_internal_response(response)
+
+    assert len(result.content) == 3
+    for block in result.content:
+        assert block.gemini_thought_signature == base64.b64encode(b"opaque-bytes").decode(
+            "ascii"
+        )
+
+
 def test_to_gemini_contents_replays_thought_signature_on_tool_use():
     messages = [
         {"role": "user", "content": "hi"},

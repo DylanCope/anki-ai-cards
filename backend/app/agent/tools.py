@@ -38,23 +38,29 @@ _IMAGE_MAGIC_BYTES: list[tuple[bytes, str]] = [
 ]
 
 
-def _validate_media_input(kind: str, value: dict | None, id_key: str) -> None:
-    """The model occasionally sends `audio`/`picture` as something other than
-    the object the tool schema declares (e.g. wrapping it in a list) — tool
-    schemas aren't enforced server-side. Catching that here, right where the
-    model's input is read, turns it into an immediate is_error tool result
-    the model can see and self-correct from (see app.agent.core's dispatch_tool
-    try/except), instead of the bad shape getting persisted onto a PendingCard
-    and only surfacing as an opaque AnkiConnect failure much later when Dylan
-    clicks "create" — see bug report #30."""
+def _validate_media_input(kind: str, value: list[dict] | dict | None, id_key: str) -> None:
+    """Check each `audio`/`picture` attachment actually carries the keys
+    `_create_note_in_anki` will index into. Tool schemas aren't enforced
+    server-side, so a malformed entry would otherwise be persisted onto a
+    PendingCard unvalidated and only surface as an opaque AnkiConnect failure
+    much later, when Dylan clicks "create" — see bug report #30. Raising here,
+    right where the model's input is read, turns it into an immediate is_error
+    tool result the model can see and self-correct from (see app.agent.core's
+    dispatch_tool try/except).
 
-    if value is None:
-        return
-    if not isinstance(value, dict) or id_key not in value or "fields" not in value:
-        raise ValueError(
-            f"{kind} must be an object with '{id_key}' and 'fields' keys, "
-            f"got {value!r}"
-        )
+    Runs on the `_as_entry_list`-normalized value, so the bare-object-instead-
+    of-array shape of bug report #29 is already folded into a one-element list
+    by this point and is accepted rather than rejected — the two bugs pull in
+    opposite directions (#29 wants tolerance of a wrong-but-unambiguous shape,
+    #30 wants rejection of a genuinely unusable one), and normalize-then-
+    validate is what satisfies both."""
+
+    for entry in _as_entry_list(value) or []:
+        if not isinstance(entry, dict) or id_key not in entry or "fields" not in entry:
+            raise ValueError(
+                f"{kind} entries must be objects with '{id_key}' and 'fields' "
+                f"keys, got {entry!r}"
+            )
 
 
 def _guess_image_content_type(data: bytes) -> str:
@@ -310,54 +316,69 @@ TOOL_SCHEMAS: list[dict] = [
                     "items": {"type": "string"},
                 },
                 "audio": {
-                    "type": "object",
+                    "type": "array",
                     "description": (
-                        "Attach a previously generated audio clip (a clip_id "
-                        "from generate_audio's result, after Dylan picked an "
-                        "option) to this note. AnkiConnect stores the audio in "
-                        "Anki's media collection and appends the [sound:...] "
-                        "reference to each listed field itself."
+                        "Attach one or more previously generated/picked audio "
+                        "clips (clip_ids from generate_audio, "
+                        "search_word_pronunciations, or "
+                        "search_example_sentences results, after Dylan picked "
+                        "them) to this note — one entry per clip, each "
+                        "targeting its own field(s), so a card needing "
+                        "several distinct audio files (e.g. a word's audio "
+                        "plus a separate example-sentence audio) can attach "
+                        "all of them in one call. AnkiConnect stores each "
+                        "clip in Anki's media collection and appends the "
+                        "[sound:...] reference to each of its listed fields."
                     ),
-                    "properties": {
-                        "clip_id": {
-                            "type": "integer",
-                            "description": "A clip_id from generate_audio's result.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "clip_id": {
+                                "type": "integer",
+                                "description": "A clip_id from a previous audio tool's result.",
+                            },
+                            "fields": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Field name(s) to attach this clip to, e.g. "
+                                    "the discovered audio field for this note type."
+                                ),
+                            },
                         },
-                        "fields": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Field name(s) to attach the audio to, e.g. the "
-                                "discovered audio field for this note type."
-                            ),
-                        },
+                        "required": ["clip_id", "fields"],
                     },
-                    "required": ["clip_id", "fields"],
                 },
                 "picture": {
-                    "type": "object",
+                    "type": "array",
                     "description": (
-                        "Attach a previously stored image (an image_id from an "
-                        "uploaded, searched, or generated image, after Dylan "
-                        "picked one) to this note. AnkiConnect stores the image "
-                        "in Anki's media collection and appends an <img> "
-                        "reference to each listed field itself."
+                        "Attach one or more previously stored images "
+                        "(image_ids from uploaded, searched, or generated "
+                        "images, after Dylan picked them) to this note — one "
+                        "entry per image, each targeting its own field(s). "
+                        "AnkiConnect stores each image in Anki's media "
+                        "collection and appends an <img> reference to each of "
+                        "its listed fields."
                     ),
-                    "properties": {
-                        "image_id": {
-                            "type": "integer",
-                            "description": "An image_id referencing a stored image.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "image_id": {
+                                "type": "integer",
+                                "description": "An image_id referencing a stored image.",
+                            },
+                            "fields": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Field name(s) to attach this image to, "
+                                    "e.g. the discovered image field for this "
+                                    "note type."
+                                ),
+                            },
                         },
-                        "fields": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Field name(s) to attach the image to, e.g. the "
-                                "discovered image field for this note type."
-                            ),
-                        },
+                        "required": ["image_id", "fields"],
                     },
-                    "required": ["image_id", "fields"],
                 },
             },
             "required": ["deck_name", "model_name", "fields"],
@@ -582,45 +603,67 @@ TOOL_SCHEMAS: list[dict] = [
 ]
 
 
+def _as_entry_list(value: list[dict] | dict | None) -> list[dict] | None:
+    """The model occasionally sends a single audio/picture attachment as a
+    bare object instead of a one-element array, even though the tool schema
+    declares an array — Anthropic tool inputs aren't schema-validated
+    server-side, so this shape slips through as-is. Normalize it here rather
+    than at every call site."""
+    if isinstance(value, dict):
+        return [value]
+    return value
+
+
 async def _create_note_in_anki(
     deck_name: str,
     model_name: str,
     fields: dict[str, str],
     tags: list[str] | None,
-    audio_input: dict | None,
-    picture_input: dict | None,
+    audio_input: list[dict] | None,
+    picture_input: list[dict] | None,
 ) -> int:
-    """Resolve a picked audio clip/image (if any) to AnkiConnect's media-
-    attachment shape and actually call `ankiconnect.create_note`. Shared by
-    `dispatch_tool`'s `create_anki_note` branch (when `instant_creation` is
-    True) and `POST /api/pending-cards/{id}/create` (`app.api.chat`), so
-    there's exactly one place that talks to AnkiConnect for note creation."""
+    """Resolve picked audio clip(s)/image(s) (if any) to AnkiConnect's
+    media-attachment shape and actually call `ankiconnect.create_note`.
+    Shared by `dispatch_tool`'s `create_anki_note` branch (when
+    `instant_creation` is True) and `POST /api/pending-cards/{id}/create`
+    (`app.api.chat`), so there's exactly one place that talks to AnkiConnect
+    for note creation."""
 
+    audio_input = _as_entry_list(audio_input)
+    picture_input = _as_entry_list(picture_input)
     audio = None
     if audio_input:
         engine = get_engine()
+        audio = []
         with Session(engine) as session:
-            clip = session.get(AudioClip, audio_input["clip_id"])
-        if clip is None:
-            raise ValueError(f"Unknown audio clip_id: {audio_input['clip_id']!r}")
-        audio = {
-            "data": base64.b64encode(clip.audio).decode("ascii"),
-            "filename": f"anki-ai-cards-{clip.id}.mp3",
-            "fields": audio_input["fields"],
-        }
+            for entry in audio_input:
+                clip = session.get(AudioClip, entry["clip_id"])
+                if clip is None:
+                    raise ValueError(f"Unknown audio clip_id: {entry['clip_id']!r}")
+                audio.append(
+                    {
+                        "data": base64.b64encode(clip.audio).decode("ascii"),
+                        "filename": f"anki-ai-cards-{clip.id}.mp3",
+                        "fields": entry["fields"],
+                    }
+                )
     picture = None
     if picture_input:
         engine = get_engine()
+        picture = []
         with Session(engine) as session:
-            image = session.get(ImageAsset, picture_input["image_id"])
-        if image is None:
-            raise ValueError(f"Unknown image image_id: {picture_input['image_id']!r}")
-        extension = mimetypes.guess_extension(image.content_type) or ".jpg"
-        picture = {
-            "data": base64.b64encode(image.data).decode("ascii"),
-            "filename": f"anki-ai-cards-{image.id}{extension}",
-            "fields": picture_input["fields"],
-        }
+            for entry in picture_input:
+                image = session.get(ImageAsset, entry["image_id"])
+                if image is None:
+                    raise ValueError(f"Unknown image image_id: {entry['image_id']!r}")
+                extension = mimetypes.guess_extension(image.content_type) or ".jpg"
+                picture.append(
+                    {
+                        "data": base64.b64encode(image.data).decode("ascii"),
+                        "filename": f"anki-ai-cards-{image.id}{extension}",
+                        "fields": entry["fields"],
+                    }
+                )
     note_id = await ankiconnect.create_note(
         deck_name=deck_name,
         model_name=model_name,
@@ -715,7 +758,7 @@ async def dispatch_tool(
 
     if name == "get_anki_media_file":
         filename = tool_input["filename"]
-        b64_data = await ankiconnect.retrieve_media_file(filename)
+        b64_data = await ankiconnect.get_media_file(filename)
         if b64_data is None:
             raise ValueError(f"No media file named {filename!r} in Anki's collection")
         data = base64.b64decode(b64_data)
@@ -802,8 +845,8 @@ async def dispatch_tool(
         # create (app.api.chat) can attach it once Dylan confirms the draft —
         # see task 60's PROGRESS.md entry for why this wasn't the case
         # originally.
-        audio_input = tool_input.get("audio")
-        picture_input = tool_input.get("picture")
+        audio_input = _as_entry_list(tool_input.get("audio"))
+        picture_input = _as_entry_list(tool_input.get("picture"))
         engine = get_engine()
         with Session(engine) as session:
             pending = PendingCard(

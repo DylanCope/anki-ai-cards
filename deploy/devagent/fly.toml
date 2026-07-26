@@ -1,0 +1,41 @@
+# Fly.io app config for the persistent dev-agent box — Claude Code running
+# unattended against a checkout of this repo, paired to Dylan's browser/phone
+# via Remote Control instead of needing his own laptop running. Like the
+# other three apps, this must be deployed from *inside* this directory
+# (`cd deploy/devagent && fly deploy`), not the repo root with `--config`.
+#
+# No [http_service]: Remote Control is outbound-only HTTPS polling to
+# Anthropic's servers — unlike the other three apps, nothing needs to reach
+# this one over the network, so there's no Flycast/public-proxy setup at all.
+#
+# Secrets (fly.toml is not a secret store — push these once via
+# `fly secrets set -a anki-ai-cards-devagent KEY=value` before the first
+# deploy): GITHUB_TOKEN (fine-grained PAT scoped to just this repo,
+# contents:write), FLY_API_TOKEN (ideally scoped to just the other three
+# apps — see AGENTS.md's "Dev-agent deployment" section). Deliberately no
+# ANTHROPIC_API_KEY: billing rides on Dylan's Claude subscription via the
+# interactive OAuth login that Remote Control requires, not API-key billing.
+#
+# This app is NOT covered by AGENTS.md's "Autonomous deploy/debug access"
+# standing grant for the other three apps — see that section for why.
+#
+# The `devagent_data` volume (repo checkout + Claude Code's own state) must
+# exist before the first deploy — see README.md's Deployment section for the
+# `fly volumes create` command. One-time (and periodically recurring) manual
+# OAuth login via `fly ssh console` + `tmux attach -t devagent` is Dylan's
+# step — see AGENTS.md.
+
+app = 'anki-ai-cards-devagent'
+primary_region = 'iad'
+
+[build]
+
+[[mounts]]
+  source = 'devagent_data'
+  destination = '/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '1gb'
+  cpus = 1
+  memory_mb = 1024
