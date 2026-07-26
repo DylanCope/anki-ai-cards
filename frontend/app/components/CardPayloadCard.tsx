@@ -1,7 +1,7 @@
 "use client";
 
-import { Fragment, useState } from "react";
-import { Loader2, Monitor, Smartphone } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
+import { Loader2, Monitor, Smartphone, X } from "lucide-react";
 import type { CardPayload, PendingCardPreview } from "@/app/lib/types";
 
 interface Props {
@@ -37,6 +37,15 @@ export default function CardPayloadCard({
   const [creating, setCreating] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setPreviewOpen(false);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewOpen]);
 
   async function togglePreview() {
     if (previewOpen) {
@@ -176,70 +185,88 @@ export default function CardPayloadCard({
           {previewError && <p className="mt-2 text-xs text-red-500">{previewError}</p>}
 
           {previewOpen && preview && (
-            <div className="mt-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="flex gap-1 rounded-lg border border-border p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setPreviewSide("front")}
-                    className={`rounded-md px-2 py-1 text-xs font-medium ${
-                      previewSide === "front"
-                        ? "bg-accent text-accent-foreground"
-                        : "text-foreground/60 hover:bg-foreground/5"
-                    }`}
-                  >
-                    Front
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPreviewSide("back")}
-                    className={`rounded-md px-2 py-1 text-xs font-medium ${
-                      previewSide === "back"
-                        ? "bg-accent text-accent-foreground"
-                        : "text-foreground/60 hover:bg-foreground/5"
-                    }`}
-                  >
-                    Back
-                  </button>
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6 backdrop-blur-md"
+              onClick={() => setPreviewOpen(false)}
+            >
+              <div
+                className="relative flex max-h-[90vh] w-fit max-w-[95vw] flex-col gap-3 rounded-xl border border-border bg-surface p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex gap-1 rounded-lg border border-border p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewSide("front")}
+                      className={`rounded-md px-2 py-1 text-xs font-medium ${
+                        previewSide === "front"
+                          ? "bg-accent text-accent-foreground"
+                          : "text-foreground/60 hover:bg-foreground/5"
+                      }`}
+                    >
+                      Front
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewSide("back")}
+                      className={`rounded-md px-2 py-1 text-xs font-medium ${
+                        previewSide === "back"
+                          ? "bg-accent text-accent-foreground"
+                          : "text-foreground/60 hover:bg-foreground/5"
+                      }`}
+                    >
+                      Back
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1 rounded-lg border border-border p-0.5">
+                      <button
+                        type="button"
+                        aria-label="Mobile width"
+                        title="Mobile width"
+                        onClick={() => setPreviewWidth("mobile")}
+                        className={`rounded-md p-1.5 ${
+                          previewWidth === "mobile"
+                            ? "bg-accent text-accent-foreground"
+                            : "text-foreground/60 hover:bg-foreground/5"
+                        }`}
+                      >
+                        <Smartphone size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="PC width"
+                        title="PC width"
+                        onClick={() => setPreviewWidth("pc")}
+                        className={`rounded-md p-1.5 ${
+                          previewWidth === "pc"
+                            ? "bg-accent text-accent-foreground"
+                            : "text-foreground/60 hover:bg-foreground/5"
+                        }`}
+                      >
+                        <Monitor size={14} />
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewOpen(false)}
+                      aria-label="Close preview"
+                      className="rounded-full border border-border p-1.5 text-foreground/70 hover:text-foreground"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-1 rounded-lg border border-border p-0.5">
-                  <button
-                    type="button"
-                    aria-label="Mobile width"
-                    title="Mobile width"
-                    onClick={() => setPreviewWidth("mobile")}
-                    className={`rounded-md p-1.5 ${
-                      previewWidth === "mobile"
-                        ? "bg-accent text-accent-foreground"
-                        : "text-foreground/60 hover:bg-foreground/5"
-                    }`}
-                  >
-                    <Smartphone size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="PC width"
-                    title="PC width"
-                    onClick={() => setPreviewWidth("pc")}
-                    className={`rounded-md p-1.5 ${
-                      previewWidth === "pc"
-                        ? "bg-accent text-accent-foreground"
-                        : "text-foreground/60 hover:bg-foreground/5"
-                    }`}
-                  >
-                    <Monitor size={14} />
-                  </button>
+                <div className="flex justify-center overflow-auto rounded-lg border border-border bg-background p-3">
+                  <iframe
+                    sandbox=""
+                    srcDoc={buildSrcDoc(preview, previewSide)}
+                    className={`h-[60vh] rounded-md border border-border bg-white ${
+                      previewWidth === "mobile" ? "w-[375px]" : "w-[700px]"
+                    } max-w-full`}
+                    title="Card preview"
+                  />
                 </div>
-              </div>
-              <div className="flex justify-center rounded-lg border border-border bg-background p-3">
-                <iframe
-                  sandbox=""
-                  srcDoc={buildSrcDoc(preview, previewSide)}
-                  className={`h-64 rounded-md border border-border bg-white ${
-                    previewWidth === "mobile" ? "w-[375px]" : "w-[700px]"
-                  } max-w-full`}
-                  title="Card preview"
-                />
               </div>
             </div>
           )}
