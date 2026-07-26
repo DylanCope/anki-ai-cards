@@ -89,3 +89,39 @@ def test_delete_then_get_404s():
 def test_delete_missing_workflow_spec_404s():
     response = _authed_client().delete("/api/workflow-specs/does-not-exist")
     assert response.status_code == 404
+
+
+def test_patch_renames_workflow_spec():
+    authed = _authed_client()
+    authed.put("/api/workflow-specs/lesson-doc", json={"spec": "v1"})
+
+    rename_response = authed.patch("/api/workflow-specs/lesson-doc", json={"name": "lesson-doc-v2"})
+    assert rename_response.status_code == 200
+    body = rename_response.json()
+    assert body["name"] == "lesson-doc-v2"
+    assert body["spec"] == "v1"
+
+    assert authed.get("/api/workflow-specs/lesson-doc").status_code == 404
+    assert authed.get("/api/workflow-specs/lesson-doc-v2").status_code == 200
+
+
+def test_patch_missing_workflow_spec_404s():
+    response = _authed_client().patch("/api/workflow-specs/does-not-exist", json={"name": "new-name"})
+    assert response.status_code == 404
+
+
+def test_patch_to_existing_name_409s():
+    authed = _authed_client()
+    authed.put("/api/workflow-specs/lesson-doc", json={"spec": "v1"})
+    authed.put("/api/workflow-specs/other-source", json={"spec": "v2"})
+
+    response = authed.patch("/api/workflow-specs/lesson-doc", json={"name": "other-source"})
+    assert response.status_code == 409
+
+
+def test_patch_empty_name_400s():
+    authed = _authed_client()
+    authed.put("/api/workflow-specs/lesson-doc", json={"spec": "v1"})
+
+    response = authed.patch("/api/workflow-specs/lesson-doc", json={"name": "   "})
+    assert response.status_code == 400

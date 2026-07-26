@@ -65,3 +65,29 @@ def test_delete_workflow_spec(engine) -> None:
 
 def test_delete_missing_workflow_spec_returns_false(engine) -> None:
     assert workflow_specs.delete_workflow_spec("does-not-exist") is False
+
+
+def test_rename_workflow_spec(engine) -> None:
+    original = workflow_specs.save_workflow_spec("lesson-doc", "v1")
+
+    renamed = workflow_specs.rename_workflow_spec("lesson-doc", "lesson-doc-v2")
+    assert renamed is not None
+    assert renamed.name == "lesson-doc-v2"
+    assert renamed.spec == "v1"
+    assert renamed.created_at == original.created_at
+    assert renamed.updated_at >= original.updated_at
+
+    assert workflow_specs.load_workflow_spec("lesson-doc") is None
+    assert workflow_specs.load_workflow_spec("lesson-doc-v2") is not None
+
+
+def test_rename_missing_workflow_spec_returns_none(engine) -> None:
+    assert workflow_specs.rename_workflow_spec("does-not-exist", "new-name") is None
+
+
+def test_rename_to_existing_name_raises(engine) -> None:
+    workflow_specs.save_workflow_spec("lesson-doc", "v1")
+    workflow_specs.save_workflow_spec("other-source", "v2")
+
+    with pytest.raises(ValueError):
+        workflow_specs.rename_workflow_spec("lesson-doc", "other-source")

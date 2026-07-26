@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, Plus, Trash2, Workflow, X } from "lucide-react";
+import { ArrowLeft, Check, Pencil, Plus, Trash2, Workflow, X } from "lucide-react";
 import type { WorkflowSpec } from "@/app/lib/types";
 
 type View = "list" | "edit" | "new";
@@ -25,6 +25,8 @@ export default function WorkflowsButton() {
   const [editText, setEditText] = useState("");
   const [newName, setNewName] = useState("");
   const [newText, setNewText] = useState("");
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -60,12 +62,53 @@ export default function WorkflowsButton() {
     setView("list");
     setActiveName(null);
     setError(null);
+    setIsRenaming(false);
   }
 
   function openEdit(spec: WorkflowSpec) {
     setActiveName(spec.name);
     setEditText(spec.spec);
     setView("edit");
+    setIsRenaming(false);
+  }
+
+  function startRenaming() {
+    if (activeName === null) return;
+    setNameDraft(activeName);
+    setIsRenaming(true);
+  }
+
+  function cancelRenaming() {
+    setIsRenaming(false);
+  }
+
+  async function commitRename() {
+    if (activeName === null) return;
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === activeName) {
+      setIsRenaming(false);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/workflow-specs/${encodeURIComponent(activeName)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      if (!res.ok) throw new Error(`Rename failed (${res.status})`);
+      const updated = (await res.json()) as WorkflowSpec;
+      setSpecs((prev) =>
+        prev ? prev.map((s) => (s.name === activeName ? updated : s)) : prev
+      );
+      setActiveName(updated.name);
+      setIsRenaming(false);
+    } catch {
+      setError("Could not rename that workflow.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function openNew() {
@@ -161,7 +204,7 @@ export default function WorkflowsButton() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
                 {view !== "list" && (
                   <button
                     type="button"
@@ -176,9 +219,60 @@ export default function WorkflowsButton() {
                   </button>
                 )}
                 <Workflow size={16} className="text-accent" />
-                <h2 className="text-sm font-semibold text-foreground">
-                  {view === "list" ? "Workflows" : view === "new" ? "New workflow" : activeName}
-                </h2>
+                {view === "edit" && isRenaming ? (
+                  <>
+                    <input
+                      autoFocus
+                      value={nameDraft}
+                      onChange={(event) => setNameDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitRename();
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelRenaming();
+                        }
+                      }}
+                      className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2 py-1 text-sm font-semibold text-foreground"
+                    />
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={commitRename}
+                      disabled={busy}
+                      aria-label="Save workflow name"
+                      className="shrink-0 rounded-lg p-1 text-foreground/60 hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+                    >
+                      <Check size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={cancelRenaming}
+                      aria-label="Cancel rename"
+                      className="shrink-0 rounded-lg p-1 text-foreground/60 hover:bg-foreground/5 hover:text-foreground"
+                    >
+                      <X size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="truncate text-sm font-semibold text-foreground">
+                      {view === "list" ? "Workflows" : view === "new" ? "New workflow" : activeName}
+                    </h2>
+                    {view === "edit" && (
+                      <button
+                        type="button"
+                        onClick={startRenaming}
+                        aria-label="Rename workflow"
+                        className="shrink-0 rounded-lg p-1 text-foreground/50 hover:bg-foreground/5 hover:text-foreground"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
               <button
                 type="button"

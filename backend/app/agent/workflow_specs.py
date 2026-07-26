@@ -52,6 +52,33 @@ def list_workflow_specs() -> list[WorkflowSpec]:
         return list(session.exec(select(WorkflowSpec)).all())
 
 
+def rename_workflow_spec(name: str, new_name: str) -> WorkflowSpec | None:
+    """Rename the named workflow spec in place. Returns None if it doesn't exist.
+
+    Raises ValueError if `new_name` is already taken by a different spec.
+    """
+
+    engine = get_engine()
+    with Session(engine) as session:
+        existing = session.exec(
+            select(WorkflowSpec).where(WorkflowSpec.name == name)
+        ).one_or_none()
+        if existing is None:
+            return None
+        if new_name != name:
+            conflict = session.exec(
+                select(WorkflowSpec).where(WorkflowSpec.name == new_name)
+            ).one_or_none()
+            if conflict is not None:
+                raise ValueError(f"A workflow named {new_name!r} already exists")
+        existing.name = new_name
+        existing.updated_at = datetime.now(timezone.utc)
+        session.add(existing)
+        session.commit()
+        session.refresh(existing)
+        return existing
+
+
 def delete_workflow_spec(name: str) -> bool:
     """Delete the named workflow spec. Returns False if it didn't exist."""
 

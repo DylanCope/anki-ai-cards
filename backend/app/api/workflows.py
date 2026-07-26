@@ -22,6 +22,10 @@ class UpsertWorkflowSpecRequest(BaseModel):
     spec: str
 
 
+class RenameWorkflowSpecRequest(BaseModel):
+    name: str
+
+
 def _workflow_spec_to_dict(workflow_spec: WorkflowSpec) -> dict:
     return {
         "name": workflow_spec.name,
@@ -51,6 +55,24 @@ async def upsert_workflow_spec(
     email: str = Depends(require_auth),
 ) -> dict:
     workflow_spec = workflow_specs.save_workflow_spec(name, body.spec)
+    return _workflow_spec_to_dict(workflow_spec)
+
+
+@router.patch("/{name}")
+async def rename_workflow_spec(
+    name: str,
+    body: RenameWorkflowSpecRequest,
+    email: str = Depends(require_auth),
+) -> dict:
+    new_name = body.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    try:
+        workflow_spec = workflow_specs.rename_workflow_spec(name, new_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if workflow_spec is None:
+        raise HTTPException(status_code=404, detail="Workflow spec not found")
     return _workflow_spec_to_dict(workflow_spec)
 
 
