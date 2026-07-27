@@ -14,6 +14,29 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-27 — Task 61: full-screen pending-card preview
+- Did: audited and completed the already-implemented pending-card preview
+  work: `PendingCardPreviewModal` is a fixed, screen-filling overlay with
+  Escape/click-outside/close-button dismissal, front/back and mobile/PC
+  controls, and Create/Discard actions that update the originating payload
+  and close on success. Its iframe uses the app theme, both Anki night-mode
+  class spellings/placements needed by real note CSS, a sans-serif Japanese
+  font fallback, and sandboxed scripts for note templates. Picked audio and
+  images are now inlined into the rendered card at their actual target
+  fields by the preview endpoint; this supersedes task 61's original
+  separate `audio_base64`/`picture_base64` response fields and more closely
+  matches the created Anki note. Audio renders as a working Anki-style play
+  control and images as inline data-URI images. Marked task 61 checked.
+- Verified: `cd backend && uv run pytest` → 337 passed; `cd frontend &&
+  npm run build && npm run lint` → production build, TypeScript, static
+  generation, and ESLint all passed.
+- Learned: the feature had landed across commits `09b257f`, `8ac177d`,
+  `cd034da`, `74f31d4`, and `276c3de`, but PRD task 61 remained unchecked
+  after later branch merges. Dylan should still manually confirm in a
+  browser that the overlay, toggles, dark/light Anki styling, Create/Discard,
+  inline audio playback, and inline picked image look and behave correctly;
+  automated build/lint cannot establish visual/UX correctness.
+
 ## 2026-07-25 — Ad hoc: add ask_multimodal_model tool (Gemini audio/image judgment, no fixed workflow)
 - Did: following the TTS-quality work below, Dylan wanted the agent to be
   able to *listen* to and compare audio takes (e.g. pick the more natural-

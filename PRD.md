@@ -1314,7 +1314,7 @@ which model the *currently open* conversation uses.
   migration is additive and idempotent, matching this file's other
   `_add_*_column_if_missing` migrations.
 
-- [ ] **61. Frontend: rebuild the pending-card preview as a full-screen
+- [x] **61. Frontend: rebuild the pending-card preview as a full-screen
   panel; fix its theme/font, and surface picked audio/image playback.**
   Found via live testing after task 55/60 deployed: three bugs, all
   scoping/sequencing gaps rather than deviations from what was written.
