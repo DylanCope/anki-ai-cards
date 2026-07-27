@@ -11,6 +11,7 @@ from app.models import (
     OAuthToken,
     PendingCard,
     ProcessingCursor,
+    Routine,
     WorkflowSpec,
     _DEFAULT_MODEL_ID,
     init_db,
@@ -203,6 +204,77 @@ def test_workflow_spec_roundtrip(engine) -> None:
         spec = session.exec(select(WorkflowSpec)).one()
         assert spec.name == "lesson-doc"
         assert spec.spec == '{"foo": "bar"}'
+
+
+def test_routine_roundtrip(engine) -> None:
+    with Session(engine) as session:
+        conversation = Conversation(title="Daily review")
+        session.add(conversation)
+        session.commit()
+        session.refresh(conversation)
+        session.add(
+            Routine(
+                name="review yesterday",
+                prompt="Analyse yesterday's reviewed cards.",
+                schedule_unit="daily",
+                schedule_interval=1,
+                schedule_time="08:30",
+                conversation_id=conversation.id,
+                next_run_at=datetime(2026, 7, 28, 8, 30, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        routine = session.exec(select(Routine)).one()
+        assert routine.name == "review yesterday"
+        assert routine.schedule_unit == "daily"
+        assert routine.schedule_interval == 1
+        assert routine.schedule_time == "08:30"
+        assert routine.schedule_day_of_week is None
+        assert routine.enabled is True
+        assert routine.run_count == 0
+        assert routine.last_run_at is None
+        assert routine.last_run_status is None
+        assert routine.last_error is None
+        assert routine.conversation_id is not None
+
+
+def test_init_db_adds_routine_table_idempotently(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "pre_routines.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    legacy_engine = create_engine(f"sqlite:///{db_path}")
+    with legacy_engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE conversation ("
+            "id INTEGER PRIMARY KEY, title TEXT, model TEXT NOT NULL, "
+            "instant_creation BOOLEAN NOT NULL DEFAULT 0, "
+            "created_at TEXT, updated_at TEXT)"
+        )
+        conn.commit()
+
+    engine = init_db()
+    init_db()
+
+    with engine.connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(routine)")
+        }
+    assert "routine" in tables
+    assert {
+        "name",
+        "prompt",
+        "schedule_unit",
+        "schedule_interval",
+        "conversation_id",
+        "next_run_at",
+    } <= columns
 
 
 def test_processing_cursor_roundtrip(engine) -> None:

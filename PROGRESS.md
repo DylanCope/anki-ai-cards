@@ -14,6 +14,25 @@ Blocked tasks go under a `Blocked:` line with what was tried.
 
 ---
 
+## 2026-07-27 — Task 62: routine persistence layer
+- Did: Added the `Routine` SQLModel table with its unique name, prompt,
+  schedule, enabled/state, home-conversation foreign key, run-result, and
+  timestamp fields. Added an explicit idempotent
+  `_add_routine_table_if_missing` migration to `init_db()`. Added
+  `app/agent/routines.py` with create/update/list/get/delete helpers,
+  schedule validation, and pure `compute_next_run_at` support for hourly,
+  daily, and weekly presets. Weekdays use Python's Monday=0 through Sunday=6
+  convention; the next run is always strictly after the supplied time.
+- Verified: `cd backend && uv run pytest` → 346 passed; `cd frontend && npm
+  run build && npm run lint` → production build, TypeScript, static
+  generation, and ESLint all passed.
+- Learned: SQLite returns stored datetimes without timezone metadata, so
+  scheduler code should consistently treat persisted routine timestamps as
+  UTC when task 65 consumes them. `compute_next_run_at` treats a naive input
+  as UTC and retains the timezone of aware inputs. For interval schedules,
+  a still-upcoming time/day in the current period is the next run; the
+  interval is applied after that occurrence has passed.
+
 ## 2026-07-27 — Task 61: full-screen pending-card preview
 - Did: audited and completed the already-implemented pending-card preview
   work: `PendingCardPreviewModal` is a fixed, screen-filling overlay with

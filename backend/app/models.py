@@ -62,6 +62,27 @@ class WorkflowSpec(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class Routine(SQLModel, table=True):
+    """A recurring agent prompt with one persistent home conversation."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    prompt: str
+    schedule_unit: str  # "hourly" / "daily" / "weekly"
+    schedule_interval: int = Field(default=1)
+    schedule_time: str | None = Field(default=None)  # HH:MM; daily/weekly only
+    schedule_day_of_week: int | None = Field(default=None)  # Monday=0; weekly only
+    enabled: bool = Field(default=True)
+    conversation_id: int = Field(foreign_key="conversation.id", index=True)
+    run_count: int = Field(default=0)
+    last_run_at: datetime | None = Field(default=None)
+    next_run_at: datetime
+    last_run_status: str | None = Field(default=None)  # "ok" / "error"
+    last_error: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class ProcessingCursor(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     source_id: str = Field(unique=True, index=True)
@@ -300,6 +321,16 @@ def _add_pendingcard_audio_picture_columns_if_missing(engine) -> None:
             conn.commit()
 
 
+def _add_routine_table_if_missing(engine) -> None:
+    """Create the task-62 table on databases that predate routines.
+
+    `checkfirst=True` makes this an idempotent migration while keeping the
+    table definition in one place (the SQLModel model above).
+    """
+
+    Routine.__table__.create(engine, checkfirst=True)
+
+
 def _backfill_legacy_conversation(engine) -> None:
     """Any ConversationMessage row with no conversation_id predates the
     multi-conversation feature — group them all into one real Conversation
@@ -335,5 +366,6 @@ def init_db():
     _add_audioclip_source_column_if_missing(engine)
     _add_conversation_instant_creation_column_if_missing(engine)
     _add_pendingcard_audio_picture_columns_if_missing(engine)
+    _add_routine_table_if_missing(engine)
     _backfill_legacy_conversation(engine)
     return engine

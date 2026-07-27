@@ -1387,7 +1387,7 @@ which model the *currently open* conversation uses.
 
 ### Routines (tasks 62-70)
 
-- [ ] **62. Routine persistence layer.** New `Routine` SQLModel table in
+- [x] **62. Routine persistence layer.** New `Routine` SQLModel table in
   `backend/app/models.py` (mirroring `WorkflowSpec`'s shape): `id`, `name`
   (unique), `prompt` (text, what the routine should do each run), schedule
   fields (`schedule_unit`: `hourly`/`daily`/`weekly`, `schedule_interval`:
