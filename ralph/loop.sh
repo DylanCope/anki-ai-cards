@@ -7,6 +7,12 @@
 # and keeping a PR against RALPH_BASE_BRANCH (default "main") up to date
 # after every iteration, so progress is reviewable on GitHub as it happens.
 
+# Invoking this file as `sh ralph/loop.sh` overrides the shebang. Re-enter
+# through Bash before reaching the Bash-only options and syntax below.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -uo pipefail
 
 MAX_ITERATIONS=10
