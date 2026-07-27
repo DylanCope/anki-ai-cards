@@ -1,8 +1,9 @@
 # Ralph Loop Harness
 
-A minimal Ralph loop: a bash script that repeatedly launches a fresh Claude
-Code process, which reads the PRD, does one task, verifies it, logs progress,
-and commits. State lives in files and git — never in the agent's context.
+A minimal Ralph loop: a bash script that repeatedly launches a fresh coding
+agent process, which reads the PRD, does one task, verifies it, logs progress,
+and commits. It uses Codex by default and supports Claude Code as an option.
+State lives in files and git — never in the agent's context.
 
 ## Layout
 
@@ -31,7 +32,7 @@ mkdir -p ~/projects/anki && cd ~/projects/anki
 cp -r "/mnt/c/Users/dylan/OneDrive/Documents/Claude/Projects/Anki Card Creation/." .
 chmod +x ralph/loop.sh
 git init && git add -A && git commit -m "init: ralph harness"
-claude --version   # confirm CLI available; `npm install -g @anthropic-ai/claude-code` if not
+codex --version    # confirm the default agent CLI is available
 ```
 
 ## Before each run
@@ -46,8 +47,13 @@ Requires the `gh` CLI installed and authenticated (`gh auth login`), and an
 `origin` remote pointing at a GitHub repo you can push to.
 
 ```bash
-./ralph/loop.sh 10        # at most 10 iterations
+./ralph/loop.sh 10                         # Codex, at most 10 iterations
+./ralph/loop.sh --agent claude 10          # use Claude Code instead
 ```
+
+The `--agent` flag accepts `codex` (the default) or `claude`, and may appear
+before or after the iteration count. The selected CLI must be installed and
+authenticated.
 
 - The loop runs on branch `ralph/loop` (override with `RALPH_BRANCH`),
   targeting `main` (override with `RALPH_BASE_BRANCH`). It creates the branch
@@ -74,18 +80,19 @@ Requires the `gh` CLI installed and authenticated (`gh auth login`), and an
 
 ## Safety notes
 
-- `--dangerously-skip-permissions` gives the agent full autonomy **within this
-  directory**. Only run the loop in a dedicated repo you're happy to have
-  rewritten; never in a folder with unrelated valuables.
+- The loop uses each CLI's permission-bypass mode, giving the agent full
+  autonomy. Only run it in a dedicated environment and repo you're happy to
+  have rewritten; never in a folder with unrelated valuables.
 - Always pass a max-iterations cap. Each iteration costs real tokens; a stuck
   loop burns money making the same mistake repeatedly.
 - Start small: 5–10 iterations, tiny PRD, then scale.
 
 ## Tuning knobs (edit loop.sh)
 
-- Pin a model: add `--model sonnet` (cheaper) or `--model opus` to the claude
-  invocation.
-- Budget cap per iteration: add `--max-turns 50`.
+- Pin a model by adding the relevant CLI's model flag to its entry in
+  `AGENT_COMMAND`.
+- For Claude Code, a budget cap per iteration can be added with
+  `--max-turns 50`.
 - Change the completion phrase: `PROMISE` variable + PROMPT.md together.
 
 ## References
