@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ralph loop harness.
-# Usage: ./ralph/loop.sh [max_iterations]
+# Usage: ./ralph/loop.sh [--agent codex|claude] [max_iterations]
 # Stop early: touch ralph/STOP (checked before each iteration), or Ctrl+C.
 #
 # Runs on a dedicated branch (RALPH_BRANCH, default "ralph/loop"), pushing
@@ -9,10 +9,57 @@
 
 set -uo pipefail
 
-MAX_ITERATIONS="${1:-10}"
+MAX_ITERATIONS=10
+AGENT="codex"
 PROMISE="<promise>RALPH_DONE</promise>"
 BRANCH="${RALPH_BRANCH:-ralph/loop}"
 BASE_BRANCH="${RALPH_BASE_BRANCH:-main}"
+
+usage() {
+  echo "Usage: $0 [--agent codex|claude] [max_iterations]"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --agent)
+      [ "$#" -ge 2 ] || { echo "ERROR: --agent requires codex or claude."; usage; exit 2; }
+      AGENT="$2"
+      shift 2
+      ;;
+    --agent=*)
+      AGENT="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      if [[ "$1" =~ ^[0-9]+$ ]]; then
+        MAX_ITERATIONS="$1"
+        shift
+      else
+        echo "ERROR: unknown argument: $1"
+        usage
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+case "$AGENT" in
+  codex)
+    AGENT_COMMAND=(codex exec --dangerously-bypass-approvals-and-sandbox -)
+    ;;
+  claude)
+    AGENT_COMMAND=(claude -p --dangerously-skip-permissions --output-format text)
+    ;;
+  *)
+    echo "ERROR: unsupported agent '$AGENT' (choose codex or claude)."
+    usage
+    exit 2
+    ;;
+esac
 
 # Repo root = parent of this script's directory
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +72,7 @@ mkdir -p "$LOG_DIR"
 rm -f "$STOP_FILE"
 
 # --- Preflight checks -------------------------------------------------------
-command -v claude >/dev/null 2>&1 || { echo "ERROR: 'claude' CLI not found in PATH."; exit 1; }
+command -v "$AGENT" >/dev/null 2>&1 || { echo "ERROR: '$AGENT' CLI not found in PATH."; exit 1; }
 [ -f "$PROMPT_FILE" ] || { echo "ERROR: $PROMPT_FILE not found."; exit 1; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
   echo "ERROR: not a git repo. Run 'git init && git add -A && git commit -m init' first."
@@ -54,7 +101,7 @@ sync_and_pr() {
   fi
 }
 
-echo "Ralph loop starting: max $MAX_ITERATIONS iterations."
+echo "Ralph loop starting with $AGENT: max $MAX_ITERATIONS iterations."
 echo "Branch: $BRANCH -> $BASE_BRANCH | Logs: $LOG_DIR | Stop: touch $STOP_FILE"
 echo
 
@@ -68,12 +115,9 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   echo "=== Iteration $i/$MAX_ITERATIONS — $(date) ==="
 
   # Fresh process, fresh context, every iteration. This is the whole trick.
-  cat "$PROMPT_FILE" | claude -p \
-    --dangerously-skip-permissions \
-    --output-format text \
-    2>&1 | tee "$LOG_FILE"
+  "${AGENT_COMMAND[@]}" < "$PROMPT_FILE" 2>&1 | tee "$LOG_FILE"
 
-  EXIT_CODE=${PIPESTATUS[1]}
+  EXIT_CODE=${PIPESTATUS[0]}
   echo "--- iteration $i exit code: $EXIT_CODE ---"
 
   sync_and_pr
@@ -85,7 +129,7 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
   fi
 
   if [ "$EXIT_CODE" -ne 0 ]; then
-    echo "WARNING: claude exited non-zero. Pausing 30s before retry."
+    echo "WARNING: $AGENT exited non-zero. Pausing 30s before retry."
     sleep 30
   else
     sleep 2

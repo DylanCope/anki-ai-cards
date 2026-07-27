@@ -26,8 +26,9 @@ gotcha discovered along the way, is in [`PROGRESS.md`](PROGRESS.md). This
 file is the practical "how do I run/deploy this" reference.
 
 **Two distinct agents exist in this repo — don't confuse them:**
-- The **Ralph loop** (`ralph/`) is the autonomous Claude harness that *wrote*
-  this codebase, one PRD task per iteration.
+- The **Ralph loop** (`ralph/`) is the autonomous coding-agent harness that
+  *wrote* this codebase, one PRD task per iteration. It defaults to Codex and
+  can also run Claude Code.
 - The **inner agent** (`backend/app/agent/`) is the Claude tool-use agent
   *this codebase implements* — Anjo, the assistant you actually chat with at
   runtime.
@@ -541,9 +542,11 @@ you're welcome to fork it and run your own instance.
   tools require no API keys.
 
 The app was built iteratively by the **Ralph loop** (`ralph/`), an autonomous
-Claude harness that interprets `PRD.md` tasks and writes/deploys code. If
-you're interested in the build methodology rather than the app itself, that
-directory is the starting point.
+coding-agent harness that interprets `PRD.md` tasks and writes/deploys code.
+It uses Codex by default; pass `--agent claude` to use Claude Code instead
+(for example, `./ralph/loop.sh --agent claude 10`). If you're interested in
+the build methodology rather than the app itself, that directory is the
+starting point.
 
 ## Known limitations (see PROGRESS.md for full detail)
 
