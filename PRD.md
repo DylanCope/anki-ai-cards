@@ -85,9 +85,36 @@ existing AnkiWeb sync — no client reconfiguration.
 and, as of tasks 36-37, `search_images` and `generate_image` (each returning
 3 candidate image ids for Dylan to pick from, same choice-then-attach pattern
 `generate_audio` already established). `create_anki_note` accepts an optional
-`picture` argument symmetric to its existing `audio` argument (task 35).
+`picture` argument symmetric to its existing `audio` argument (task 35). As
+of tasks 62-70: `search_anki_cards` (raw Anki search-syntax card/review/leech
+queries) and `create_routine`/`update_routine`/`list_routines`/
+`delete_routine` (the latter four excluded from an unattended scheduled
+run's tool set — see the Routines paragraph below).
 The agent — not hardcoded logic — decides field mapping, cloze structure,
 and when to ask Dylan a clarifying question.
+
+**Routines (tasks 62-70):** autonomous, recurring background processes the
+agent and Dylan define conversationally (e.g. "analyse yesterday's reviewed
+cards, flag leeches and consistent failures"). A `Routine` has a name, a
+prompt, and a schedule — simple presets only (`hourly`/`daily`/`weekly` +
+interval + time-of-day + day-of-week), no cron-expression parsing. No
+scheduling infra exists in this app yet; the scheduler is a minimal
+in-process `asyncio` loop in `main.py`'s `lifespan`, same shape as
+`watchdog.py`'s `run_watchdog()` — safe to rely on since `backend/fly.toml`
+sets `min_machines_running = 1`, so a machine is always up. Each routine has
+exactly one home `Conversation` — not a fresh chat per run — that every
+scheduled report is appended to; after every 5 reports, the oldest
+not-yet-compacted messages are summarized into a single message so the
+context sent to the model stays bounded, while the full raw transcript
+remains visible to Dylan via `GET /api/chat/history`. A scheduled
+(unattended) run gets a restricted tool set: `create_routine`/
+`update_routine`/`delete_routine` are excluded, so a routine can't silently
+reschedule itself or spawn other routines with no one watching; those tools
+remain available in normal interactive chat. On a failed run, the error is
+recorded and the routine simply retries at its next natural interval — no
+retry/backoff logic. Routines are also manually editable (not
+chat-only) via a dedicated top-bar window, mirroring the existing Workflows
+button's list/edit/new pattern.
 
 **Image support for cards (tasks 33-40):** three ways to attach an image to
 a card — upload (stored as an opaque `ImageAsset`, referenced by id only;
@@ -1358,6 +1385,142 @@ which model the *currently open* conversation uses.
   audio Dylan can confirm matches the expected word/phrase, with a picked
   image likewise shown as a thumbnail.
 
+### Routines (tasks 62-70)
+
+- [ ] **62. Routine persistence layer.** New `Routine` SQLModel table in
+  `backend/app/models.py` (mirroring `WorkflowSpec`'s shape): `id`, `name`
+  (unique), `prompt` (text, what the routine should do each run), schedule
+  fields (`schedule_unit`: `hourly`/`daily`/`weekly`, `schedule_interval`:
+  int, `schedule_time`: `HH:MM` nullable for hourly, `schedule_day_of_week`:
+  int nullable, only for weekly), `enabled` (bool), `conversation_id` (FK to
+  `Conversation`, set at creation — a routine always has a home chat, even
+  before its first run), `run_count`, `last_run_at`, `next_run_at`,
+  `last_run_status` (`ok`/`error`), `last_error` (nullable text),
+  `created_at`/`updated_at`. Idempotent `_add_routine_table_if_missing`-style
+  migration in `init_db()`, same pattern as this file's other migrations.
+  `backend/app/agent/routines.py`: CRUD helpers (`create_routine`,
+  `update_routine`, `list_routines`, `get_routine`, `delete_routine`) plus a
+  pure `compute_next_run_at(schedule, from_time)` helper, mirroring
+  `workflow_specs.py`'s structure. Tests round-trip the table and unit-test
+  `compute_next_run_at` for all three schedule units. Verify: `cd backend &&
+  uv run pytest` passes.
+
+- [ ] **63. AnkiConnect + agent tool support for review/leech data.** Add
+  `find_cards(query)` and `get_cards_info(card_ids)` wrappers to
+  `backend/app/clients/ankiconnect.py` (wrapping AnkiConnect's `findCards`/
+  `cardsInfo`, same shape as the existing `find_notes`/`get_notes_info`
+  pair). New agent tool `search_anki_cards(query)` in `tools.py`'s
+  `TOOL_SCHEMAS`/`dispatch_tool` — takes a raw Anki search-syntax query
+  (e.g. `rated:1`, `tag:leech`) and returns card-level info (ease, interval,
+  reps, lapses, tags, due). The agent constructs the query itself; no
+  hardcoded "leech report" logic — consistent with this PRD's standing
+  preference for agent reasoning over hardcoded structured UI (see Out of
+  scope). Tests mock AnkiConnect via `respx`. Verify: `cd backend && uv run
+  pytest` passes.
+
+- [ ] **64. Routine management tools.** `create_routine`, `update_routine`,
+  `list_routines`, `delete_routine` tools wired into `TOOL_SCHEMAS`/
+  `dispatch_tool` (`backend/app/agent/tools.py`), backed by task 62's
+  `routines.py` helpers — same wiring pattern task 8 used for
+  `save_workflow_spec`/`load_workflow_spec`/`list_workflow_specs`.
+  `create_routine` creates the routine's home `Conversation` as part of the
+  call. Add a `is_scheduled_run: bool = False` parameter threaded through
+  `run_turn` → `dispatch_tool` (same shape as the existing
+  `instant_creation` flag); when true, these four tool schemas are excluded
+  from what's sent to the model, and `dispatch_tool` rejects a call to any
+  of them defensively even if the model somehow attempts one. Extend
+  `SYSTEM_PROMPT` with guidance on when/how to propose a routine and what
+  makes a good routine prompt. Tests cover tool dispatch and the
+  schema-filtering behavior under `is_scheduled_run=True`. Verify: `cd
+  backend && uv run pytest` passes.
+
+- [ ] **65. Scheduler engine + manual run trigger.** New
+  `backend/app/routine_scheduler.py`: `run_scheduler()`, an asyncio loop
+  (same shape as `watchdog.py`'s `run_watchdog()`, e.g. 60s poll) that finds
+  enabled routines with `next_run_at <= now`, and for each: posts a
+  synthetic user-role trigger message (e.g. "Run this routine now.") into
+  the routine's conversation history, calls `run_turn(..., is_scheduled_run=
+  True)`, persists the resulting messages via the same persistence path
+  `app/api/chat.py`'s `post_chat` uses (factor out a shared helper if
+  needed), and updates `last_run_at`/`next_run_at`/`run_count`/
+  `last_run_status`/`last_error`. On an exception from `run_turn` or Anki,
+  catch it, set `last_run_status="error"`/`last_error`, leave `next_run_at`
+  unchanged (natural retry next cycle) — no backoff logic. Wire
+  `asyncio.create_task(run_scheduler())` into `main.py`'s `lifespan`
+  alongside the watchdog task. Also add `POST /api/routines/{id}/run` (in
+  task 67's router) that invokes the same single-routine run function
+  on-demand, for manual testing without waiting on the real schedule. Tests
+  mock `run_turn` and drive the scheduler loop for one tick. Verify: `cd
+  backend && uv run pytest` passes.
+
+- [ ] **66. Chat compaction after every 5 reports.** Add
+  `excluded_from_context: bool = False` column to `ConversationMessage`
+  (idempotent migration, same pattern as this file's other
+  `_add_*_column_if_missing` migrations). After a scheduled run completes
+  and `run_count` has advanced by 5 since the last compaction, summarize the
+  oldest not-yet-compacted run's messages via one extra LLM call (reuse the
+  conversation's provider adapter with a summarization prompt), insert the
+  summary as a new `role="assistant"` `ConversationMessage`, and set
+  `excluded_from_context=True` on the messages it summarizes. `run_turn`'s
+  history-building (wherever `ConversationMessage` rows are loaded into
+  `history` — currently in `app/api/chat.py`) filters out
+  `excluded_from_context` rows when building what's sent to the model, but
+  `GET /api/chat/history` keeps returning them so Dylan can still scroll the
+  full raw transcript in the UI. Tests cover: 5 runs trigger exactly one
+  compaction, the compacted messages are excluded from a subsequent
+  `run_turn` call's history but still returned by the history endpoint.
+  Verify: `cd backend && uv run pytest` passes.
+
+- [ ] **67. Routines REST API.** `backend/app/api/routines.py`: `GET
+  /api/routines`, `GET /api/routines/{id}`, `POST /api/routines` (manual
+  create), `PATCH /api/routines/{id}` (manual edit:
+  name/prompt/schedule/enabled), `DELETE /api/routines/{id}`, `POST
+  /api/routines/{id}/run` (task 65's manual trigger) — same structure as
+  `backend/app/api/workflows.py`. Wire the router into `main.py`. Tests use
+  FastAPI's `TestClient`, DB-backed (no LLM calls needed for CRUD; `run` is
+  mocked). Verify: `cd backend && uv run pytest` passes.
+
+- [ ] **68. Frontend: routines window.**
+  `frontend/app/components/RoutinesButton.tsx`, modeled directly on
+  `WorkflowsButton.tsx`'s list/edit/new overlay-panel pattern (same
+  `open`/`view` state machine, Escape-to-close, `bg-black/60
+  backdrop-blur-sm` overlay). List view: each routine's name, plain-English
+  schedule summary, enabled toggle, last-run status/time, "Open chat" link
+  (navigates to `conversation_id`). Edit view: editable
+  name/prompt/schedule (unit/interval/time/day-of-week form
+  controls)/enabled, delete button — this is the "manual edit" half of the
+  conversational-plus-manual decision. Add `<RoutinesButton />` next to
+  `<WorkflowsButton />` in `ChatApp.tsx`'s top bar. Verify: `npm run build`
+  && `npm run lint` pass; note in PROGRESS.md that Dylan should manually
+  check the panel in a browser.
+
+- [ ] **69. Frontend: inline "routine created/updated" chat widget.** New
+  `ChatPayload` variant (e.g. `type: "routine_created" | "routine_updated"`)
+  in `frontend/app/lib/types.ts`; new `RoutinePayloadCard.tsx` modeled on
+  `WorkflowLoadedCard.tsx` — a small bubble under the assistant's message
+  showing the routine's name, schedule summary, and a link into the
+  routines window. `dispatch_tool`'s `create_routine`/`update_routine`
+  branches return data shaped for this payload, surfaced the same way
+  `save_workflow_spec` already surfaces its payload today (trace through
+  `app/api/chat.py`'s payload-building to match the existing mechanism
+  exactly). Add the corresponding branch in `ChatApp.tsx`'s payload switch.
+  Verify: `npm run build` && `npm run lint` pass; note in PROGRESS.md that
+  Dylan should confirm in a browser that creating a routine via chat shows
+  the confirmation bubble.
+
+- [ ] **70. Manual end-to-end verification.** Update
+  `docs/manual_verification.md` with a routines checklist: create a routine
+  conversationally (e.g. the reps/leech analysis example), confirm it's
+  registered and visible in the routines window, use `POST
+  /api/routines/{id}/run` to trigger a run without waiting for the
+  schedule, confirm the report lands in the routine's chat and is
+  readable/discussable like any normal conversation, confirm the enabled
+  toggle and manual edit work, and confirm (after 5 manual runs) that
+  compaction has collapsed older messages while the full transcript still
+  scrolls in the UI. Verify: the document exists and accurately reflects
+  the built system's actual flow (cross-check against tasks 62-69) —
+  running the checklist itself is Dylan's manual job, not the loop's.
+
 ## Out of scope
 
 - Any source type other than the one Google Doc (no generic connector
@@ -1464,3 +1627,25 @@ which model the *currently open* conversation uses.
   model (tasks 58-59) — it only changes what a *brand new* conversation
   starts with; conversations already in progress keep whatever model they're
   already set to.
+- Cron-expression schedules for routines (tasks 62-70) — only the
+  `hourly`/`daily`/`weekly` presets are supported; no cron-string parsing
+  dependency.
+- Retry/backoff on a failed routine run (task 65) — a failed run is just
+  retried at its next natural scheduled interval.
+- Push notifications, email, or any external alert when a routine produces
+  a report (tasks 62-70) — Dylan finds it by opening the app, same as any
+  other conversation.
+- Multiple chats per routine, or a per-run configurable chat strategy
+  (task 66) — always one home chat per routine, compacted every 5 reports.
+- Per-routine custom tool allowlists beyond the blanket exclusion of
+  `create_routine`/`update_routine`/`delete_routine` during unattended
+  scheduled runs (task 64) — every routine gets the same tool set otherwise.
+- Routines creating, triggering, or chaining other routines (tasks 62-70).
+- A structured leech/review-query builder UI (task 63) — the agent writes
+  Anki search-syntax queries itself via `search_anki_cards`, consistent
+  with this project's standing preference for agent reasoning over
+  hardcoded structured UI (see the Workflows page's plain-text-only scoping
+  and the pending-card "Request a change" precedents above).
+- Per-routine or per-user timezone configuration (tasks 62-70) — schedules
+  run on the server's own clock, matching this app's existing lack of
+  timezone handling anywhere else.
