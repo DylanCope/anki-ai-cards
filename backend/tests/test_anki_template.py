@@ -1,4 +1,9 @@
-from app.agent.anki_template import find_local_media_refs, inline_local_media, render_card
+from app.agent.anki_template import (
+    _sound_play_button,
+    find_local_media_refs,
+    inline_local_media,
+    render_card,
+)
 
 
 def test_plain_field_substitution():
@@ -212,13 +217,12 @@ def test_find_local_media_refs_finds_sound_tags():
 
 def test_inline_local_media_replaces_sound_tag_with_inline_audio_element():
     front_html = "食べる[sound:anki-ai-cards-5.mp3]"
-    media_data_uris = {"anki-ai-cards-5.mp3": "data:audio/mpeg;base64,YWFh"}
+    data_uri = "data:audio/mpeg;base64,YWFh"
+    media_data_uris = {"anki-ai-cards-5.mp3": data_uri}
 
     result = inline_local_media("", front_html, "", media_data_uris)
 
-    assert result["front_html"] == (
-        '食べる<audio controls preload="none" src="data:audio/mpeg;base64,YWFh"></audio>'
-    )
+    assert result["front_html"] == f"食べる{_sound_play_button(data_uri)}"
 
 
 def test_inline_local_media_leaves_unresolved_sound_tag_untouched():

@@ -43,7 +43,11 @@ endpoint appends this same `[sound:...]`/`<img src="...">` markup to a
 pending card's fields before rendering (mirroring what AnkiConnect's
 `addNote` itself does for attached media — see `ankiconnect.create_note`'s
 docstring), so a picked audio clip/image previews inline in the card
-itself instead of as a separate bolted-on player/thumbnail.
+itself instead of as a separate bolted-on player/thumbnail. The play button
+itself is a hand-rolled icon + inline onclick (not real Anki's `pycmd` JS
+bridge, which isn't available outside Anki's own webview) — the preview
+iframe is sandboxed with `allow-scripts` specifically so this inline JS can
+run.
 """
 
 import re
@@ -143,6 +147,36 @@ _CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")]+)['"]?\s*\)""")
 _IMG_SRC_RE = re.compile(r"""<img\b[^>]*\bsrc=["']([^"']+)["']""", re.IGNORECASE)
 _SOUND_TAG_RE = re.compile(r"\[sound:([^\]]+)\]")
 
+_PLAY_PATH = "M8 5v14l11-7z"
+_PAUSE_PATH = "M6 5h4v14H6zM14 5h4v14h-4z"
+_BUTTON_STYLE = (
+    "display:inline-flex;align-items:center;justify-content:center;"
+    "width:36px;height:36px;border-radius:50%;background:#e0e0e0;color:#333;"
+    "cursor:pointer;vertical-align:middle;margin:4px 0;user-select:none;"
+)
+
+
+def _sound_play_button(data_uri: str) -> str:
+    """A play/pause icon button styled to look like real Anki's own inline
+    sound widget (a plain circular play icon — see module docstring), rather
+    than the browser's default `<audio controls>` bar. The path swap on
+    click/ended is inline JS instead of a stylesheet class toggle so this
+    stays a single self-contained snippet with no dependency on CSS the
+    embedding page provides."""
+    toggle_js = (
+        "var a=this.nextElementSibling,p=this.firstChild.firstChild;"
+        f"if(a.paused){{a.play();p.setAttribute('d','{_PAUSE_PATH}');}}"
+        f"else{{a.pause();p.setAttribute('d','{_PLAY_PATH}');}}"
+    )
+    reset_js = f"this.previousElementSibling.firstChild.firstChild.setAttribute('d','{_PLAY_PATH}')"
+    return (
+        f'<span onclick="{toggle_js}" style="{_BUTTON_STYLE}">'
+        f'<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">'
+        f'<path d="{_PLAY_PATH}"></path></svg></span>'
+        f'<audio preload="none" src="{data_uri}" style="display:none" '
+        f'onended="{reset_js}"></audio>'
+    )
+
 
 def _is_local_media_ref(ref: str) -> bool:
     return not ref.startswith(("http://", "https://", "data:", "//", "#"))
@@ -169,11 +203,11 @@ def inline_local_media(
     <bytes>"`). Substitution is scoped to each matched `url(...)`/`src="..."`
     /`[sound:...]` span rather than a blind string replace, so a filename
     that happens to be a substring of unrelated text elsewhere is never
-    touched. A `[sound:filename]` tag becomes an inline `<audio controls>`
-    element (there's no sandboxed-iframe-safe way to reproduce Anki's own
-    small play-button widget without its JS) positioned exactly where the
-    tag appeared in the field, same as real Anki renders it inline rather
-    than as a separate player below the card."""
+    touched. A `[sound:filename]` tag becomes a small play-button icon (an
+    inline `<span onclick=...>` driving a hidden `<audio>` element) positioned
+    exactly where the tag appeared in the field, matching real Anki's own
+    inline play button instead of the browser's default `<audio controls>`
+    bar."""
 
     def _sub(pattern: re.Pattern[str], text: str) -> str:
         def repl(match: re.Match[str]) -> str:
@@ -189,7 +223,7 @@ def inline_local_media(
             data_uri = media_data_uris.get(ref)
             if not data_uri:
                 return match.group(0)
-            return f'<audio controls preload="none" src="{data_uri}"></audio>'
+            return _sound_play_button(data_uri)
 
         return _SOUND_TAG_RE.sub(repl, text)
 

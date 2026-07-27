@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
+from app.agent.anki_template import _sound_play_button
 from app.agent.model_registry import DEFAULT_MODEL_ID
 from app.api import chat as chat_module
 from app.auth import create_session_cookie
@@ -1989,7 +1990,7 @@ def test_preview_pending_card_inlines_picked_audio_and_picture_into_the_card(mon
     assert "picture_base64" not in body
     audio_data_uri = f"data:audio/mpeg;base64,{base64.b64encode(b'aaa').decode('ascii')}"
     picture_data_uri = f"data:image/png;base64,{base64.b64encode(b'pngbytes').decode('ascii')}"
-    assert f'<audio controls preload="none" src="{audio_data_uri}"></audio>' in body["back_html"]
+    assert _sound_play_button(audio_data_uri) in body["back_html"]
     assert f'<img src="{picture_data_uri}">' in body["back_html"]
 
 
@@ -2033,7 +2034,7 @@ def test_preview_pending_card_tolerates_bare_object_audio_and_picture(monkeypatc
     assert response.status_code == 200
     audio_data_uri = f"data:audio/mpeg;base64,{base64.b64encode(b'aaa').decode('ascii')}"
     picture_data_uri = f"data:image/png;base64,{base64.b64encode(b'pngbytes').decode('ascii')}"
-    assert f'<audio controls preload="none" src="{audio_data_uri}"></audio>' in response.json()["back_html"]
+    assert _sound_play_button(audio_data_uri) in response.json()["back_html"]
     assert f'<img src="{picture_data_uri}">' in response.json()["back_html"]
 
 

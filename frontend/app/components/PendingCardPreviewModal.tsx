@@ -55,7 +55,6 @@ function buildSrcDoc(preview: PendingCardPreview, side: PreviewSide, nightMode: 
 body { font-family: Arial, Helvetica, "Noto Sans JP", sans-serif; margin: 0; height: 100%; }
 html { height: 100%; }
 html, body { background: ${background}; color: ${foreground}; }
-audio { display: block; max-width: 100%; height: 32px; margin: 4px 0; }
 ${preview.css}
 </style></head><body><div class="card${nightClasses}">${html}</div></body></html>`;
 }
